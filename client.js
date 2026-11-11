@@ -1170,7 +1170,7 @@ function revealCanvasInRight() {
       'aiUploadFail': '上传失败',
       'aiUploadType': '请选择{kind}文件',
       'aiPolish': 'AI 完善提示词',
-      'aiPolishHint': '按设定集与你的输入，把提示词补全成可直接生成的画面描述（只改提示词）',
+      'aiPolishHint': '用画布技能（canvas-craft + 导演/题材/影调切片 + 设定集）把提示词补全成可直接生成的画面描述（只改提示词）',
       'aiPolishing': 'AI 完善中…',
       'aiPolishDone': '提示词已完善',
       'aiPolishFail': 'AI 完善失败',
@@ -2245,7 +2245,7 @@ function revealCanvasInRight() {
       'aiUploadFail': 'Upload failed',
       'aiUploadType': 'Pick a {kind} file',
       'aiPolish': 'AI polish prompt',
-      'aiPolishHint': 'Complete the prompt into a generation-ready frame description from the bible and your input (prompt only)',
+      'aiPolishHint': 'Complete the prompt with the canvas skills (canvas-craft + director/genre/look slices + the bible); prompt only',
       'aiPolishing': 'Polishing…',
       'aiPolishDone': 'Prompt polished',
       'aiPolishFail': 'AI polish failed',
@@ -9999,25 +9999,66 @@ function queueThumb(assetId) {
       return t;
     }
     /** 图片提示词「AI 完善」：设定集 + 用户输入 → 可直接生成的画面提示词（只出正文）。 */
+    /** 从技能正文里只取用得到的章节（按 `## ` 标题前缀），不把整本方法论塞进一次提示词请求。 */
+    function skillSections(text, prefixes) {
+      const raw = String(text || '');
+      if (!raw) return '';
+      const parts = raw.split(/\n(?=## )/);
+      const keep = parts.filter((p) => {
+        const m = /^##\s+([^\n]+)/.exec(p);
+        if (!m) return false;
+        const title = m[1].trim();
+        return (prefixes || []).some((x) => title.startsWith(x));
+      });
+      return keep.join('\n\n').trim();
+    }
+    /**
+     * 图片提示词「AI 完善」——用**无限画布的技能**生成，而不是通用提示词模板：
+     *   ① canvas-craft 技能正文的相关章节（设定图走「二·五 资产设定图版式」+「三 图片提示词规范」，
+     *      普通画面只走「三 图片提示词规范」）——按章节切片，不整本注入；
+     *   ② 画布技能包切片（导演透镜 / 题材 / 规格 / 影调，`buildSkillPackText`，与画布自生成同源）；
+     *   ③ 图片形态的技能包风格锁（`buildShotLockText(..., {medium:'image'})`，压缩版，避免长文被当画面内容渲染）；
+     *   ④ 项目设定集（实体名与外观逐字可用）+ 用户输入。
+     */
     async function aiPolishImagePrompt({ cur, bible, label, zh, extra }) {
+      const settings = loadSettings();
+      const lbl = String(label || '');
+      // 资产设定图（角色/场景/道具-xxx 设定图）走「设定图版式」切片；其余画面走「图片提示词规范」
+      const isSheet = /(?:^|[-－—_／/\s])(?:角色|场景|道具)[-－—_／/\s]|设定图|参考图|三视图|多视图/.test(lbl);
+      const kind = isSheet ? 'assets' : 'prompt';
+      // ① 画布技能包切片（四层：导演/题材/规格/影调）——未配置时为空，行为退回纯技能章节
+      let packText = '';
+      try { packText = (await buildExpertContext(kind, settings, zh)).packText || ''; } catch { packText = ''; }
+      // ② 技能包「图片形态」风格锁（压缩版；图片模型会把长文当画面内容渲染，必须用图片档）
+      let lock = '';
+      try { lock = await buildShotLockText(kind, { medium: 'image' }); } catch { lock = ''; }
+      // ③ canvas-craft 技能章节
+      let rules = '';
+      try {
+        const sk = await hostRpc('readSkill', { name: CRAFT_SKILL });
+        rules = skillSections(String((sk && sk.text) || ''), isSheet ? ['二·五', '三、'] : ['三、']);
+      } catch { rules = ''; }
       const style = bibleStyleAnchor(bible);
       const system = [
-        zh ? '你是短剧/短视频的图片提示词导演，负责把半成品提示词补全成可直接送进文生图模型的画面提示词。'
-          : 'You are a shot-prompt director for short drama: turn a rough prompt into a generation-ready image prompt.',
-        zh ? '硬规则：只输出提示词正文（不要解释、不要标题、不要引号包裹、不要 Markdown、不要分点）。'
-          : 'Hard rules: output ONLY the prompt text (no explanation, no title, no quotes, no markdown, no bullets).',
-        zh ? '必须严格使用设定集里的实体名称与外观描述，不得改名、不得新增设定集里没有的角色/场景/道具。'
-          : 'Use bible entity names and descriptions verbatim; never rename or invent entities.',
-        zh ? '画面要具体：景别 + 主体动作/状态 + 环境与光线 + 色调 + 镜头（机位/焦段）+ 质感。'
-          : 'Be concrete: shot size + subject action/state + set and light + colour + camera (position/lens) + texture.',
-        zh ? '不写画面内文字/字幕，不写音乐与配乐，不写“电影感/唯美”这类空话。'
-          : 'No on-screen text/subtitles, no music, no empty words like "cinematic/beautiful".',
+        packText,
+        lock,
+        rules,
+        zh ? '你是短剧/短视频的图片提示词导演。只输出提示词正文（不要解释、不要标题、不要引号包裹、不要 Markdown、不要分点）。'
+          : 'You are a shot-prompt director for short drama. Output ONLY the prompt text (no explanation, no title, no quotes, no markdown, no bullets).',
+        zh ? '**上面的画布技能与技能包是硬约束**：设定图节点必须按「资产设定图版式」的分段结构写（【总起】【身份锚】【主体】【三视图】…）；普通画面按「图片提示词规范」的公式写（主体 + 景别/构图 + 环境 + 光线 + 风格质感 (+ 画幅)）。'
+          : 'The canvas skill and skill-pack above are BINDING: asset-sheet nodes follow the sheet layout sections; other frames follow the image-prompt formula (subject + shot size/composition + environment + light + style/texture (+ aspect)).',
+        zh ? '实体名称与外观必须逐字复用设定集；参考图存在时按 `[图N] 角色：名称（外观关键词）` 写绑定说明。'
+          : 'Reuse bible names/appearance verbatim; when references exist, bind them as `[Picture N] character: name (look keywords)`.',
+        zh ? '不写画面内文字/字幕（设定图只允许 ≤4 字短标签）、不写音乐、不写“电影感/唯美”这类空话。'
+          : 'No on-screen text/subtitles (sheet labels ≤4 chars only), no music, no empty words like "cinematic".',
         zh ? '保留用户已表达的意图、构图、风格与比例倾向；只补全与精炼，不换题。'
           : 'Keep the user intent, composition, style and ratio; complete and sharpen only.',
-        zh ? '长度 60–140 字（中文）/ 60–120 words（英文）。' : 'Length 60-120 words.',
-      ].join('\n');
+        zh ? '长度：普通画面 60–140 字；设定图按版式分段写全（可 150–320 字）。'
+          : 'Length: ordinary frame 60-120 words; asset sheets follow the full layout (150-320 words).',
+      ].filter(Boolean).join('\n\n');
       const user = [
-        (zh ? '目标节点：' : 'Node: ') + String(label || ''),
+        (zh ? '目标节点：' : 'Node: ') + lbl,
+        (zh ? '节点类型判定：' : 'Node kind: ') + (isSheet ? (zh ? '资产设定图（按版式分段）' : 'asset sheet (use layout sections)') : (zh ? '普通画面' : 'ordinary frame')),
         (zh ? '用户当前输入（可能为空）：\n' : 'Current input (may be empty):\n') + (String(cur || '').trim() || (zh ? '（空）' : '(empty)')),
         style ? (zh ? '风格锚：' : 'Style anchor: ') + style : '',
         bibleBlock(bible) ? (zh ? '项目设定集：\n' : 'Series bible:\n') + bibleBlock(bible) : '',

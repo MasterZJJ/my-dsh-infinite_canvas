@@ -49,6 +49,7 @@ const SUITE = [
   { kind: 'syntax', name: 'node --check client.js', args: ['--check', path.join(ROOT, 'client.js')] },
   // --- 静态审计 ---
   { name: 'audit.mjs', desc: '机械化体检（i18n/CSS/节点类型/RPC 一致）' },
+  { name: 'test-local-ai-helpers.mjs', desc: '本地构建：AI 完善提示词走画布技能 / 节点上传走资产管道 / 编辑器 AI 补全上下文' },
   // --- 渲染与组件 ---
   { name: 'smoke-render.mjs', desc: '渲染冒烟（假 React 走真实组件树，抓黑屏级崩溃）' },
   { name: 'test-drag-alt.mjs', desc: '拖动推挤 / Alt 自由摆放 / 快捷键面板' },
@@ -144,7 +145,19 @@ const SUITE = [
 const SKIP_MARKERS = [/跳过/, /\bSKIP\b/i, /缺前置/, /未找到.*canvas\.db/];
 const CRASH_MARKERS = [/SyntaxError/, /ReferenceError/, /TypeError/, /RangeError/, /\n\s+at .+\(/, /EMPTY_RESPONSE/, /Cannot find module/];
 
-// 浏览器类测试（真实 Chrome 启动）在并发/负载下偶发超时：失败后自动重试一次，避免误报const BROWSER_TESTS = new Set([  'test-render-pixels.mjs', 'test-video-record.mjs', 'test-director-e2e.mjs',]);async function runOneStable(item) {  const first = await runOne(item);  if (first.state === 'PASS') return first;  if (!BROWSER_TESTS.has(item.name)) return first;  const retry = await runOne(item);  if (retry.state === 'PASS') retry.out = '[retried once] ' + retry.out;  return retry;}function runOne(item) {
+// 浏览器类测试（真实 Chrome 启动）在并发/负载下偶发超时：失败后自动重试一次，避免误报
+const BROWSER_TESTS = new Set([
+  'test-render-pixels.mjs', 'test-video-record.mjs', 'test-director-e2e.mjs',
+]);
+async function runOneStable(item) {
+  const first = await runOne(item);
+  if (first.state === 'PASS') return first;
+  if (!BROWSER_TESTS.has(item.name)) return first;
+  const retry = await runOne(item);
+  if (retry.state === 'PASS') retry.out = '[retried once] ' + retry.out;
+  return retry;
+}
+function runOne(item) {
   const isSyntax = item.kind === 'syntax';
   const file = isSyntax ? process.execPath : path.join(SCRIPTS, item.name);
   if (!isSyntax && !existsSync(file)) {

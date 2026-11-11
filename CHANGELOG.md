@@ -272,6 +272,24 @@ GitHub Releases carry the same notes in English; maintainer-facing runbooks live
 - **Repo housekeeping.** `.superpowers/` (SDD process directories) and `.worktrees/`
   (isolated work trees) are now git-ignored.
 
+## [0.20.5-local.3] — 2026-11-11
+
+### Changed
+- **图片节点的「AI 完善提示词」改用无限画布的技能生成**（不再是一套通用提示词模板）：
+  - 从 `canvas-craft` 技能正文里**按章节切片**取用——资产设定图节点走「二·五 资产设定图版式」+
+    「三 图片提示词规范」，普通画面只走「三 图片提示词规范」（整本 47KB 不再整本塞进一次请求）；
+  - 叠加**画布技能包切片**（导演透镜 / 题材 / 规格 / 影调，`buildSkillPackText`，与画布自生成同源）；
+  - 叠加**图片档技能包风格锁**（`buildShotLockText(kind, {medium:'image'})`）——图片模型会把长文当画面
+    内容渲染，因此用压缩版而不是视频档；
+  - 最后才是项目设定集与用户输入。节点类型按名称判定：`角色-/场景-/道具- … 设定图` 走设定图版式，其余走图片公式。
+- 提示文案同步说明"用画布技能"（中英）。
+
+### Internal
+- 新增 `scripts/test-local-ai-helpers.mjs` 并挂进 `scripts/regress.mjs`：源码级守卫，钉住
+  ① AI 完善提示词必须取技能章节 + 技能包 + 图片档锁（退回通用模板即红）；② 节点上传必须走
+  `saveAssetRecord → commitGenResult` 且文件选择器点击时才创建；③ 编辑器 AI 补全必须带上下镜上下文
+  并保护用户台词；④ 20 个新 i18n 键中英各一份。
+
 ## [0.20.5-local.2] — 2026-11-11
 
 本地构建追加的三项画布交互（全部在前端 `client.js`，宿主无需重启即可用）：
