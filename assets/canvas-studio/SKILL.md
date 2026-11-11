@@ -92,10 +92,14 @@ brief → bible → assets → script → storyboard → shots_ready → generat
     （只能 opening/continuation/scene_change/new_character/closeup）；改 `shots` 必须**整表替换**
     并保留这四字段；只有 `continuation` 接力尾帧。视频优先用 `tailpick` → `frame`；
     衔接模式三选（参考图融合默认 / 硬首帧 / 忽略首帧）；接缝校验偏跳时调低运动或改硬首帧。
-17. **分镜质量闸门（G2）**：生成视频前按六条自检（每场冲突点 / 每场 1 个大特写 / 连续三镜不同运动 /
+17. **分镜质量闸门（G2）**：生成视频前按六条自检（每场冲突点 / 每场 1 个大特写（**场级**要求：分镜表已按
+    4–10s 拆表后由 G2 以 `warns` 提示，不再按单表判失败）/ 连续三镜不同运动 /
     景别具体 / 因果钩子 / 六要素齐全）；不过先重生成或改 `shots`——**绝不带粗分镜烧视频**。
     术语统一：「大特写」「调度」；motion 写「起点→方式→终点」（勘误表见 canvas-craft）。
-18. **多画布**：`canvas_list_projects` 列出 `canvasId` 清单；用户指明画布时所有工具**显式带 `canvasId`**；
+18. **多画布**：`canvas_list_projects` 列出项目与 `canvasId`；`canvas_list_canvases` 看每张画布的节点/连线数
+    （决定"搬哪批节点去哪张"）；`canvas_create_canvas` 建子画布（同名复用）、`canvas_rename_canvas` 改名、
+    `canvas_move_nodes` 跨画布搬节点（节点内部连线随迁；**跨切口边会被剪断并记墓碑**——搬视频必须连它的
+    上游分镜表/参考图一起搬，否则 prompt/ref 上游断）。用户指明画布时所有工具**显式带 `canvasId`**；
     资产与设定集按项目共享，不重复建。
 19. **记忆先行 + 会话=画布**：开工先 `canvas_my_canvas` 自证「我是哪一集」；绑定会话**代码级禁止**
     跨画布/跨项目（确需切换请用户先解绑）；写本集前 `canvas_read_memory`（先调度索引后本集正文；

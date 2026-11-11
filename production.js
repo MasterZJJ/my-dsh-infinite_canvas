@@ -34,7 +34,7 @@ const STAGE_INDEX = Object.fromEntries(PRODUCTION_STAGES.map((s, i) => [s, i]));
 /** 景别规范词（画面描述必须含其一，否则"景别不具体"）。 */
 const SHOTSIZE_WORDS = ['大特写', '特写', '近景', '中近景', '中景', '中全景', '全景', '远景'];
 /** seg 规范取值（canvas_update_node 已做归一化，这里只认规范值）。 */
-const SEG_CANON = new Set(['opening', 'continuation', 'scene_change', 'new_character', 'closeup']);
+const SEG_CANON = new Set(['opening', 'continuation', 'scene_change', 'new_character', 'closeup', 'state_jump']);
 /** 状态上限：history / overrides 各自最多保留条数。 */
 const CAP = 40;
 
@@ -370,7 +370,7 @@ export function createProduction(deps) {
       if (!visual) fails.push(no + ' 缺少画面描述（visual）');
       else if (!SHOTSIZE_WORDS.some((w) => visual.includes(w))) fails.push(no + ' 景别不具体（画面需含 大特写/特写/近景/中近景/中景/中全景/全景/远景 之一）');
       const seg = String((s && s.seg) || '').trim().toLowerCase();
-      if (seg && !SEG_CANON.has(seg)) fails.push(no + ' seg 取值非法：' + seg + '（只能是 opening/continuation/scene_change/new_character/closeup）');
+      if (seg && !SEG_CANON.has(seg)) fails.push(no + ' seg 取值非法：' + seg + '（只能是 opening/continuation/scene_change/new_character/closeup/state_jump）');
       if (!seg || !String((s && s.tail) || '').trim() || !String((s && s.cam) || '').trim()) {
         warns.push(no + ' 缺衔接字段（' + (['seg', 'tail', 'cam'].filter((k) => !String((s && s[k]) || '').trim()).join('/')) + '）——跨段接戏靠这四个字段，建议 canvas_update_node 补齐');
       }
@@ -378,8 +378,10 @@ export function createProduction(deps) {
       const dlgText = typeof dlg === 'string' ? dlg : Array.isArray(dlg) ? dlg.join(' ') : '';
       if (dlgText.trim() && !dlgText.includes('：') && !dlgText.includes(':')) warns.push(no + ' 台词建议逐行「角色：台词」格式（音画同步依赖它）');
     });
+    // 「每场至少 1 个大特写」是**场级**创作要求；分镜表已按 4–10s 拆分后，单张表不再强制自带大特写
+    //（否则每张 5 秒表都要塞一个大特写，反而破坏分镜）。降级为 warns，由场级自检 / 技能核对。
     if (arr.length && !arr.some((s) => String((s && s.visual) || '').includes('大特写'))) {
-      fails.push('全表没有一个「大特写」——每场至少 1 个大特写（分镜自检硬项）');
+      warns.push('本表没有「大特写」——每场至少 1 个大特写（若本表只是整场拆出的 4–10s 分表，请在场级分镜里核对，不要为凑项硬塞）');
     }
     for (let i = 0; i + 2 < arr.length; i++) {
       const a = normMotion(arr[i]);

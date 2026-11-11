@@ -158,7 +158,10 @@ let sbNodeId = '';
   await byName.get('canvas_write_node').execute({ projectId, nodeId: sbNodeId, target: 'output', text: badShots, overwrite: true }, {});
   const v1 = await byName.get('canvas_create_node').execute({ projectId, type: 'video', name: '第一节多镜头视频' }, {});
   ok(v1 && v1.ok === false && v1.gate === 'G2', 'G2: 粗分镜建视频未被拒');
-  ok(Array.isArray(v1.fails) && v1.fails.length >= 2, 'G2: 拒绝应携带逐条失败项');
+  // 本地口径（合并自本地改造）：分镜已按 4–10s 拆表，「每场至少 1 个大特写」降级为场级建议（warns），
+  // 不再计入 fails——否则每张 5 秒表都会被判不合规。其余质量项仍逐条拒绝。
+  ok(Array.isArray(v1.fails) && v1.fails.length >= 1, 'G2: 拒绝应携带逐条失败项');
+  ok((v1.warns || []).some((w) => w.includes('大特写')), 'G2: 大特写应是场级建议（warns）而不是失败项');
   // 合规分镜（整表替换）
   const goodShots = JSON.stringify({ shots: [
     { title: '镜1', visual: '中景，陈拾收伞回望', motion: '横移跟随', duration: 3, seg: 'opening', tail: '转身欲走', cam: '横移回正' },
@@ -610,7 +613,9 @@ let sbNodeId = '';
   // 首轮 shots：缺时长 + 景别不具体 + 全表无大特写——先实跑真闸门确认 fails.length > 0，否则整个用例失效
   const badShotsArr = [{ title: '镜1', visual: '他走过来', motion: '', duration: 0 }];
   const preGate = P.gateStoryboard(badShotsArr);
-  ok(preGate.ok === false && preGate.fails.length >= 3, 'G2注入前置: 首轮 shots 应被真闸门拒绝（fails=' + JSON.stringify(preGate.fails) + '）');
+  // 大特写已降级为场级建议（warns），故此处只剩「缺时长 + 景别不具体」两条硬失败
+  ok(preGate.ok === false && preGate.fails.length >= 2, 'G2注入前置: 首轮 shots 应被真闸门拒绝（fails=' + JSON.stringify(preGate.fails) + '）');
+  ok((preGate.warns || []).some((w) => w.includes('大特写')), 'G2注入前置: 大特写应以场级建议告警');
   const goodShotsArr = [
     { title: '镜1', visual: '中景，雨夜巷口，陈拾收伞', motion: '横移跟随', duration: 3, seg: 'opening', tail: '转身欲走', cam: '横移回正' },
     { title: '镜2', visual: '大特写，邮戳裂开', motion: '缓推', duration: 2, seg: 'closeup', tail: '裂开定格', cam: '推进到位' },

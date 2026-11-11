@@ -1806,7 +1806,13 @@ async function projectsPut(args) {
       if (Object.keys(patch).length) patchProjectDoc(id, patch);
     }
   }
-  return { ok: true, id, ...(canvasId ? { canvasId } : {}), updatedAt: out.updatedAt };
+  // 回传设定集时间戳：客户端靠它推进 LS_BIBLE_SYNC 同步戳。旧版这里只回 {ok,id,updatedAt}，
+  // 客户端 pushBible 的 `if (r.bibleUpdatedAt)` 永远不成立 → 本地戳停在旧值 → 3s 轮询把每次自己推送
+  // 都误判成「宿主更新过」，拉回旧设定集覆盖本地，刚添加的空名条目（normalizeBible 会丢弃）连同输入框一起消失。
+  const bibleStampOut = canvasId
+    ? ((canvasBible && canvasBible.bibleUpdatedAt) || 0)
+    : (out.bibleUpdatedAt || 0);
+  return { ok: true, id, ...(canvasId ? { canvasId } : {}), updatedAt: out.updatedAt, ...(bibleStampOut ? { bibleUpdatedAt: bibleStampOut } : {}) };
 }
 async function projectsGet(args) {
   const id = String((args && args.id) || '');
@@ -2194,6 +2200,12 @@ function canvasWriteNode(args) {
           title: String((s && s.title) || ('镜头' + (i + 1))).slice(0, 24),
           visual: String((s && s.visual) || ''),
           motion: String((s && s.motion) || ''),
+          // 衔接四字段：tail/cam/start/seg 是跨镜接戏与「4–10s 拆表」切点的依据，
+          // 对话侧整表写入时必须原样透传，否则一路退化成分段接力失败。
+          tail: String((s && s.tail) || '').trim().slice(0, 160),
+          cam: String((s && s.cam) || '').trim().slice(0, 120),
+          start: String((s && s.start) || '').trim().slice(0, 160),
+          seg: String((s && s.seg) || '').trim().toLowerCase().slice(0, 24),
           characters: Array.isArray(s && s.characters) ? s.characters.map(String) : [],
           scene: String((s && s.scene) || ''),
           props: Array.isArray(s && s.props) ? s.props.map(String) : [],
@@ -2209,6 +2221,7 @@ function canvasWriteNode(args) {
           vfx: String((s && s.vfx) || '').trim().slice(0, 160),
           negative: String((s && s.negative) || '').trim().slice(0, 200),
         }));
+        if (Number(node.data.boardCount) > 1) node.data.boardScript = boardBriefText(node, node.data.shots);
         node.data.aiStatus = 'idle';
         node.data.aiError = null;
         // 写入分镜时同步计算一致性告警：node_status 能立刻返回 warnings（对话侧据此补全设定集）
@@ -2985,7 +2998,7 @@ function storyboardConsistencyWarnings(bible, shots, extraNames) {
     // visual/motion 文本里的 @资产名@ 提及同样纳入检查（未登记的提示补充——与客户端 parseMentions 词法一致）
     const text = String((sh && sh.visual) || '') + ' ' + String((sh && sh.motion) || '');
     const seenMention = new Set();
-    for (const m of (text.match(/@([^@\s，。；：、,.;:!?！？()（）[\]【】"'“”<>《》/\\|]{1,64}?)@/g) || [])) {
+    for (const m of (text.match(/@([^@\s，。；：、,.;:!?！？[\]【】"'“”<>《》/\\|]{1,64}?)@/g) || [])) {
       const nm = m.replace(/^@/, '').replace(/@$/, '');
       if (seenMention.has(nm)) continue;
       seenMention.add(nm);
@@ -3093,6 +3106,11 @@ async function canvasNodeStatus(args) {
     resolution: d.resolution || null,
     frameMode: d.frameMode || null,
     count: d.count == null ? null : Number(d.count),
+    // 4–10s 拆表：同一场的多张表共享 boardGroupId；boardIndex/boardCount 标识第几张
+    boardGroupId: d.boardGroupId || null,
+    boardIndex: d.boardIndex == null ? null : Number(d.boardIndex),
+    boardCount: d.boardCount == null ? null : Number(d.boardCount),
+    boardScript: String(d.boardScript || '').slice(0, 2000),
     imageModel: d.imageModel || null,
     videoModel: d.videoModel || null,
     model: d.model || null,
@@ -3118,6 +3136,40 @@ async function canvasNodeStatus(args) {
 }
 /** 可被 canvas_update_node 修改的节点字段白名单（结构字段 id/type/x/y/w/h/data 一律不可写）。 */
 const NODE_PATCH_FIELDS = ['prompt', 'idea', 'output', 'text', 'script', 'requirement', 'label', 'ratio', 'size', 'duration', 'resolution', 'frameMode', 'count', 'imageModel', 'videoModel', 'model', 'cont'];
+/** 4–10s 拆表子表的「本表范围」说明书：镜头被对话侧整表改掉后重算，避免生成端仍读旧镜头清单。 */
+function boardBriefText(node, shots) {
+  const arr = (Array.isArray(shots) ? shots : []).filter(Boolean);
+  const dur = Math.round(arr.reduce((a, s) => a + (Number(s && s.duration) || 0), 0) * 10) / 10;
+  const label = String((node && node.data && node.data.label) || '分镜表').replace(/\s*·\s*\d+\s*\/\s*\d+\s*$/, '').trim();
+  const idx = Number(node && node.data && node.data.boardIndex) || 0;
+  const count = Number(node && node.data && node.data.boardCount) || 1;
+  const body = arr.map((s, i) => {
+    const dls = (Array.isArray(s && s.dialogue) ? s.dialogue : []).map((d) => String(d && d.role || '').trim() + '：' + String(d && d.line || '').trim()).filter((x) => x.replace('：', '').trim());
+    const sfx = String((s && s.sfx) || '').trim();
+    const lines = [
+      `【${String((s && s.title) || ('镜' + (i + 1)))}】${Number(s && s.duration) || 3}s`,
+      `画面：${String((s && s.visual) || '')}`,
+      `动作：${String((s && s.motion) || '')}`,
+    ];
+    if (String((s && s.seg) || '').trim()) lines.push(`段落类型：${String(s.seg).trim()}`);
+    if (String((s && s.tail) || '').trim()) lines.push(`接点尾态：${String(s.tail).trim()}`);
+    if (String((s && s.cam) || '').trim()) lines.push(`运镜延续：${String(s.cam).trim()}`);
+    if (String((s && s.start) || '').trim()) lines.push(`起始态：${String(s.start).trim()}`);
+    if (Array.isArray(s && s.timeBeats) && s.timeBeats.length) lines.push(`时间节拍：${s.timeBeats.map(String).join(' → ')}`);
+    if (String((s && s.camera) || '').trim()) lines.push(`机位：${String(s.camera).trim()}`);
+    if (String((s && s.vfx) || '').trim()) lines.push(`特效：${String(s.vfx).trim()}`);
+    if (String((s && s.negative) || '').trim()) lines.push(`负面：${String(s.negative).trim()}`);
+    if (dls.length) lines.push(`台词：${dls.join('；')}`);
+    if (sfx) lines.push(`音效：${sfx}`);
+    return lines.join('\n');
+  }).join('\n\n');
+  return [
+    String((node && node.data && node.data.boardSource) || '').trim(),
+    `【本表范围·硬性】本表是「${label}」的第 ${idx + 1}/${count} 张分镜表（约 ${dur}s）。`,
+    '本表镜头（重新生成/润色时只改这些镜头，不得扩展到其它时间段，不得重复其它表的剧情）：',
+    body,
+  ].filter(Boolean).join('\n\n');
+}
 /** 更新已有节点的字段：对话侧"改提示词 / 改参数"的唯一入口（此前只能删节点重建）。 */
 function canvasUpdateNode(args) {
   const pid = String((args && args.projectId) || '');
@@ -3150,6 +3202,9 @@ function canvasUpdateNode(args) {
       v = String(v == null ? '' : v);
     }
     n.data[k] = v;
+    // 4–10s 拆表子表：对话侧显式改 script 时，同步成 boardScript——
+    // 否则生成端仍读旧的锁定范围说明书，用户会以为"改了没生效"。
+    if (k === 'script' && Number(n.data.boardCount) > 1) n.data.boardScript = v;
     applied.push(k);
   }
   if (patch.shots !== undefined) {
@@ -3161,8 +3216,8 @@ function canvasUpdateNode(args) {
     // shots 是**整表替换**：只改一镜也必须先把全量读出来再传回（否则其它镜的 tail/cam 会被冲掉）。
     // 这里做两层兜底：① 合法的 seg 取值归一化 ② 旧表里有衔接字段而新值没给时，按镜序保留旧值。
     const oldShots = Array.isArray(n.data.shots) ? n.data.shots : [];
-    const SEG_OK = new Set(['opening', 'continuation', 'new_character', 'scene_change', 'closeup', 'cut', '']);
-    const SEG_NORM = { cut: 'closeup', close: 'closeup', insert: 'closeup', cont: 'continuation', open: 'opening', scene: 'scene_change' };
+    const SEG_OK = new Set(['opening', 'continuation', 'new_character', 'scene_change', 'closeup', 'state_jump', 'cut', '']);
+    const SEG_NORM = { cut: 'closeup', close: 'closeup', insert: 'closeup', cont: 'continuation', open: 'opening', scene: 'scene_change', jump: 'state_jump' };
     arr = arr.map((sh, i) => {
       if (!sh || typeof sh !== 'object') return sh;
       const out = { ...sh };
@@ -3176,6 +3231,7 @@ function canvasUpdateNode(args) {
       return out;
     });
     n.data.shots = arr;
+    if (Number(n.data.boardCount) > 1) n.data.boardScript = boardBriefText(n, arr);
     applied.push('shots');
   }
   if (!applied.length) {
@@ -3343,6 +3399,83 @@ async function canvasDelete(args) {
   };
 }
 
+
+/** 子画布清单（工具入口）：名称 + 节点/连线计数，便于决定把哪批节点搬到哪张画布。 */
+function canvasListCanvases(args) {
+  const pid = String((args && args.projectId) || '');
+  const projectDoc = readDoc(pid);
+  const out = [];
+  if (defaultCanvasExists(projectDoc)) {
+    out.push({ canvasId: null, name: defaultCanvasNameOf(projectDoc) || '默认画布', isDefault: true, nodes: Object.keys(projectDoc.nodes || {}).length, edges: (projectDoc.edges || []).length });
+  }
+  for (const c of canvasRegistry(projectDoc)) {
+    const d = readDocOrNull(canvasDocId(pid, c.id)) || {};
+    out.push({ canvasId: c.id, name: String(c.name || c.id), isDefault: false, nodes: Object.keys(d.nodes || {}).length, edges: (d.edges || []).length });
+  }
+  return { ok: true, projectId: pid, canvases: out };
+}
+/** 跨画布搬运节点：源画布剪下这批节点 + 它们之间的内部边，写入目标画布。
+ *  节点 id / 坐标 / 数据 / 生成产物原样保留；源画布记墓碑，客户端合并时不会把它们拉回来。
+ *  跨切口的边（一端留源、一端去目标）无法跨画布存在 → 剪掉并在源画布记边墓碑。
+ *  搬视频时务必把它的参考图一起搬（或先在目标画布复制一份），否则视频的 prompt/ref 上游会断。 */
+function canvasMoveNodes(args) {
+  const pid = String((args && args.projectId) || '');
+  const fromId = normalizeCanvasId(args && args.fromCanvasId);
+  const toId = normalizeCanvasId(args && args.toCanvasId);
+  if (!toId) throw new Error('需要目标画布 canvasId（可先用 canvas_create_canvas 建画布）');
+  if (fromId === toId) throw new Error('源画布与目标画布相同');
+  const ids = Array.isArray(args && args.nodeIds)
+    ? [...new Set(args.nodeIds.filter((x) => typeof x === 'string' && x))]
+    : [];
+  if (!ids.length) throw new Error('需要 nodeIds（节点 id 数组）');
+  const fromDoc = readCanvasDoc(pid, fromId);
+  const toDoc = readCanvasDoc(pid, toId);
+  const moving = [];
+  const skipped = [];
+  for (const id of ids) { const n = fromDoc.nodes[id]; if (n) moving.push(n); else skipped.push(id); }
+  const movedSet = new Set(moving.map((n) => n.id));
+  if (!moving.length) return { ok: true, projectId: pid, fromCanvasId: fromId, canvasId: toId, moved: [], skipped, edgesMoved: 0, edgesDropped: 0 };
+  const now = Date.now();
+  // 源画布：剪节点、剪跨切口边、记墓碑
+  for (const n of moving) delete fromDoc.nodes[n.id];
+  const keepEdges = [];
+  const droppedEdges = [];
+  const carriedEdges = [];
+  for (const e of (fromDoc.edges || [])) {
+    if (!e || !e.fromNode || !e.toNode) continue;
+    const a = movedSet.has(e.fromNode);
+    const b = movedSet.has(e.toNode);
+    if (a && b) carriedEdges.push(e);
+    else if (a || b) droppedEdges.push(e);
+    else keepEdges.push(e);
+  }
+  fromDoc.edges = keepEdges;
+  fromDoc.tombstones = [...new Set([...(fromDoc.tombstones || []), ...movedSet])].slice(-200);
+  fromDoc.tombstoneAt = { ...(fromDoc.tombstoneAt || {}) };
+  for (const id of movedSet) fromDoc.tombstoneAt[id] = now;
+  const dropIds = droppedEdges.map((e) => e.id).filter(Boolean);
+  fromDoc.edgeTombstones = [...new Set([...(fromDoc.edgeTombstones || []), ...dropIds])].slice(-400);
+  fromDoc.edgeTombstoneAt = { ...(fromDoc.edgeTombstoneAt || {}) };
+  for (const id of dropIds) fromDoc.edgeTombstoneAt[id] = now;
+  fromDoc.updatedAt = now;
+  // 目标画布：并入节点与内部边，并清掉同 id 的旧墓碑（防刚搬过去就被判死）
+  toDoc.nodes = { ...(toDoc.nodes || {}) };
+  for (const n of moving) toDoc.nodes[n.id] = n;
+  const tset = new Set(toDoc.tombstones || []);
+  for (const id of movedSet) { tset.delete(id); if (toDoc.tombstoneAt) delete toDoc.tombstoneAt[id]; }
+  toDoc.tombstones = [...tset].slice(-200);
+  const haveEdge = new Set((toDoc.edges || []).map((e) => e.id));
+  toDoc.edges = [...(toDoc.edges || [])];
+  for (const e of carriedEdges) { if (!haveEdge.has(e.id)) { toDoc.edges.push(e); haveEdge.add(e.id); } }
+  const movedEdgeIds = new Set(carriedEdges.map((e) => e.id));
+  toDoc.edgeTombstones = (toDoc.edgeTombstones || []).filter((id) => !movedEdgeIds.has(id));
+  toDoc.updatedAt = now;
+  writeCanvasDoc(pid, fromId, fromDoc);
+  writeCanvasDoc(pid, toId, toDoc);
+  markDocChanged(pid, fromId);
+  markDocChanged(pid, toId);
+  return { ok: true, projectId: pid, fromCanvasId: fromId, canvasId: toId, moved: [...movedSet], skipped, edgesMoved: carriedEdges.length, edgesDropped: dropIds.length };
+}
 /** 与客户端一致的端口表（连线校验用）。image / video 是合并类型（旧生成/资产节点归一到这里）：
  *  image 输入 prompt+ref、输出 out；video 输入 prompt+frame+ref、输出 out/tailpick/last。 */
 const PORT_TABLE = {
@@ -3652,6 +3785,7 @@ export const _internals = { THUMB_MAX_SIDE, thumbRelOf, isDerivedMedia, updateCh
   canvasLayoutNode, canvasLayoutGet, canvasRelayout,
   // 提交留痕（0.20.2 T11）：redact 可单测（sk- 密钥/签名 URL/Bearer 三条 + 正常文本不受影响）
   redactSubmissionText, redactSubmissionValue, submissionLogAppendImpl, SUBMISSION_LOG_MAX_LINES,
+  canvasCreateCanvas: canvasCreate, canvasMoveNodes, canvasListCanvases, markDocChanged,
   __auto: __autoApi };
 
 function resolveModel(providers, want) {
@@ -4139,10 +4273,43 @@ export function apply(ctx) {
           if (!dur.ok) { // 复检仍超时：不阻塞（预算单照出，场行 videoCalls 已如实反映成本），只记 log
             run.log.push({ at: Date.now(), role: 'runner', summary: '场' + scenes[i].no + ' 仍超时长（' + dur.plan.total + ' 秒/' + dur.plan.segments.length + ' 段）' });
           }
-          boards.push({ no: scenes[i].no, storyboardId: sb.nodeId, gate: gate.ok, fails: gate.fails });
+          // 客户端生成完成后会按 4–10s 自动拆成多张分镜表。这里以 boardGroupId 找回同组全部表，
+          // 逐张过 G2（否则只校验第 1 张，后面几张的硬伤会被漏掉），并把下一场的 prev 接到**最后一张**。
+          let sceneBoards = [{ id: sb.nodeId, shots: sbSt.shots || [], gate }];
+          try {
+            const docNow = readToolDoc({ projectId: pid, canvasId: cid });
+            const group = Object.values(docNow.nodes || {})
+              .filter((nd) => nd && nd.type === 'storyboard' && nd.data && nd.data.boardGroupId === sb.nodeId)
+              .sort((a, b) => (Number(a.data.boardIndex) || 0) - (Number(b.data.boardIndex) || 0));
+            if (group.length > 1) {
+              sceneBoards = group.map((nd) => ({
+                id: nd.id,
+                shots: Array.isArray(nd.data.shots) ? nd.data.shots : [],
+                gate: nd.id === sb.nodeId ? gate : PROD.gateStoryboard(nd.data.shots || []),
+              }));
+            }
+          } catch { /* 读不到拆表结果时按单表处理，不阻断自动创作 */ }
+          for (let k = 0; k < sceneBoards.length; k++) {
+            const item = sceneBoards[k];
+            if (k > 0 && item.gate && !item.gate.ok) {
+              // 拆出的第 2..N 张若不达标，单独重生成一次；仍不过就如实记录，不假装全过。
+              run.log.push({ at: Date.now(), role: 'runner', summary: '场' + scenes[i].no + ' 第' + (k + 1) + '张 G2 未过，自动重生成：' + item.gate.fails.slice(0, 2).join('；') });
+              try {
+                const st2 = await canvasExec(pid, cid, item.id, { timeoutMs: 10 * 60 * 1000 });
+                item.shots = st2.shots || item.shots;
+                item.gate = PROD.gateStoryboard(item.shots);
+              } catch { /* 单张重生成失败不阻断其余表 */ }
+            }
+            boards.push({ no: scenes[i].no, storyboardId: item.id, boardIndex: k, boardCount: sceneBoards.length, gate: !!(item.gate && item.gate.ok), fails: (item.gate && item.gate.fails) || [] });
+          }
+          const gateBad = sceneBoards.filter((x) => !(x.gate && x.gate.ok)).length;
+          run.log.push({
+            at: Date.now(), role: 'runner',
+            summary: '场' + scenes[i].no + ' 分镜：' + sceneBoards.length + ' 张 4–10s 表 · ' + (gateBad ? '仍有 ' + gateBad + ' 张未过闸' : '全部过闸'),
+          });
           run.ckpt.boardIds[i] = sb.nodeId;
           ckptDone('board' + (i + 1));
-          run.log.push({ at: Date.now(), role: 'runner', summary: '场' + scenes[i].no + ' 分镜：' + (gate.ok ? '过闸' : '仍有 ' + gate.fails.length + ' 项') });
+          prevBoard = sceneBoards[sceneBoards.length - 1].id;
         }
         // ⑦ 预算单（免费段终点）
         const cfg = readIcConfig();
@@ -5156,7 +5323,7 @@ export function apply(ctx) {
         });
         reg({
           name: 'canvas_write_node',
-          description: '写入无限画布的项目内容。【硬约束】绝不要为了加节点而新建项目——一律指定已有 projectId。世界观/核心设定/风格基调等"创作意图类"内容写进设定集（canvas_update_bible），绝不要为它们建节点。剧本节点的 idea（创作意图）与 output（剧本成稿）必须在同一个节点里；分镜内容只能写进分镜表节点（storyboard）：text 为 {"shots":[…]} JSON 时写入镜头列表，普通文本则作为分镜的剧本来源——绝不要用剧本节点装分镜。复用规则：给 name 且能匹配已有节点名 → 更新该节点；给 name 但匹配不到 → **新建节点**（写新一集/新一节时就这样用）；不给 name → 只会复用"有意图没成稿"的剧本节点补全。已写成稿的节点默认拒绝覆盖，确认要覆盖请传 overwrite:true（否则报错而不是静默吃掉稿件）。target：idea=提示词（默认），output=成稿。',
+          description: '写入无限画布的项目内容。【硬约束】绝不要为了加节点而新建项目——一律指定已有 projectId。世界观/核心设定/风格基调等"创作意图类"内容写进设定集（canvas_update_bible），绝不要为它们建节点。剧本节点的 idea（创作意图）与 output（剧本成稿）必须在同一个节点里；分镜内容只能写进分镜表节点（storyboard）：text 为 {"shots":[…]} JSON 时写入镜头列表，普通文本则作为分镜的剧本来源——绝不要用剧本节点装分镜。**4–10s 拆表铁律：一张分镜表 ≈ 一次视频生成，应控制在 4–10 秒；一场戏超过 10 秒就写多张分镜表（每张 4–10s，按换场/特写插入/新角色入场切分），不要把所有镜头塞进一张大表。** 复用规则：给 name 且能匹配已有节点名 → 更新该节点；给 name 但匹配不到 → **新建节点**（写新一集/新一节时就这样用）；不给 name → 只会复用"有意图没成稿"的剧本节点补全。已写成稿的节点默认拒绝覆盖，确认要覆盖请传 overwrite:true（否则报错而不是静默吃掉稿件）。target：idea=提示词（默认），output=成稿。',
           parameters: {
             type: 'object',
             properties: {
@@ -5207,7 +5374,7 @@ export function apply(ctx) {
         });
         reg({
           name: 'canvas_node_status',
-          description: '查询画布节点的运行状态与产物（状态、错误、剧本成稿内容、生成出的资产 id）。分镜表节点会返回 shots（镜头清单：标题/时长/画面/动作/角色/场景/道具——视频提示词的镜头序列必须来自它）与 warnings（一致性告警：未登记/描述为空的实体清单）——warnings 非空时必须逐条 canvas_update_bible 补全，绝不忽略。',
+          description: '查询画布节点的运行状态与产物（状态、错误、剧本成稿内容、生成出的资产 id）。分镜表节点会返回 shots（镜头清单：标题/时长/画面/动作/角色/场景/道具——视频提示词的镜头序列必须来自它；**镜头标题只是编导检索标签，不要写进视频提示词**，否则会被带音频的模型当台词念出来）与 warnings（一致性告警：未登记/描述为空的实体清单）——warnings 非空时必须逐条 canvas_update_bible 补全，绝不忽略。',
           parameters: {
             type: 'object',
             properties: {
@@ -5236,7 +5403,9 @@ export function apply(ctx) {
             // 镜头清单：结构化返回 + 渲染进文本——对话侧据此组织多镜头视频提示词（绝不自行编造镜头表）
             const shots = Array.isArray(s.shots) ? s.shots : [];
             if (shots.length) {
-              lines.push('镜头清单（' + shots.length + ' 镜，总时长 ' + shots.reduce((a, x) => a + (Number(x.duration) || 0), 0) + 's）——视频提示词的镜头序列以此为准:');
+              // 镜头标题只是编导检索标签，不是画面/台词：很多标题本身就是一句台词（「我晚上回去」）。
+              // 对话侧若把标题抄进视频提示词，带音频的模型会概率性把它念出来——必须显式提醒。
+              lines.push('镜头清单（' + shots.length + ' 镜，总时长 ' + shots.reduce((a, x) => a + (Number(x.duration) || 0), 0) + 's）——视频提示词的镜头序列以此为准。**镜头标题仅供检索，写提示词时不要带标题（会被当台词念出来）**:');
               shots.forEach((sh) => {
                 const dl = (sh.dialogue || []).map((d) => d.role + '：' + d.line).join('；');
                 lines.push(sh.index + '. ' + sh.title + '（' + sh.duration + 's）' + (sh.seg ? '[' + sh.seg + '] ' : '') + '角色:' + (sh.characters.join('/') || '-') + '｜场景:' + (sh.scene || '-') + '｜道具:' + (sh.props.join('/') || '-')
@@ -5376,6 +5545,84 @@ export function apply(ctx) {
             const r = await canvasDeleteNode(args);
             if (r && r.ok === false) return { ok: false, gate: r.gate, projectId: r.projectId, nodeId: r.nodeId, text: '⛔ [' + r.gate + '] ' + (r.error || '') + (r.fix ? '\n出路：' + r.fix : '') };
             return { ok: true, projectId: r.projectId, nodeId: r.nodeId, text: '🗑 已删除节点 ' + r.nodeId + '。' };
+          },
+        });
+        reg({
+          name: 'canvas_create_canvas',
+          description: '在项目下新建一张子画布（多画布工作台）。同名画布自动复用，不会重复创建；一个项目最多 200 张画布。',
+          parameters: {
+            type: 'object',
+            properties: {
+              projectId: { type: 'string', description: '项目 id' },
+              name: { type: 'string', description: '画布名称（必须命名，如「场1 现代台阶」）' },
+              canvasId: { type: 'string', description: '可选：指定画布 id（合法且未占用才采用；一般不用传）' },
+            },
+            required: ['projectId', 'name'],
+            additionalProperties: false,
+          },
+          output: textOutput,
+          timeoutMs: 15000,
+          async execute(args) {
+            const r = await canvasCreate(args);
+            return { ok: true, projectId: r.projectId, canvasId: r.canvasId, name: r.name, reused: !!r.reused, text: (r.reused ? '♻️ 复用同名画布' : '🆕 已建画布') + '「' + r.name + '」canvasId=' + r.canvasId + (r.reused ? '' : '（空画布，可用 canvas_move_nodes 把节点搬进来）') };
+          },
+        });
+        reg({
+          name: 'canvas_rename_canvas',
+          description: '给画布改名（canvasId 缺省 = 项目默认画布）。同名（除自己）会被拒绝。',
+          parameters: {
+            type: 'object',
+            properties: {
+              projectId: { type: 'string', description: '项目 id' },
+              canvasId: { type: 'string', description: '可选：画布 id（缺省 = 项目默认画布）' },
+              name: { type: 'string', description: '新名称' },
+            },
+            required: ['projectId', 'name'],
+            additionalProperties: false,
+          },
+          output: textOutput,
+          timeoutMs: 15000,
+          async execute(args) {
+            const r = await canvasRename(args);
+            return { ok: true, projectId: r.projectId, canvasId: r.canvasId, name: r.name, text: '✏️ 画布已改名「' + r.name + '」' };
+          },
+        });
+        reg({
+          name: 'canvas_list_canvases',
+          description: '列出项目下的画布（默认画布 + 子画布）及各自节点/连线数量，用于决定搬哪批节点去哪儿。',
+          parameters: {
+            type: 'object',
+            properties: { projectId: { type: 'string', description: '项目 id' } },
+            required: ['projectId'],
+            additionalProperties: false,
+          },
+          output: textOutput,
+          timeoutMs: 15000,
+          async execute(args) {
+            const r = canvasListCanvases(args);
+            const lines = r.canvases.map((c) => (c.isDefault ? '★ ' : '· ') + (c.name || c.canvasId) + '  canvasId=' + (c.canvasId === null ? 'null(默认)' : c.canvasId) + '  节点 ' + c.nodes + ' / 连线 ' + c.edges);
+            return { ok: true, projectId: r.projectId, canvases: r.canvases, text: '画布清单（' + r.canvases.length + ' 张）：\n' + lines.join('\n') };
+          },
+        });
+        reg({
+          name: 'canvas_move_nodes',
+          description: '把节点从一张画布搬到另一张子画布（多画布整理的核心动作）：节点 id/坐标/数据/生成产物原样保留，节点之间的内部连线一并搬走，源画布写墓碑防客户端合并复活。\n【注意】跨画布的连线不存在：一端留在源画布的边会被剪掉并记墓碑——搬视频时必须把它的上游分镜表和参考图一起搬（或先 canvas_create_node 在目标画布复制一份参考图再连线），否则视频的 prompt/ref 上游会断。\n【注意】目标画布必须已存在（先 canvas_create_canvas）。搬完建议 canvas_relayout 整理目标画布。',
+          parameters: {
+            type: 'object',
+            properties: {
+              projectId: { type: 'string', description: '项目 id' },
+              fromCanvasId: { type: 'string', description: '可选：源画布 id（缺省 = 项目默认画布）' },
+              toCanvasId: { type: 'string', description: '目标画布 id（必须已存在）' },
+              nodeIds: { type: 'array', description: '要搬的节点 id 数组（节点 id、名字可从 canvas_list_projects / canvas_node_status 拿）', items: { type: 'string' } },
+            },
+            required: ['projectId', 'toCanvasId', 'nodeIds'],
+            additionalProperties: false,
+          },
+          output: textOutput,
+          timeoutMs: 30000,
+          async execute(args) {
+            const r = canvasMoveNodes(args);
+            return { ok: true, projectId: r.projectId, canvasId: r.canvasId, moved: r.moved, skipped: r.skipped, edgesMoved: r.edgesMoved, edgesDropped: r.edgesDropped, text: '📦 已搬 ' + r.moved.length + ' 个节点到画布 ' + r.canvasId + '（内部连线 ' + r.edgesMoved + ' 条；跨切口剪掉 ' + r.edgesDropped + ' 条）' + (r.skipped.length ? '；跳过不存在的 ' + r.skipped.length + ' 个：' + r.skipped.join(',') : '') };
           },
         });
         reg({
@@ -5836,7 +6083,7 @@ export function apply(ctx) {
         });
         reg({
           name: 'canvas_create_node',
-          description: '在项目画布上新建指定类型的节点（image 图片节点 / video 视频节点 / storyboard 分镜表 / finalcut 成片 / script 剧本 / text 文本）。图片与视频是**合并节点**：有 assetId 就是已有素材（资产），空节点在画布上点开生成面板填写提示词后生成；旧类型名 image-gen / image-asset / video-gen / video-asset 仍可用，会被自动映射为 image / video。【分镜必须用 type:"storyboard" 的分镜表节点，绝不要用剧本节点装分镜】。【工作流铁律】实际生成由节点完成：你只负责写提示词、连线（connectFrom）、canvas_run_node 触发，不要把成稿直接填进 output。分镜表用 connectFrom 连到上游剧本节点（内容来自连线，不要复制剧本全文）；image/video 没有上游提示词时才在 prompt 里写内容，有上游时靠连线取。',
+          description: '在项目画布上新建指定类型的节点（image 图片节点 / video 视频节点 / storyboard 分镜表 / finalcut 成片 / script 剧本 / text 文本）。图片与视频是**合并节点**：有 assetId 就是已有素材（资产），空节点在画布上点开生成面板填写提示词后生成；旧类型名 image-gen / image-asset / video-gen / video-asset 仍可用，会被自动映射为 image / video。【分镜必须用 type:"storyboard" 的分镜表节点，绝不要用剧本节点装分镜】。**一张分镜表 ≈ 一次视频生成（4–10 秒）；一场戏可以有多张分镜表**：每场第一张 connectFrom 到该场文本节点，后续表用 tail→prev 串联（或直接把镜头写进各自的表）。 【工作流铁律】实际生成由节点完成：你只负责写提示词、连线（connectFrom）、canvas_run_node 触发，不要把成稿直接填进 output。分镜表用 connectFrom 连到上游剧本节点（内容来自连线，不要复制剧本全文）；image/video 没有上游提示词时才在 prompt 里写内容，有上游时靠连线取。',
           parameters: {
             type: 'object',
             properties: {
@@ -6023,11 +6270,18 @@ export function apply(ctx) {
               res.end(JSON.stringify({ error: '仅接受 POST' }));
               return;
             }
-            let raw = '';
+            // 必须先收 Buffer、最后统一按 UTF-8 解码一次：
+            // `raw += chunk` 会对每个 chunk 单独 toString()，中文字符一旦跨 chunk 边界就被切成两个
+            // 非法字节序列 → 各变成一个 U+FFFD，落盘后就是文里随机出现「�」。文档越大、分片越多，
+            // 每次保存就随机损坏 1~3 个字（实测画布文档 190KB 时每次保存坏 2 个字符）。
+            const parts = [];
+            let bytes = 0;
             for await (const chunk of req) {
-              raw += chunk;
-              if (raw.length > 8e6) throw new Error('请求过大');
+              bytes += chunk.length;
+              if (bytes > 8e6) throw new Error('请求过大');
+              parts.push(chunk);
             }
+            const raw = Buffer.concat(parts).toString('utf8');
             const { method, args } = JSON.parse(raw);
             if (typeof method !== 'string' || !Object.hasOwn(methods, method)) throw new Error('未知操作: ' + method);
             const fn = methods[method];
@@ -6046,12 +6300,15 @@ export function apply(ctx) {
           // 流式生成：把「思考中」的内容实时推给画布，让用户看得到过程（推理模型可能要思考很久）
           try {
             if (req.method !== 'POST') { res.statusCode = 405; res.end('仅接受 POST'); return; }
-            let raw = '';
+            // 同 /api/rpc：分片先攒 Buffer，最后一次 UTF-8 解码（否则剧本/分镜里的中文会随机变成「�」）
+            const parts = [];
+            let bytes = 0;
             for await (const chunk of req) {
-              raw += chunk;
-              if (raw.length > 4e6) throw new Error('请求过大');
+              bytes += chunk.length;
+              if (bytes > 4e6) throw new Error('请求过大');
+              parts.push(chunk);
             }
-            const args = JSON.parse(raw || '{}');
+            const args = JSON.parse(Buffer.concat(parts).toString('utf8') || '{}');
             res.statusCode = 200;
             res.setHeader('content-type', 'text/event-stream; charset=utf-8');
             res.setHeader('cache-control', 'no-cache');

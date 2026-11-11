@@ -64,7 +64,7 @@ You don't have to flip between the **Chat** and **Canvas** views: the canvas als
 
 > "Write episode 1, 'The Green Light of the Night Post Office', based on the bible."
 
-**The agent**: creates the Episode-1 script node and runs it. The script automatically satisfies: one episode of 1–2 minutes in 4–10 scenes; **every scene starts with its own `【场N】name (location · time)` header** (the parse hook for the next step); each scene holds 10–15 seconds; dialogue on its own lines as `Character: line`.
+**The agent**: creates the Episode-1 script node and runs it. The script automatically satisfies: one episode of 1–2 minutes in 4–10 scenes; **every scene starts with its own `【场N】name (location · time)` header** (the parse hook for the next step); each scene holds 10–15 seconds (after generation it is split into several 4–10s boards); dialogue on its own lines as `Character: line`.
 
 ### 3.3 Expand into scenes
 
@@ -73,10 +73,10 @@ Click **"Expand to scenes"** on the script node, or tell the agent: "Expand epis
 ```
 Ep1-Scene1 text ──→ Ep1-Scene1 storyboard
 Ep1-Scene2 text ──→ Ep1-Scene2 storyboard
-… (one wire per scene; one generation per 10–15s scene video)
+… (one scene storyboard per scene; after generation it is split into 4–10s boards, each generating one video)
 ```
 
-Each storyboard is broken into a shot list by AI: per shot — visual, motion & camera, characters/scene/props (`@name` references), duration, and **dialogue annotations** (which line belongs to which character — the voice-reference extractor relies on this). Shot count follows the actual action beats; the total stays ≤ 15 seconds.
+Each storyboard is broken into a shot list by AI: per shot — visual, motion & camera, characters/scene/props (`@name` references), duration, and **dialogue annotations** (which line belongs to which character — the voice-reference extractor relies on this). Shot count follows the actual action beats. **After generation the system splits the scene at real shot boundaries into several 4–10s storyboard boards** (each board ≈ one video generation; a scene may have several). Every board is editable: click the pencil on a shot row or double-click a shot to change visual / duration / dialogue / SFX / continuity fields; saving takes effect immediately. The manual entry is the “Split into 4–10s boards” button on the storyboard node.
 
 The canvas after the episode is expanded (left: script → per-scene texts → per-scene storyboards):
 
@@ -105,7 +105,7 @@ Generated assets land in the **Assets** tab, organized by category (Character / 
 **The agent**:
 
 1. Reads scene 1's shot list from the storyboard (the shot sequence comes from there, never invented);
-2. Creates a video node wired to the storyboard — all shots (order + durations) compose ONE prompt and the video model renders the whole clip in one call (hard cuts by the model);
+2. Creates one video node per 4–10s storyboard board — that board's shots (order + durations) compose ONE prompt and the video model renders that board in one call (hard cuts by the model);
 3. Wires the scene's reference assets to the video node's reference port (`[图1] Character-ChenShi, [图2] Scene-CityStreet…`); `@mentions` in the prompt attach their assets automatically;
 4. Runs and polls; when done it **extracts the tail frame** onto the `last` port — scene 2 chains via tail-frame → first-frame for visual continuity.
 

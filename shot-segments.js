@@ -90,7 +90,8 @@ function isCutPoint(seg) {
  *
  * @param shots 分镜镜头数组（data.shots）
  * @param opts  { maxSeconds（单次生成上限，默认 15）, minSeconds（单段下限，默认 2）,
- *                hardMax（厂商物理上限，超了必须拆，默认同 maxSeconds） }
+ *                targetSeconds（每段目标时长，默认 = maxSeconds）, strict（硬区间，绝不超上限）,
+ *                cutPenalty（从非切点镜开始一段的代价，默认 1e4=切点优先）, balance（均衡每段时长，默认 false） }
  * @returns {{ segments: Array, total: number, max: number, cutMode: string, warnings: string[] }}
  *   segments[i] = {
  *     index, shotIds, shots, startIndex, endIndex,
@@ -105,9 +106,22 @@ function isCutPoint(seg) {
  */
 function planShotSegments(shots, opts) {
   const o = opts || {};
+  // strict=true：硬区间模式——绝不为了少切一段而超出 maxSeconds。
+  //   分镜表 4–10s 拆表用它（产品口径是硬区间）；普通视频切段保持宽松（允许 +2s 容差，
+  //   避免为了死守上限切出 2–3s 的碎片段）。
+  const strict = o.strict === true;
+  // balance=true：均衡模式（拆表用）——每段尽量贴近 targetSeconds；
+  // 缺省 false：装满模式（视频切段用）——只要不超上限就越满越好，等价旧贪心的调用次数。
+  const balance = o.balance === true;
+  // 从一个非切点镜开始一段的代价：越大越倾向于把边界留在真实换镜头处。
+  // 切点优先是硬偏好：从非切点镜开始一段的代价远大于时长偏差，DP 语义上先最小化
+  // 「跨动作切开」的段数，再在同一档里均衡时长（贪心时代靠结构保证，这里靠代价保证）。
+  const cutPenalty = Number.isFinite(Number(o.cutPenalty)) ? Math.max(0, Number(o.cutPenalty)) : 1e4;
   const list = (Array.isArray(shots) ? shots : []).filter((s) => s && (String(s.visual || '').trim() || String(s.motion || '').trim() || (Array.isArray(s.dialogue) && s.dialogue.length)));
   const maxSeconds = Math.max(1, Number(o.maxSeconds) || 15);
-  const minSeconds = Math.max(0, Math.min(Number(o.minSeconds) || 2, maxSeconds));
+  const minSeconds = Math.max(0, Math.min(Number.isFinite(Number(o.minSeconds)) ? Number(o.minSeconds) : 2, maxSeconds));
+  // 每段目标时长：默认 = 上限（尽量装满，调用次数与旧贪心一致）；分镜表拆表显式传 7。
+  const targetSeconds = Math.max(3, Math.min(Number(o.targetSeconds) || maxSeconds, maxSeconds));
   const warnings = [];
   const durOf = (s) => Math.max(0.3, Math.round((Number(s && s.duration) || 3) * 10) / 10);
   // 预解每镜的段落类型（与 shotContinuityPlan 同一套推断，保证分段与提示词口径一致）
@@ -115,17 +129,14 @@ function planShotSegments(shots, opts) {
   const total = Math.round(list.reduce((a, s) => a + durOf(s), 0) * 10) / 10;
   if (!list.length) return { segments: [], total: 0, max: maxSeconds, cutMode: 'empty', warnings: ['分镜表里没有可用镜头'] };
 
-  /** 从 from 开始贪心找到一个"可以在 to 前断开"的位置：
-   *  返回该段的结束下标（含）；-1 表示从 from 开始连第一镜都放不下。 */
+  /** 装满模式（默认）：从 from 开始贪心找到"可以在 to 前断开"的位置（旧贪心，逐字保留）。
+   *  返回该段的结束下标（含）；连第一镜都放不下时退化为单镜并标记 forced。 */
   const findBreak = (from) => {
     let acc = 0;
     let bestCut = -1;   // 最近一次合法切点之后的位置（即"下一镜是新镜头"的下标）
     for (let i = from; i < list.length; i++) {
       const d = durOf(list[i]);
-      if (acc + d > maxSeconds + 1e-6) {
-        // 放不下了。若当前累计还没超过下限，也要至少吃一镜（单镜超长的情况由下面兜底）
-        break;
-      }
+      if (acc + d > maxSeconds + 1e-6) break;
       acc += d;
       // 判断"i 之后可以断开"：下一镜是切点，或本镜本身就是换镜头（切在它之后）
       const nextIsCut = i + 1 < list.length && isCutPoint(plans[i + 1] && plans[i + 1].seg);
@@ -137,31 +148,69 @@ function planShotSegments(shots, opts) {
       else if (thisIsCut) bestCut = i > from ? i - 1 : i;
       if (i === list.length - 1) bestCut = i;
     }
-    if (bestCut < from) {
-      // 连一镜都塞不进上限：退化为"只取这一镜"，交给下面标记 forced
-      return { end: from, forced: true, acc: durOf(list[from]) };
-    }
-    return { end: bestCut, forced: false, acc };
+    if (bestCut < from) return { end: from, forced: true };
+    return { end: bestCut, forced: false };
   };
-
+  // 均衡切段：以 targetSeconds 为目标做 DP（代价 = (段长 − 目标)² + 从非切点镜开始的罚分），
+  // 单段硬上限仍是 maxSeconds（非 strict 时允许 +2s 容差）。
+  // 旧贪心"能塞多少塞多少"在 10s 上限下会把 1.5s 特写切成独立一段。
+  const bounds = [];
+  if (!balance) {
+    // 视频切段沿用贪心（调用次数与旧版逐字一致，厂商上限刚好装满）
+    let from = 0;
+    while (from < list.length && bounds.length < 128) {
+      const brk = findBreak(from);
+      bounds.push({ from, to: brk.end, forced: brk.forced });
+      from = brk.end + 1;
+    }
+  }
+  if (balance) {
+    const n = list.length;
+    const dp = new Array(n + 1).fill(Infinity);
+    const back = new Array(n + 1).fill(-1);
+    dp[0] = 0;
+    for (let b = 1; b <= n; b++) {
+      let sum = 0;
+      for (let a = b - 1; a >= 0; a--) {
+        sum += durOf(list[a]);
+        const over = sum > maxSeconds + 1e-6;
+        // 单镜本身超上限：允许它独立成段（成本极高），否则整张表会退化成"一段装下所有镜头"。
+        // 多镜累计超上限就停止向前扩展——这正是 DP 的段边界。
+        if (over && a !== b - 1) break;
+        if (dp[a] === Infinity) { if (over) break; continue; }
+        // 边界在 a 之前：a 是切点镜（下一段换镜头）或 a-1 是切点镜（上一段以换镜头收尾）都算干净。
+        const startsOnCut = a === 0 || isCutPoint((plans[a] && plans[a].seg) || 'continuation');
+        const prevEndsOnCut = a > 0 && isCutPoint((plans[a - 1] && plans[a - 1].seg) || 'continuation');
+        const startSafe = startsOnCut ? 0 : (prevEndsOnCut ? cutPenalty / 2 : cutPenalty);
+        let cost = (balance ? Math.pow(sum - targetSeconds, 2) : Math.pow(Math.max(0, targetSeconds - sum), 2)) + startSafe;
+        if (sum < minSeconds) cost += Math.pow(minSeconds - sum, 2) * (strict ? 30 : 20);
+        if (over) cost += 1e6 + Math.pow(sum - maxSeconds, 2) * 20;
+        if (dp[a] + cost < dp[b]) { dp[b] = dp[a] + cost; back[b] = a; }
+        if (over) break;
+      }
+    }
+    let b = n;
+    while (b > 0 && back[b] >= 0) { bounds.unshift({ from: back[b], to: b - 1 }); b = back[b]; }
+    if (!bounds.length) bounds.push({ from: 0, to: n - 1 });
+  }
   const segments = [];
-  let i = 0;
+  let bi = 0;
   let warnMark = warnings.length;
-  while (i < list.length && segments.length < 128) {
-    // 段首必须是切点；若不是（说明上一段是被 forced 断开的），本镜保持原 seg
+  while (bi < bounds.length && segments.length < 128) {
     warnMark = warnings.length;
-    const brk = findBreak(i);
-    let end = brk.end;
+    const i = bounds[bi].from;
+    const end = bounds[bi].to;
     let seamRisk = 'none';
     let reason = '';
     const firstSeg = (plans[i] && plans[i].seg) || 'continuation';
+    // 铁律：段的第 1 镜必须是换镜头切点；否则这一刀就切在连续动作中间 → 必须接力尾帧。
     const opensOnCut = segments.length === 0 || isCutPoint(firstSeg);
     if (!opensOnCut) {
       seamRisk = 'forced';
-      reason = '上一段超长被迫硬切，本段从镜中断点继续，动作相位可能不连续';
-      warnings.push(`第 ${i + 1} 镜起的一段是硬切（上一段超长且找不到换镜头切点）：这一段与上一段的接缝只能靠尾帧+提示词硬接`);
+      reason = '本段从镜中硬切：上一段在到达时长上限前没有可用的换镜头切点，只能按区间硬分，动作相位可能不连续';
+      warnings.push(`第 ${i + 1} 镜起的一段从镜中硬切（上一段没有可用的换镜头切点，只能按区间硬分）：这一段与上一段的接缝只能靠尾帧+提示词硬接`);
     }
-    // 段内若含"必须承接"的 continuation，且不是首段、且首镜也不是切点 → 需要尾帧接力
+    // 段内若含"必须承接"的 continuation，且边界两侧都不是切点 → 才需要尾帧接力。
     const needsTailChain = segments.length > 0 && !isCutPoint(firstSeg);
     if (needsTailChain) {
       seamRisk = seamRisk === 'forced' ? 'forced' : 'chain';
@@ -192,17 +241,17 @@ function planShotSegments(shots, opts) {
       reason,
       warnMark,
     });
-    if (end === i && brk.forced) {
+    if (end === i && durOf(list[i]) > maxSeconds + 1e-6) {
       warnings.push(`第 ${i + 1} 镜单镜时长 ${durOf(list[i])}s 已超单次生成上限 ${maxSeconds}s：这一段只能单独生成，并期望厂商钳制或报错`);
     }
-    i = end + 1;
+    bi++;
   }
   // 尾部碎段并回上一段：把 20.8s 切成「19.8 + 1.0」既没意义又必然误报硬切（1 秒那段一定从镜中开始）。
   // 只有"末段很短且并回去只超上限一点点"才合并；中段碎块不动，避免掩盖真正的切点问题。
   if (segments.length > 1) {
     const last = segments[segments.length - 1];
     const prev = segments[segments.length - 2];
-    const tol = Math.max(0.6, maxSeconds * 0.1);
+    const tol = strict ? 0 : Math.max(0.6, maxSeconds * 0.1);
     const tinyTail = last.duration <= Math.max(2.5, maxSeconds * 0.2);
     const fits = (prev.duration + last.duration) <= maxSeconds + tol;
     if (tinyTail && fits) {
@@ -214,7 +263,8 @@ function planShotSegments(shots, opts) {
       prev.lastSeg = last.lastSeg;
       prev.closesOnCut = last.closesOnCut;
       segments.pop();
-      warnings.push(`末段只有 ${last.duration}s，已并回上一段（合并后 ${prev.duration}s，超出单次上限 ${Math.round((prev.duration - maxSeconds) * 10) / 10}s 以内）：比切出一个 1 秒的碎片更好生成`);
+      const over = Math.round((prev.duration - maxSeconds) * 10) / 10;
+      warnings.push(`末段只有 ${last.duration}s，已并回上一段（合并后 ${prev.duration}s` + (over > 0 ? `，超出单次上限 ${over}s 以内` : '，仍在区间内') + '）：比切出一个 1 秒的碎片更好生成');
     }
   }
 
@@ -222,7 +272,7 @@ function planShotSegments(shots, opts) {
   const cleanCuts = segments.every((s) => s.opensOnCut);
   const cutMode = cleanCuts ? 'clean' : 'forced';
   if (cutMode === 'forced') {
-    warnings.push('本次切段存在硬切点：建议把超长的续帧段在分镜里拆成两镜（第二镜标换场/特写插入），让切点落在真实镜头上');
+    warnings.push('本次切段存在硬切点：建议在连续动作里插入一个换镜头（换场 / 特写插入 / 新角色入场），让切点落在真实镜头上');
   }
   if (segments.length > 1 && !cleanCuts) {
     warnings.push(`共 ${segments.length} 段，其中 ${segments.filter((s) => !s.opensOnCut).length} 段从镜中断点开始——弱衔接模型（如 MiniMax）对这些段会明显吃力`);

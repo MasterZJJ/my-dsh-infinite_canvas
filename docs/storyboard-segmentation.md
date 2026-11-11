@@ -271,11 +271,15 @@ needsTailChain =
 升级后的单镜行示例（示意）：
 
 ```text
-[Shot 2] 00:02.000 起（掏信）：中近景，右后过肩，主体偏左；
+[Shot 2] 00:02.000 起：中近景，右后过肩，主体偏左；
   时间节拍：0–1.2s 右手抬到胸口；1.2–2.8s 指尖触到火漆封口；2.8–4s 停住并抬眼；
   镜头：50mm f/2，静止→缓慢推近→停在眼部；物理特效：雨珠沿袖口滑落、信封边角被风掀动；
   台词：陈拾：这封信……；音效：纸页摩擦、远处车流
 ```
+
+> 2026-11-09：`[Shot N] … 起（镜头标题）` 里的**标题已删除**。标题是编导检索标签，很多本身
+> 就是台词（「我晚上回去」），带同步音频的视频模型会概率性把它念出来。现在只保留
+> `[Shot N] + 绝对时间码`，并新增「朗读范围」硬性约束（只允许朗读 `<d>…</d>` 内的台词）。
 
 #### 3.3.3 运镜最小预设（先落 8–10 个，其余自由文本）
 
@@ -342,7 +346,7 @@ needsTailChain =
 | 方案项 | HEAD 落地情况 | 状态 |
 |---|---|---|
 | 3.1 切段规划器 | `isCutPoint` L3049、`planShotSegments` L3070；输出 `index/shotIds/shots/startIndex/endIndex/duration/firstSeg/lastSeg/opensOnCut/closesOnCut/seamRisk/needsTailChain/reason` + `total/max/cutMode/warnings` | **已落地**；差异：无 `forcedRewrite` 字段（用 `warnings` + `cutMode='forced'` 表达） |
-| 3.1 `needsTailChain` 公式 | 规划器内为 `index>0 && !isCutPoint(firstSeg)`；模型能力在运行期另由 `segmentNeedsHardFrame` 判定 | **部分落地**：公式少了"上段末镜同属 continuation"这一项，可能把"上段以 closeup 收尾、本段 continuation"误标为需接力（低风险，建议按 §3.2.3 收紧） |
+| 3.1 `needsTailChain` 公式 | 规划器内为 `index>0 && !isCutPoint(firstSeg) && !isCutPoint(prevLastSeg)`；模型能力在运行期另由 `segmentNeedsHardFrame` 判定 | **已落地（本次修正）**：边界两侧任一侧是切点都不再接力；`opensOnCut` 同步看上一段末镜，消除"上段以 closeup 收尾"的误报 |
 | 3.2 弱衔接分流 | `segmentNeedsHardFrame(seg, modelName)` L3168：模型名正则 `minimax\|hailuo\|kling-?1\|pika\|stability\|svd` 判弱，弱模型返回 false（不接力） | **部分落地**；差异：未引入 §3.2.1 能力表，靠模型名正则（新增厂商易漏，**待核**） |
 | 3.3 提示词升级 | `aiStoryboardShots` 的 JSON 契约 L7249-7271 已输出 `timeBeats/camera/vfx/negative`；`buildStoryboardVideoPrompt` L8126 逐镜注入并按段过滤；段级 `negative` 已合并 | **已落地**（字段名 `timeBeats` 为数组，与 §3.3.1 的"3 个时间点"一致） |
 | 3.3 单镜时长不再抬到 1s | `buildStoryboardVideoPrompt` 内 `durOf = max(0.3, …)`，快切 0.6s 不再被抬成 1s | **已落地**（R3 根因修复） |
@@ -352,6 +356,24 @@ needsTailChain =
 | 3.1 S3 自动拆镜/改写 | 仅 `warnings` 提示"拆成两镜/标换场"，不自动改写 | **未落地**（当前降级策略是"告警 + 由用户改分镜"） |
 | 验收测试 | `scripts/test-segment-plan.mjs`（275 行）覆盖规划器、弱模型判定、分段提示词、节点字段 | **已落地**（覆盖范围见 §4 末尾说明） |
 | 技能同步 | `assets/canvas-craft/SKILL.md` 已补 timeBeats/camera/vfx/negative 与"切段友好"纪律 | **已落地**（0a5b96d 中 +169 行） |
+
+---
+
+### 3.6 4–10s 分镜表拆表（本次新增）
+
+> 产品口径变化：从"一张大表 + 表内切段"升级为"**一张表 ≈ 一次 4–10s 视频生成**；一场戏可以有多张分镜表"。
+
+| 项 | 实现 |
+|---|---|
+| 拆表规划器 | `planStoryboardBoards(shots)` → 复用 `planShotSegments`，`strict:true`、`minSeconds:4`、`maxSeconds:10`、`targetSeconds:7`；边界优先落在 `scene_change / closeup / new_character / opening / state_jump` |
+| 生成后自动拆 | `genStoryboardNode` 在分镜落盘后，若总时长 > 10s 且不是拆表子表，调用 `splitStoryboardIntoBoards(n.id, {auto:true})` |
+| 手动拆表 | 分镜表节点底部「拆成 4–10s 分镜表」按钮，随时可再拆 |
+| 多表数据 | 每张表带 `boardGroupId / boardIndex / boardCount / boardFrom / boardTo / boardSource / boardScript`；`prev` 由上一张 `tail` 串联，末张表接出原表对下一场的 `tail` 边 |
+| 单表重生成 | `boardScript` 是一份「本表范围·硬性」说明书（含本表镜头清单）；`storyboardScriptText` 优先返回它，重生成只改本表，不会把整场再生成一遍 |
+| 可编辑 | 节点内每镜有铅笔入口 + 双击打开 `StoryboardEditor`：可改 title/visual/motion/duration/timeBeats/camera/vfx/negative/dialogue/sfx/characters/scene/props/seg/tail/cam/start，支持新增/删除/上下移动；保存后重算一致性告警并落盘 |
+| 铺开 | 4–10s 表在 `expandStoryboard` 中通常规划为 1 段 → 1 个视频节点；不再需要表内多段 |
+| G2 闸门 | 「每场至少 1 个大特写」降级为 `warns`（拆表后按场核对，不能要求每张 4–10s 表都硬塞大特写）；`state_jump` 纳入合法 `seg` |
+| 自动创作 | 免费段逐场生成后按 `boardGroupId` 找回同组全部表，逐张过 G2（第 2..N 张失败可单独重生成一次），下一场 `prev` 接到**最后一张**表 |
 
 ---
 
@@ -368,7 +390,7 @@ needsTailChain =
 | A5 | 时长守恒：`Σ segments.duration == Σ shots.duration`（±0.1s） | 数值断言 |
 | A6 | `needsTailChain=true` ⇒ 上段 `lastSeg==='continuation'` 且本段 `firstSeg==='continuation'` 且模型能力允许硬首帧 | 直接对输出对象断言；弱模型能力表下恒 false |
 | A7 | `seamRisk='forced'` ⇒ `warnings` 非空且 `forcedRewrite` 存在；提示词含「不承接上一段画面」 | 断言对象 + 提示词字符串包含 |
-| A8 | 每个视频节点提示词的镜头数 = 本段 `shotIds.length`（解析 `[Shot N]` 出现次数）；不出现其它段镜头标题 | 以段落文本断言，防止"整表提示词"漏进分段节点 |
+| A8 | 每个视频节点提示词的镜头数 = 本段 `shotIds.length`（解析 `[Shot N]` 出现次数）；不出现其它段镜头内容；**不出现任何 `title` 文本**（防标题被当台词念） | 以段落文本断言，防止"整表提示词"漏进分段节点 |
 | A9 | `frame` 连线只存在于 `needsTailChain=true` 的段；弱模型下为 0 条 | 用假图（节点/边对象）跑 `expandStoryboard` 分支后统计边 |
 | A10 | 节点 `duration` 落在能力表合法集合内；非法值吸附并产生可见告警 | 能力表枚举/区间两种配置各跑一遍 |
 | A11 | 旧项目（无 `videoSegment`）铺开后仍只有 1 个 video 节点，提示词与旧版逐字一致 | 快照/字符串对比 |
