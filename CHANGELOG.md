@@ -272,6 +272,23 @@ GitHub Releases carry the same notes in English; maintainer-facing runbooks live
 - **Repo housekeeping.** `.superpowers/` (SDD process directories) and `.worktrees/`
   (isolated work trees) are now git-ignored.
 
+## [0.20.5-local.4] — 2026-11-11
+
+### Changed
+- **图片节点的「AI 完善提示词」改为「资产设定图」口径**（按用户诉求：说一句「道具：一根羽毛」，
+  就产出道具设定图的完整版式提示词，而不是一句普通画面描述）：
+  - 技能来源固定为 `assets` 能力：`canvas-craft` 的「二·五 资产设定图版式」+「三 图片提示词规范」章节切片、
+    技能包 `assets` 切片（导演/题材/规格/影调）、`buildShotLockText('assets', {medium:'image'})` 图片档风格锁；
+  - AI 只负责把诉求解析成 `{kind, name, desc:"外观：…"}`（品类按人/动物→character、空间/地点→scene、
+    物件/器物/材料/生物残件→prop；外观要求材质/配色色名/结构/尺寸参照/磨损状态，禁动作与情绪）；
+  - 版式交给画布既有的 `buildAssetSheetPrompt(kind, name, desc, bible)` 组装——与画布「自动建资产节点」
+    用的是同一个生成器：角色六段式、道具「标题+45°悬浮主图+细节+侧视+色卡」、场景「主场景图+环绕小图」；
+  - 品类优先级：AI 判定 → 用户输入前缀（`道具：`/`场景：`/`角色：`）→ 节点名前缀（`道具-… 设定图`）→
+    设定集实体品类（最终权威）；名称同理向设定集对齐，命中条目时外观以设定集为准、AI 只做细化；
+  - 提示文案同步改写（中英），说明「按资产设定图版式补全」并给出示例。
+- 接线守卫同步收紧：断言必须调用 `buildAssetSheetPrompt`、必须取 `assets` 切片与图片档锁、
+  必须识别显式品类前缀（退回普通画面提示词即红）。
+
 ## [0.20.5-local.3] — 2026-11-11
 
 ### Changed

@@ -34,11 +34,13 @@ function fnBlock(sig) {
 {
   const b = fnBlock('async function aiPolishImagePrompt(');
   ok(!!b, '找不到 aiPolishImagePrompt（本地功能被移除？）');
-  ok(/buildExpertContext\(kind/.test(b), 'AI 完善提示词没有取画布技能包切片（buildExpertContext）');
-  ok(/buildShotLockText\(kind, \{ medium: 'image' \}\)/.test(b), 'AI 完善提示词没有取「图片档」技能包风格锁（buildShotLockText medium:image）');
+  ok(/buildExpertContext\('assets'/.test(b), 'AI 完善提示词没有取「资产设定图」技能包切片（buildExpertContext assets）');
+  ok(/buildShotLockText\('assets', \{ medium: 'image' \}\)/.test(b), 'AI 完善提示词没有取「图片档」技能包风格锁（buildShotLockText assets + medium:image）');
   ok(/hostRpc\('readSkill', \{ name: CRAFT_SKILL \}\)/.test(b), 'AI 完善提示词没有读 canvas-craft 技能正文');
-  ok(/skillSections\(/.test(b), 'AI 完善提示词没有按章节切片技能正文（整本 47KB 塞进一次请求）');
-  ok(/'assets' : 'prompt'/.test(b) || /isSheet \? 'assets' : 'prompt'/.test(b), '设定图 / 普通画面没有分能力切片（assets / prompt）');
+  ok(/skillSections\([\s\S]{0,120}\['二·五', '三、'\]/.test(b), 'AI 完善提示词没有按「设定图版式 + 图片提示词」章节切片技能正文');
+  ok(/buildAssetSheetPrompt\(kind, name, desc, bible, zh\)/.test(b), 'AI 完善提示词没有用资产设定图生成器排版（buildAssetSheetPrompt）——会退回普通画面提示词');
+  ok(/assetKindFromText\(typed\)/.test(b) && /assetKindFromLabel\(lbl\)/.test(b), 'AI 完善提示词没有识别「道具：…」这类显式品类 / 节点名品类');
+  ok(/kindMap\[kindRaw\]/.test(b) && /ent\.kind/.test(b), 'AI 完善提示词没有品类归一（AI 品类 / 显式前缀 / 设定集实体品类）');
   const ss = fnBlock('function skillSections(');
   ok(!!ss, '缺少 skillSections（技能章节切片）');
   ok(/split\(\/\\n\(\?=## \)\//.test(ss), 'skillSections 没有按 `## ` 标题切分');
@@ -85,5 +87,5 @@ if (errs.length) {
   for (const e of errs) console.error('  - ' + e);
   process.exit(1);
 }
-console.log('✓ 本地交互接线守卫通过（AI 完善提示词走 canvas-craft 章节+技能包+图片档风格锁；上传走资产管道且渲染树三段不变；编辑器 AI 补全带上下镜上下文并保护台词）');
+console.log('✓ 本地交互接线守卫通过（AI 完善提示词=资产设定图版式：canvas-craft 设定图章节 + 技能包 + 图片档锁 + buildAssetSheetPrompt 排版；上传走资产管道且渲染树三段不变；编辑器 AI 补全带上下镜上下文并保护台词）');
 process.exit(0);

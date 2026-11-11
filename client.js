@@ -1170,7 +1170,7 @@ function revealCanvasInRight() {
       'aiUploadFail': '上传失败',
       'aiUploadType': '请选择{kind}文件',
       'aiPolish': 'AI 完善提示词',
-      'aiPolishHint': '用画布技能（canvas-craft + 导演/题材/影调切片 + 设定集）把提示词补全成可直接生成的画面描述（只改提示词）',
+      'aiPolishHint': '按「资产设定图」版式补全（角色/场景/道具各按其分格排版）：写一句「道具：一根羽毛」即可，画布用技能生成设定图提示词',
       'aiPolishing': 'AI 完善中…',
       'aiPolishDone': '提示词已完善',
       'aiPolishFail': 'AI 完善失败',
@@ -2245,7 +2245,7 @@ function revealCanvasInRight() {
       'aiUploadFail': 'Upload failed',
       'aiUploadType': 'Pick a {kind} file',
       'aiPolish': 'AI polish prompt',
-      'aiPolishHint': 'Complete the prompt with the canvas skills (canvas-craft + director/genre/look slices + the bible); prompt only',
+      'aiPolishHint': 'Complete it as an ASSET SHEET prompt (character / location / prop layouts): one line like "prop: a feather" is enough',
       'aiPolishing': 'Polishing…',
       'aiPolishDone': 'Prompt polished',
       'aiPolishFail': 'AI polish failed',
@@ -10012,60 +10012,108 @@ function queueThumb(assetId) {
       });
       return keep.join('\n\n').trim();
     }
+    /** 资产品类识别：输入开头的显式前缀（道具：…）优先，其次节点名（道具-… 设定图）。 */
+    function assetKindFromText(text) {
+      const t = String(text || '');
+      if (/^\s*(角色|人物|character)\s*[:：]/i.test(t)) return 'character';
+      if (/^\s*(场景|地点|环境|location|scene)\s*[:：]/i.test(t)) return 'scene';
+      if (/^\s*(道具|物件|物品|prop)\s*[:：]/i.test(t)) return 'prop';
+      return '';
+    }
+    function assetKindFromLabel(label) {
+      const t = String(label || '');
+      if (/^\s*(角色|人物|character)\s*[-－—_／/]/.test(t)) return 'character';
+      if (/^\s*(场景|地点|location|scene)\s*[-－—_／/]/.test(t)) return 'scene';
+      if (/^\s*(道具|物件|物品|prop)\s*[-－—_／/]/.test(t)) return 'prop';
+      return '';
+    }
     /**
-     * 图片提示词「AI 完善」——用**无限画布的技能**生成，而不是通用提示词模板：
-     *   ① canvas-craft 技能正文的相关章节（设定图走「二·五 资产设定图版式」+「三 图片提示词规范」，
-     *      普通画面只走「三 图片提示词规范」）——按章节切片，不整本注入；
-     *   ② 画布技能包切片（导演透镜 / 题材 / 规格 / 影调，`buildSkillPackText`，与画布自生成同源）；
-     *   ③ 图片形态的技能包风格锁（`buildShotLockText(..., {medium:'image'})`，压缩版，避免长文被当画面内容渲染）；
-     *   ④ 项目设定集（实体名与外观逐字可用）+ 用户输入。
+     * 图片提示词「AI 完善」——**按无限画布的「资产设定图」口径**生成，而不是一句普通画面提示词：
+     *   ① AI 只做一件事：把用户那句话（如「道具：一根羽毛」）解析成 {品类, 资产名, 外观要点}，
+     *      并要求外观具体可视化（材质/配色/结构/尺寸参照/状态），设定集已有的实体逐字沿用、只做细化；
+     *   ② 版式由画布技能固化实现 `buildAssetSheetPrompt(kind, name, desc, bible)` 组装——
+     *      角色走六段式、道具走「标题+45°主图+细节+侧视+色卡」、场景走「主场景图+环绕小图」，
+     *      与画布自动建资产节点时用的是**同一个生成器**（严格对齐 canvas-craft「二·五 资产设定图版式」）；
+     *   ③ 技能包切片与图片档风格锁一并注入，保证与项目所选导演/题材/规格/影调一致。
      */
     async function aiPolishImagePrompt({ cur, bible, label, zh, extra }) {
       const settings = loadSettings();
       const lbl = String(label || '');
-      // 资产设定图（角色/场景/道具-xxx 设定图）走「设定图版式」切片；其余画面走「图片提示词规范」
-      const isSheet = /(?:^|[-－—_／/\s])(?:角色|场景|道具)[-－—_／/\s]|设定图|参考图|三视图|多视图/.test(lbl);
-      const kind = isSheet ? 'assets' : 'prompt';
-      // ① 画布技能包切片（四层：导演/题材/规格/影调）——未配置时为空，行为退回纯技能章节
+      const typed = String(cur || '');
+      const hintKind = assetKindFromText(typed) || assetKindFromLabel(lbl) || '';
+      // ① 技能：设定图能力切片（assets）+ 图片档风格锁
       let packText = '';
-      try { packText = (await buildExpertContext(kind, settings, zh)).packText || ''; } catch { packText = ''; }
-      // ② 技能包「图片形态」风格锁（压缩版；图片模型会把长文当画面内容渲染，必须用图片档）
+      try { packText = (await buildExpertContext('assets', settings, zh)).packText || ''; } catch { packText = ''; }
       let lock = '';
-      try { lock = await buildShotLockText(kind, { medium: 'image' }); } catch { lock = ''; }
-      // ③ canvas-craft 技能章节
+      try { lock = await buildShotLockText('assets', { medium: 'image' }); } catch { lock = ''; }
       let rules = '';
       try {
         const sk = await hostRpc('readSkill', { name: CRAFT_SKILL });
-        rules = skillSections(String((sk && sk.text) || ''), isSheet ? ['二·五', '三、'] : ['三、']);
+        rules = skillSections(String((sk && sk.text) || ''), ['二·五', '三、']);
       } catch { rules = ''; }
-      const style = bibleStyleAnchor(bible);
+      const kindZh = (k) => (k === 'character' ? '角色' : k === 'scene' ? '场景' : k === 'prop' ? '道具' : '未定');
+      // ② AI 只产出结构化事实（品类/名称/外观），版式交给技能生成器
       const system = [
         packText,
         lock,
         rules,
-        zh ? '你是短剧/短视频的图片提示词导演。只输出提示词正文（不要解释、不要标题、不要引号包裹、不要 Markdown、不要分点）。'
-          : 'You are a shot-prompt director for short drama. Output ONLY the prompt text (no explanation, no title, no quotes, no markdown, no bullets).',
-        zh ? '**上面的画布技能与技能包是硬约束**：设定图节点必须按「资产设定图版式」的分段结构写（【总起】【身份锚】【主体】【三视图】…）；普通画面按「图片提示词规范」的公式写（主体 + 景别/构图 + 环境 + 光线 + 风格质感 (+ 画幅)）。'
-          : 'The canvas skill and skill-pack above are BINDING: asset-sheet nodes follow the sheet layout sections; other frames follow the image-prompt formula (subject + shot size/composition + environment + light + style/texture (+ aspect)).',
-        zh ? '实体名称与外观必须逐字复用设定集；参考图存在时按 `[图N] 角色：名称（外观关键词）` 写绑定说明。'
-          : 'Reuse bible names/appearance verbatim; when references exist, bind them as `[Picture N] character: name (look keywords)`.',
-        zh ? '不写画面内文字/字幕（设定图只允许 ≤4 字短标签）、不写音乐、不写“电影感/唯美”这类空话。'
-          : 'No on-screen text/subtitles (sheet labels ≤4 chars only), no music, no empty words like "cinematic".',
-        zh ? '保留用户已表达的意图、构图、风格与比例倾向；只补全与精炼，不换题。'
-          : 'Keep the user intent, composition, style and ratio; complete and sharpen only.',
-        zh ? '长度：普通画面 60–140 字；设定图按版式分段写全（可 150–320 字）。'
-          : 'Length: ordinary frame 60-120 words; asset sheets follow the full layout (150-320 words).',
+        zh ? '你只做一件事：把一个资产诉求解析成「品类 + 资产名 + 外观要点」，供画布的资产设定图生成器排版。只输出一个 JSON 对象，不要解释、不要 Markdown 围栏。'
+          : 'You do ONE thing: turn an asset request into {kind, name, appearance}, which the canvas asset-sheet generator lays out. Output ONE JSON object only, no prose, no fences.',
+        (zh ? 'JSON 结构：' : 'JSON shape: ') + '{"kind":"character|scene|prop","name":"…","desc":"外观：…"}',
+        zh ? 'kind 判定：人 / 动物 / 拟人主体 = character；空间 / 地点 / 环境 = scene；物件 / 器物 / 材料 / 生物残件（羽毛、信、镯子、卷轴）= prop。'
+          : 'kind: person/animal/character subject = character; space/location = scene; object/material/remains (a feather, a letter, a bracelet, a scroll) = prop.',
+        zh ? 'name：资产名，2–8 字，可直接做节点名；与设定集同名实体必须逐字一致。'
+          : 'name: 2-8 characters, usable as a node name; identical to the bible entry when one exists.',
+        zh ? 'desc：**必须以「外观：」开头**，写可直接画出来的视觉事实——材质、配色（具体色名）、结构/形制、尺寸参照、新旧与磨损状态；禁止动作、剧情、情绪与比喻。中文 40–80 字。'
+          : 'desc: MUST start with "外观：" and list drawable visual facts - material, palette (named colours), structure, size reference, wear; no actions, plot, emotion or metaphor. 30-70 words.',
+        zh ? '设定集已有该实体时：名称逐字沿用，外观以设定集为准、只做细化补充，绝不改写或新增设定集里没有的设定。'
+          : 'When the bible already has the entity: keep its name verbatim and the bible appearance authoritative; enrich only, never rewrite or invent settings.',
+        hintKind ? (zh ? '用户已显式声明品类：' + kindZh(hintKind) + '（必须采用）。' : 'The user declared the kind: ' + hintKind + ' (must follow).') : '',
       ].filter(Boolean).join('\n\n');
+      // 节点名里通常已经带着资产名（角色-林晚 现代 设定图 → 林晚 现代）：抽出来当硬提示，
+      // 命中设定集条目时把该条目的名称/外观当成唯一事实（避免 AI 另起一个名字）。
+      const labelName = lbl.replace(/^\s*(?:角色|人物|场景|地点|道具|物件)[-－—_／/]\s*/, '')
+        .replace(/\s*(?:设定图|参考图|三视图|多视图|多角度图)\s*$/g, '').trim();
+      const entByLabel = labelName ? matchBibleEntity(labelName, bible) : null;
       const user = [
-        (zh ? '目标节点：' : 'Node: ') + lbl,
-        (zh ? '节点类型判定：' : 'Node kind: ') + (isSheet ? (zh ? '资产设定图（按版式分段）' : 'asset sheet (use layout sections)') : (zh ? '普通画面' : 'ordinary frame')),
-        (zh ? '用户当前输入（可能为空）：\n' : 'Current input (may be empty):\n') + (String(cur || '').trim() || (zh ? '（空）' : '(empty)')),
-        style ? (zh ? '风格锚：' : 'Style anchor: ') + style : '',
-        bibleBlock(bible) ? (zh ? '项目设定集：\n' : 'Series bible:\n') + bibleBlock(bible) : '',
-        String(extra || '').trim() ? (zh ? '补充要求（优先级低于设定集）：\n' : 'Extra requirements (below the bible in priority):\n') + String(extra).trim() : '',
+        (zh ? '节点名：' : 'Node: ') + lbl,
+        labelName ? (zh ? '节点名推断的资产名：' : 'Asset name inferred from the node: ') + labelName : '',
+        entByLabel
+          ? (zh ? '该资产在设定集里的唯一条目（名称与外观逐字沿用，只细化）：\n' : 'Bible entry for this asset (reuse name/appearance verbatim, enrich only):\n')
+            + entByLabel.name + '：' + String(entByLabel.desc || '')
+          : '',
+        (zh ? '用户输入：\n' : 'User input:\n') + (typed.trim() || (zh ? '（空：以节点名作为资产诉求）' : '(empty: use the node name)')),
+        bibleBlock(bible) ? (zh ? '项目设定集（同名实体必须沿用）：\n' : 'Series bible (same-name entries must be reused):\n') + bibleBlock(bible) : '',
       ].filter(Boolean).join('\n\n');
       const out = await aiCompleteStream({ system, user });
-      return tidyPromptText(out);
+      const parsed = parseJsonBalanced(out) || {};
+      // ③ 归一：品类（AI > 用户前缀 > 节点名 > 设定集 > 道具兜底）→ 名称 → 外观
+      const kindRaw = String(parsed.kind || parsed.type || '').trim().toLowerCase();
+      const kindMap = {
+        character: 'character', role: 'character', person: 'character', '角色': 'character', '人物': 'character',
+        scene: 'scene', location: 'scene', place: 'scene', '场景': 'scene', '地点': 'scene',
+        prop: 'prop', object: 'prop', item: 'prop', '道具': 'prop', '物件': 'prop', '物品': 'prop',
+      };
+      let kind = kindMap[kindRaw] || hintKind || '';
+      const name0 = String(parsed.name || '').trim().replace(/^[（(]|[）)]$/g, '').slice(0, 24);
+      const ent = name0 ? matchBibleEntity(name0, bible) : (entByLabel || null);
+      if (ent && ent.kind) kind = ent.kind; // 设定集是品类的最终权威
+      if (!kind) kind = 'prop';
+      const name = (ent && ent.name) ? String(ent.name).trim() : (name0 || (zh ? '未命名资产' : 'Unnamed asset'));
+      const stripLook = (v) => String(v || '')
+        .replace(/^外观\s*[：:]\s*/, '')
+        .replace(/声音\s*[：:][^。\n]*/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const bibleLook = stripLook(ent && ent.desc);
+      const aiLook = stripLook(parsed.desc || parsed.appearance || '');
+      const look = [bibleLook, aiLook].filter(Boolean).filter((x, i, arr) => arr.findIndex((y) => y === x) === i).join('；');
+      const desc = look ? ('外观：' + look).slice(0, 400) : '';
+      // ④ 版式由技能生成器组装（与画布自动建资产节点同一份实现）
+      let built = buildAssetSheetPrompt(kind, name, desc, bible, zh);
+      const extraTxt = String(extra || '').trim();
+      if (extraTxt) built += (zh ? '\n【额外要求（优先级高于上述版式描写，但不得破坏版式与文字规则）】' : '\n[Extra requirements (above the layout wording, never breaking the layout or text rules)] ') + extraTxt;
+      return built;
     }
     /** 单镜「AI 补全」：当前表单 + 上一镜 tail/cam + 下一镜画面 → 一个完整镜头（JSON）。 */
     async function aiCompleteShot({ cur, prev, next, bible, requirement, nodeLabel, zh }) {
