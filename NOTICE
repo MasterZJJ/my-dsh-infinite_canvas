@@ -33,3 +33,12 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---------------------------------------------------------------------------
+Fork: my-dsh-infinite_canvas (https://github.com/MasterZJJ/my-dsh-infinite_canvas)
+Derived from: NINKCH/dsh-infinite_canvas 0.20.4 (Apache-2.0)
+
+This fork modifies the original work. The list of modifications is documented in
+CHANGELOG.md under the [0.20.5-local.*] sections and summarised in
+docs/fork-differences.md. The original copyright and license notices are kept
+unchanged; the LICENSE file remains the upstream Apache-2.0 text.

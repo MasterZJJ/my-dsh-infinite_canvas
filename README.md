@@ -1,5 +1,13 @@
 # Infinite Canvas for DeepSeek Harness
 
+> **Fork notice.** This repository is [MasterZJJ](https://github.com/MasterZJJ)'s fork of
+> [NINKCH/dsh-infinite_canvas](https://github.com/NINKCH/dsh-infinite_canvas), tracking upstream **0.20.4**.
+> Version here: **0.20.5-local.4**. Differences from upstream are the local build in
+> [`CHANGELOG.md`](./CHANGELOG.md) (`[0.20.5-local.*]` sections), summarised in
+> [`docs/fork-differences.md`](./docs/fork-differences.md): 4–10s storyboard boards, per-shot storyboard editor,
+> media-node upload, asset-sheet AI prompt completion, bridge capability alignment, sub-canvas tools, and the
+> prompt/consistency fixes. Licensed under Apache-2.0, same as upstream — upstream copyright notices are kept intact.
+
 **A node-based short-drama studio inside DeepSeek Harness.** Start from a one-line idea, walk out with a storyboarded, voiced, subtitled video cut — right on an infinite canvas.
 
 English | [简体中文](./README.zh-CN.md) · **User guide: [English](./docs/guide.en.md)** · [操作手册（中文）](./docs/guide.zh-CN.md)

@@ -1,5 +1,12 @@
 # 无限画布（DeepSeek Harness 版）
 
+> **Fork 说明。** 本仓库是 [MasterZJJ](https://github.com/MasterZJJ) 对
+> [NINKCH/dsh-infinite_canvas](https://github.com/NINKCH/dsh-infinite_canvas) 的 fork，上游基线 **0.20.4**，
+> 本仓库版本 **0.20.5-local.4**。与上游的差异见 [`CHANGELOG.md`](./CHANGELOG.md) 中 `[0.20.5-local.*]` 段落，
+> 列表见 [`docs/fork-differences.md`](./docs/fork-differences.md)：4–10s 分镜表拆表、逐镜分镜编辑器、
+> 媒体节点上传本地素材、资产设定图 AI 提示词补全、图片桥接能力对齐、子画布工具，以及提示词/一致性修复。
+> 与上游同为 Apache-2.0 许可，上游版权声明完整保留。
+
 **DeepSeek Harness 内的节点式短剧工作室。** 从一句话创意出发，在无限画布上完成剧本、分镜、角色资产、画面生成、视频生成，直到带转场、字幕、配音的成片。
 
 [English](./README.md) | 简体中文 · **操作手册：[中文版](./docs/guide.zh-CN.md)** · [English guide](./docs/guide.en.md)
