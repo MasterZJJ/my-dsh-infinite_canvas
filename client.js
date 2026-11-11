@@ -1159,6 +1159,26 @@ function revealCanvasInRight() {
       'bibleAdd': '添加',
       'modelLabel': '模型',
       'pickImageFile': '请选择图片文件',
+      // —— 本地上传素材 / AI 完善提示词 / 分镜 AI 补全 ——
+      'aiUploadImage': '上传图片',
+      'aiUploadVideo': '上传视频',
+      'aiUploadShort': '上传',
+      'aiUploadHint': '上传本地素材，直接作为本节点的成图（可被下游当参考图 / 首帧使用）',
+      'aiUploadReplace': '上传并替换本节点素材',
+      'aiUploading': '上传中…',
+      'aiUploaded': '已上传「{n}」',
+      'aiUploadFail': '上传失败',
+      'aiUploadType': '请选择{kind}文件',
+      'aiPolish': 'AI 完善提示词',
+      'aiPolishHint': '按设定集与你的输入，把提示词补全成可直接生成的画面描述（只改提示词）',
+      'aiPolishing': 'AI 完善中…',
+      'aiPolishDone': '提示词已完善',
+      'aiPolishFail': 'AI 完善失败',
+      'aiFillShot': 'AI 补全本镜',
+      'aiFillShotHint': '参考上一镜的尾态/运镜与下一镜的画面，补全这一镜（用当前表单内容当输入）',
+      'aiFilling': '补全中…',
+      'aiFillDone': '本镜已补全',
+      'aiFillFail': '补全失败',
       'pickVideoFile': '请选择视频文件',
       'hostUnavailable': 'Host 服务不可用',
       'connectFailed': '无法连接 Host 服务',
@@ -2214,6 +2234,26 @@ function revealCanvasInRight() {
       'bibleAdd': 'Add',
       'modelLabel': 'Model',
       'pickImageFile': 'Please pick an image file',
+      // —— local media upload / prompt polish / shot AI fill ——
+      'aiUploadImage': 'Upload image',
+      'aiUploadVideo': 'Upload video',
+      'aiUploadShort': 'Upload',
+      'aiUploadHint': 'Upload local media as this node\'s result (usable downstream as a reference or first frame)',
+      'aiUploadReplace': 'Upload and replace this node\'s media',
+      'aiUploading': 'Uploading…',
+      'aiUploaded': 'Uploaded "{n}"',
+      'aiUploadFail': 'Upload failed',
+      'aiUploadType': 'Pick a {kind} file',
+      'aiPolish': 'AI polish prompt',
+      'aiPolishHint': 'Complete the prompt into a generation-ready frame description from the bible and your input (prompt only)',
+      'aiPolishing': 'Polishing…',
+      'aiPolishDone': 'Prompt polished',
+      'aiPolishFail': 'AI polish failed',
+      'aiFillShot': 'AI fill this shot',
+      'aiFillShotHint': 'Fill this shot from the previous shot\'s tail/camera and the next shot (uses the current form as input)',
+      'aiFilling': 'Filling…',
+      'aiFillDone': 'Shot filled',
+      'aiFillFail': 'AI fill failed',
       'pickVideoFile': 'Please pick a video file',
       'hostUnavailable': 'Host service unavailable',
       'connectFailed': 'Cannot reach the Host service',
@@ -3809,6 +3849,9 @@ body[data-ds-dark-theme] .dshic-board-editor{border-color:var(--dsw-alias-border
 .dshic-board-editor-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 14px;
   border-top:1px solid var(--dshic-line);flex:none;flex-wrap:wrap;}
 .dshic-be-foot-left,.dshic-be-foot-right{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.dshic-airow{display:flex;justify-content:flex-end;padding:2px 0 0;}
+.dshic-airow .dshic-mini{font-size:11px;}
+.dshic-media-empty .dshic-mini{margin-top:7px;position:relative;z-index:2;}
 .dshic-be-foot-right .dshic-hint{margin-right:4px;}
 @media (max-width:720px){
   .dshic-board-editor-list{width:170px;}
@@ -9917,6 +9960,117 @@ function queueThumb(assetId) {
     const AI_STREAM = new Map(); // nodeId -> { reasoning, text }
     const AI_STREAM_KEEP = 600;   // 只保留尾部若干字符，避免长思考占内存
     let aiStreamFlushTimer = null;
+
+    // ============================================================
+    // 本地素材上传 / AI 辅助（提示词完善 · 单镜补全）
+    // ============================================================
+    /** 读本地视频文件的像素尺寸与时长（只读元数据，不解码整段）。失败返回 null。 */
+    function probeVideoMeta(file) {
+      return new Promise((resolve) => {
+        if (typeof document === 'undefined' || !file) { resolve(null); return; }
+        let url = '';
+        let v = null;
+        let done = false;
+        const finish = (out) => {
+          if (done) return;
+          done = true;
+          try { if (v) { v.removeAttribute('src'); if (v.load) v.load(); } } catch { /* 忽略 */ }
+          try { if (url) URL.revokeObjectURL(url); } catch { /* 忽略 */ }
+          resolve(out);
+        };
+        try {
+          url = URL.createObjectURL(file);
+          v = document.createElement('video');
+          v.preload = 'metadata';
+          v.muted = true;
+          v.onloadedmetadata = () => finish({ w: v.videoWidth || 0, h: v.videoHeight || 0, duration: Number(v.duration) || 0 });
+          v.onerror = () => finish(null);
+          setTimeout(() => finish(null), 8000);
+          v.src = url;
+        } catch { finish(null); }
+      });
+    }
+    /** 去掉模型输出里的代码围栏 / 前缀 / 包裹引号：只留提示词正文。 */
+    function tidyPromptText(raw) {
+      let t = String(raw || '').trim();
+      t = t.replace(/^```[a-zA-Z]*\s*/, '').replace(/```\s*$/, '').trim();
+      t = t.replace(/^(提示词|画面提示词|prompt)\s*[:：]\s*/i, '').trim();
+      t = t.replace(/^["'“”‘’「」]+/, '').replace(/["'“”‘’「」]+$/, '').trim();
+      return t;
+    }
+    /** 图片提示词「AI 完善」：设定集 + 用户输入 → 可直接生成的画面提示词（只出正文）。 */
+    async function aiPolishImagePrompt({ cur, bible, label, zh, extra }) {
+      const style = bibleStyleAnchor(bible);
+      const system = [
+        zh ? '你是短剧/短视频的图片提示词导演，负责把半成品提示词补全成可直接送进文生图模型的画面提示词。'
+          : 'You are a shot-prompt director for short drama: turn a rough prompt into a generation-ready image prompt.',
+        zh ? '硬规则：只输出提示词正文（不要解释、不要标题、不要引号包裹、不要 Markdown、不要分点）。'
+          : 'Hard rules: output ONLY the prompt text (no explanation, no title, no quotes, no markdown, no bullets).',
+        zh ? '必须严格使用设定集里的实体名称与外观描述，不得改名、不得新增设定集里没有的角色/场景/道具。'
+          : 'Use bible entity names and descriptions verbatim; never rename or invent entities.',
+        zh ? '画面要具体：景别 + 主体动作/状态 + 环境与光线 + 色调 + 镜头（机位/焦段）+ 质感。'
+          : 'Be concrete: shot size + subject action/state + set and light + colour + camera (position/lens) + texture.',
+        zh ? '不写画面内文字/字幕，不写音乐与配乐，不写“电影感/唯美”这类空话。'
+          : 'No on-screen text/subtitles, no music, no empty words like "cinematic/beautiful".',
+        zh ? '保留用户已表达的意图、构图、风格与比例倾向；只补全与精炼，不换题。'
+          : 'Keep the user intent, composition, style and ratio; complete and sharpen only.',
+        zh ? '长度 60–140 字（中文）/ 60–120 words（英文）。' : 'Length 60-120 words.',
+      ].join('\n');
+      const user = [
+        (zh ? '目标节点：' : 'Node: ') + String(label || ''),
+        (zh ? '用户当前输入（可能为空）：\n' : 'Current input (may be empty):\n') + (String(cur || '').trim() || (zh ? '（空）' : '(empty)')),
+        style ? (zh ? '风格锚：' : 'Style anchor: ') + style : '',
+        bibleBlock(bible) ? (zh ? '项目设定集：\n' : 'Series bible:\n') + bibleBlock(bible) : '',
+        String(extra || '').trim() ? (zh ? '补充要求（优先级低于设定集）：\n' : 'Extra requirements (below the bible in priority):\n') + String(extra).trim() : '',
+      ].filter(Boolean).join('\n\n');
+      const out = await aiCompleteStream({ system, user });
+      return tidyPromptText(out);
+    }
+    /** 单镜「AI 补全」：当前表单 + 上一镜 tail/cam + 下一镜画面 → 一个完整镜头（JSON）。 */
+    async function aiCompleteShot({ cur, prev, next, bible, requirement, nodeLabel, zh }) {
+      const jsonShape = '{"title":"…","visual":"…","motion":"…","timeBeats":["0s …","中段 …","结尾 …"],"camera":"…","vfx":"…","negative":"…","tail":"…","cam":"…","start":"…","seg":"continuation","characters":["…"],"scene":"…","props":["…"],"duration":3,"dialogue":[{"role":"…","line":"…"}],"sfx":"…"}';
+      const system = [
+        zh ? '你是短剧分镜师。只输出一个 JSON 对象，不要解释、不要 Markdown 围栏。' : 'You are a short-drama storyboard artist. Output ONE JSON object only, no prose, no fences.',
+        (zh ? 'JSON 结构：' : 'JSON shape: ') + jsonShape,
+        zh ? 'visual 写画面（景别/人物/场景/光线/色调），motion 写动作与运镜，timeBeats 三拍写可见状态（起势→发力→落点），camera 写机位+焦段光圈+运镜起止，vfx 写可见特效，tail 写本镜最后一刻的接点尾态（动作进行中），cam 写留给下一镜的运镜延续。'
+          : 'visual = frame; motion = action & camera; timeBeats = three visible beats; camera = position + lens + move start/end; vfx = visible effects; tail = state at the last frame (mid-action); cam = camera carry-over for the next shot.',
+        zh ? '角色/场景/道具名称必须来自设定集，visual/motion 里用 @名称@ 引用；不得新增设定集里没有的实体。'
+          : 'Names must come from the bible; reference them as @Name@ inside visual/motion; never invent entities.',
+        zh ? '必须承接上一镜的 tail/cam（若无上一镜则开场建立空间），并为下一镜留可接的 tail/cam。'
+          : 'Continue the previous shot tail/cam (or establish the space when first), and leave a tail/cam the next shot can pick up.',
+        zh ? 'dialogue 只填用户已给的台词原文，不得新写；sfx 只写环境声/拟音，绝不写音乐/配乐/BGM。'
+          : 'dialogue only carries lines the user already gave; sfx is ambience/foley only — never music/score/BGM.',
+        zh ? 'duration 按节奏给一位小数（快切 0.3–0.8s，对白 2–4s，情绪长镜 ≥5s）；seg 只能是 opening/continuation/scene_change/new_character/closeup/state_jump。'
+          : 'duration in seconds (one decimal, pacing-aware); seg must be opening/continuation/scene_change/new_character/closeup/state_jump.',
+      ].join('\n');
+      const brief = (shot, tag) => {
+        if (!shot) return '';
+        const parts = [
+          (zh ? '标题：' : 'title: ') + String(shot.title || ''),
+          (zh ? '画面：' : 'visual: ') + String(shot.visual || ''),
+          (zh ? '动作：' : 'motion: ') + String(shot.motion || ''),
+          (zh ? '时长：' : 'duration: ') + String(shot.duration || ''),
+          (zh ? '段落：' : 'seg: ') + String(shot.seg || ''),
+          (zh ? '尾态：' : 'tail: ') + String(shot.tail || ''),
+          (zh ? '运镜：' : 'cam: ') + String(shot.cam || ''),
+          (zh ? '台词：' : 'dialogue: ') + (Array.isArray(shot.dialogue) ? shot.dialogue.map((d) => String((d && d.role) || '') + '：' + String((d && d.line) || '')).join('；') : ''),
+          (zh ? '音效：' : 'sfx: ') + String(shot.sfx || ''),
+        ].filter((x) => !/[:：]\s*$/.test(x));
+        return (zh ? '【' : '[') + tag + (zh ? '】' : '] ') + '\n' + parts.join('\n');
+      };
+      const user = [
+        (zh ? '分镜表：' : 'Storyboard: ') + String(nodeLabel || ''),
+        bibleBlock(bible) ? (zh ? '项目设定集：\n' : 'Series bible:\n') + bibleBlock(bible) : '',
+        String(requirement || '').trim() ? (zh ? '本表额外要求：\n' : 'Board requirements:\n') + String(requirement).trim() : '',
+        brief(prev, zh ? '上一镜' : 'previous shot'),
+        brief(cur, zh ? '本镜（用户已填，作为意图输入，可补全/改写）' : 'this shot (user input — complete or rewrite)'),
+        brief(next, zh ? '下一镜' : 'next shot'),
+        zh ? '请输出补全后的本镜 JSON。' : 'Output the completed shot JSON now.',
+      ].filter(Boolean).join('\n\n');
+      const out = await aiCompleteStream({ system, user });
+      return parseJsonBalanced(out);
+    }
+
     function aiStreamAppend(nodeId, kind, d) {
       if (!d) return;
       const cur = AI_STREAM.get(nodeId) || { reasoning: '', text: '' };
@@ -13693,6 +13847,7 @@ function queueThumb(assetId) {
       // 参考图拖拽排序的 UI 状态：拖动源下标 / 当前插入位置下标（只影响高亮，不动数据）
       const [dragRefIdx, setDragRefIdx] = useState(-1);
       const [overRefIdx, setOverRefIdx] = useState(-1);
+      const [aiPolishing, setAiPolishing] = useState(false);
       const boxRef = useRef(null);
       const caretRef = useRef(null);
       const atBtnRef = useRef(null);
@@ -13831,6 +13986,27 @@ function queueThumb(assetId) {
       const boardScopedSource = isStoryboard && String(n.data.boardScript || '').trim();
       const promptVal = boardScopedSource ? String(n.data.boardScript) : String(n.data[promptKey] || '');
       const setPrompt = (v) => setData(promptKey, v);
+      /** 图片提示词「AI 完善」：设定集 + 当前输入 → 覆盖提示词框（只改提示词，不动模型/比例/时长/参考图）。 */
+      const polishPrompt = async () => {
+        if (aiPolishing || running) return;
+        setAiPolishing(true);
+        try {
+          const out = await aiPolishImagePrompt({
+            cur: String(n.data[promptKey] || ''),
+            bible: loadBible(S.activeId),
+            label: String(n.data.label || ''),
+            zh: effLang() !== 'en',
+          });
+          if (!out) throw new Error(T('aiEmptyResult'));
+          setPrompt(out);
+          schedulePushFor(n.id);
+          toast(T('aiPolishDone'));
+        } catch (e) {
+          toast(T('aiPolishFail') + '：' + String((e && e.message) || e));
+        } finally {
+          setAiPolishing(false);
+        }
+      };
       const promptPlaceholder = () => {
         if (kind === 'text') return T('textPlaceholder');
         if (kind === 'script') return T('ideaPlaceholder');
@@ -14050,6 +14226,16 @@ function queueThumb(assetId) {
             boardScopedSource
               ? h('div', { className: 'dshic-hint', style: { padding: '2px 2px 0' } }, T('boardScopedEditHint'))
               : null),
+          isImage
+            ? h('div', { key: 'aipolish', className: 'dshic-airow' },
+                h('button', {
+                  type: 'button', className: 'dshic-mini is-ghost', disabled: aiPolishing || running,
+                  title: T('aiPolishHint'), 'data-role': 'ai-polish', 'data-node-content': '1',
+                  onPointerDown: (e) => e.stopPropagation(),
+                  onClick: (e) => { e.stopPropagation(); polishPrompt(); },
+                }, aiPolishing ? h('span', { className: 'dshic-spin' }) : Ic('spark', 11),
+                aiPolishing ? T('aiPolishing') : T('aiPolish')))
+            : null,
           isStoryboard
             ? h(PromptArea, {
                 value: n.data.requirement || '', minHeight: 34,
@@ -14437,6 +14623,8 @@ function queueThumb(assetId) {
       const running = n.data.status === 'running';
       const done = !!n.data.assetId;
       const statusLabel = running ? T('genRunning') : done ? T('generated') : (n.data.status === 'error' ? T('genFailed') : '');
+      // —— 本地上传：图片节点传图片 / 视频节点传视频，直接作为本节点成图（可被下游当参考图/首帧）——
+      const [uploading, setUploading] = useState(false);
       // 打开面板必须同时选中节点：面板渲染条件是 composerId ∈ S.sel。
       // 视频控件会 stopPropagation（不经过节点根 pointerdown），所以这里自己保证选中。
       const openPanel = () => selectAndOpenComposer(n.id);
@@ -14456,6 +14644,70 @@ function queueThumb(assetId) {
           // 预览区比例已经正确（用户等比拉伸过的）就保留现有尺寸，只校正被旧实现做歪的框
           normalizeMediaNodeSize(nd);
         });
+      };
+      /** 打开系统文件选择器（点击时才创建 input：渲染树里必须只有 标题/预览/操作栏三段）。 */
+      const pickUploadFile = () => {
+        if (uploading) return;
+        try {
+          const inp = document.createElement('input');
+          inp.type = 'file';
+          inp.accept = kind === 'video' ? 'video/*' : 'image/*';
+          inp.style.display = 'none';
+          inp.setAttribute('data-role', 'node-upload-file');
+          inp.onchange = () => {
+            const f = inp.files && inp.files[0];
+            try { inp.remove(); } catch { /* 忽略 */ }
+            if (f) doUpload(f);
+          };
+          document.body.appendChild(inp);
+          inp.click();
+        } catch (e) {
+          toast(T('aiUploadFail') + '：' + String((e && e.message) || e));
+        }
+      };
+      /** 上传本地素材 → 资产库 → 直接写成该节点成图（进历史、可被下游引用）。 */
+      const doUpload = async (file) => {
+        if (!file || uploading) return;
+        const wantVideo = kind === 'video';
+        const okMime = wantVideo ? /^video\//i.test(file.type || '') : /^image\//i.test(file.type || '');
+        const okExt = wantVideo
+          ? /\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(file.name || '')
+          : /\.(png|jpe?g|webp|gif|bmp|heic|heif|avif|tiff?)$/i.test(file.name || '');
+        if (!okMime && !okExt) {
+          toast(T('aiUploadType').replace('{kind}', wantVideo ? T('kindVideo') : T('kindImage')));
+          return;
+        }
+        setUploading(true);
+        try {
+          const rec = await saveAssetRecord(S.activeId, wantVideo ? 'video' : 'image', file, {
+            name: String(file.name || '').trim() || undefined,
+            source: 'upload',
+            category: 'general',
+            prompt: String(n.data.prompt || '').slice(0, 200),
+            nodeLabel: String(n.data.label || ''),
+          });
+          commitGenResult(n.id, rec.id, false, wantVideo ? 'video' : 'image');
+          if (wantVideo) {
+            const meta = await probeVideoMeta(file);
+            if (meta && meta.w > 0) recordMediaDims(meta.w, meta.h);
+            if (meta && meta.duration > 0) {
+              update((s2) => { const nd = s2.graph.nodes[n.id]; if (nd) nd.data.assetDur = Math.round(meta.duration * 10) / 10; });
+            }
+          } else {
+            try {
+              const bm = await createImageBitmap(file);
+              recordMediaDims(bm && bm.width, bm && bm.height);
+              if (bm && bm.close) bm.close();
+            } catch { /* 尺寸读不到就按记录比例 */ }
+          }
+          pushHistory();
+          update((s2) => { s2.assetsTick++; });
+          toast(T('aiUploaded').replace('{n}', String(file.name || '')));
+        } catch (e) {
+          toast(T('aiUploadFail') + '：' + String((e && e.message) || e));
+        } finally {
+          setUploading(false);
+        }
       };
       const imgShown = done && !!thumbUrlV && kind === 'image' && mediaState !== 'error';
       const imgMissing = done && kind === 'image' && !thumbUrlV && thumbIsFailed(n.data.assetId);
@@ -14635,7 +14887,14 @@ function queueThumb(assetId) {
           !done
             ? h('div', { key: 'empty', className: 'dshic-media-empty', 'data-node-content': '1', onClick: openPanel },
                 h('span', { className: 'dshic-media-empty-ic' }, Ic('plus', 17)),
-                h('span', { className: 'dshic-media-empty-t' }, T(kind === 'video' ? 'clickToGenVideo' : 'clickToGenImage')))
+                h('span', { className: 'dshic-media-empty-t' }, T(kind === 'video' ? 'clickToGenVideo' : 'clickToGenImage')),
+                // 空节点也能直接落本地素材：不生成、不占模型额度，上传即成图
+                h('button', {
+                  type: 'button', className: 'dshic-mini is-ghost', disabled: uploading, title: T('aiUploadHint'),
+                  'data-role': 'node-upload', 'data-node-content': '1',
+                  onPointerDown: (e) => e.stopPropagation(),
+                  onClick: (e) => { e.stopPropagation(); pickUploadFile(); },
+                }, Ic('upload', 11), uploading ? T('aiUploading') : T(kind === 'video' ? 'aiUploadVideo' : 'aiUploadImage')))
             : null,
           // 右下角动作区：放大/全屏键紧贴分辨率条（同一行横向排列）
           // 播放中（控件条出现）时隐藏，避免压住进度条。
@@ -14674,6 +14933,12 @@ function queueThumb(assetId) {
         // 空态（done=false）不渲染这一栏，节点高度里也不加 NODE_FOOT_H。
         done
           ? h('div', { key: 'acts', className: 'dshic-media-foot', 'data-node-foot': '1' },
+              h('button', {
+                type: 'button', className: 'dshic-mini is-ghost', disabled: uploading, title: T('aiUploadReplace'),
+                'data-role': 'node-upload-replace',
+                onPointerDown: (e) => e.stopPropagation(),
+                onClick: (e) => { e.stopPropagation(); pickUploadFile(); },
+              }, Ic('upload', 11), uploading ? T('aiUploading') : T('aiUploadShort')),
               h('button', {
                 type: 'button', className: 'dshic-mini is-ghost', disabled: !done,
                 onPointerDown: (e) => e.stopPropagation(),
@@ -15187,6 +15452,7 @@ function queueThumb(assetId) {
       const [shots, setShots] = useState([]);
       const [idx, setIdx] = useState(0);
       const [dirty, setDirty] = useState(false);
+      const [aiFilling, setAiFilling] = useState(false);
       const [saving, setSaving] = useState(false);
       // 打开/切换节点时把节点里的 shots 拷成草稿：编辑期间不污染画布数据，保存才整体写回。
       useEffect(() => {
@@ -15263,6 +15529,35 @@ function queueThumb(assetId) {
         });
         setIdx(to);
         setDirty(true);
+      };
+      /** 单镜 AI 补全：当前表单 = 意图，上一镜 tail/cam + 下一镜画面 = 上下文；只改本镜。 */
+      const aiFillThisShot = async () => {
+        if (aiFilling || !shot) return;
+        setAiFilling(true);
+        try {
+          const out = await aiCompleteShot({
+            cur: shot,
+            prev: idx > 0 ? shots[idx - 1] : null,
+            next: idx < shots.length - 1 ? shots[idx + 1] : null,
+            bible: loadBible(S.activeId),
+            requirement: String((node && node.data && node.data.requirement) || ''),
+            nodeLabel: String((node && node.data && node.data.label) || ''),
+            zh: effLang() !== 'en',
+          });
+          if (!out || typeof out !== 'object') throw new Error(T('errParseStoryboard'));
+          const keepTitle = String(shot.title || '').trim() && !new RegExp('^(' + T('shotPrefix') + '|Shot)\\s*\\d+$', 'i').test(String(shot.title).trim());
+          const filled = normalizeEditedShot({ ...out, ...(keepTitle ? { title: shot.title } : {}) }, idx);
+          // 台词：用户已写就保留原文（AI 只允许沿用，不得新写）；用户没写则用 AI 补的
+          const userDlg = (Array.isArray(shot.dialogue) ? shot.dialogue : []).filter((d) => d && String(d.role || '').trim() && String(d.line || '').trim());
+          if (userDlg.length) filled.dialogue = userDlg;
+          setShots((prevAll) => prevAll.map((s2, i) => (i === idx ? { ...s2, ...filled } : s2)));
+          setDirty(true);
+          toast(T('aiFillDone'));
+        } catch (e) {
+          toast(T('aiFillFail') + '：' + String((e && e.message) || e));
+        } finally {
+          setAiFilling(false);
+        }
       };
       const save = async () => {
         if (saving) return;
@@ -15395,6 +15690,12 @@ function queueThumb(assetId) {
           ),
           h('div', { className: 'dshic-board-editor-foot' },
             h('div', { className: 'dshic-be-foot-left' },
+              h('button', {
+                type: 'button', className: 'dshic-mini', disabled: aiFilling || !shot,
+                title: T('aiFillShotHint'), 'data-role': 'ai-fill-shot',
+                onClick: aiFillThisShot,
+              }, aiFilling ? h('span', { className: 'dshic-spin' }) : Ic('spark', 11),
+              aiFilling ? T('aiFilling') : T('aiFillShot')),
               h('button', { type: 'button', className: 'dshic-mini', disabled: !shots.length || idx <= 0, onClick: () => moveShot(-1) }, '↑ ' + T('moveShotUp')),
               h('button', { type: 'button', className: 'dshic-mini', disabled: !shots.length || idx >= shots.length - 1, onClick: () => moveShot(1) }, '↓ ' + T('moveShotDown')),
               h('button', { type: 'button', className: 'dshic-mini is-ghost', disabled: !shots.length, onClick: delShot }, Ic('trash', 11), T('deleteShot')),
