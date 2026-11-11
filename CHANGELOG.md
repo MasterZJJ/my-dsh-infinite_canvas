@@ -6,6 +6,14 @@ GitHub Releases carry the same notes in English; maintainer-facing runbooks live
 
 ## [Unreleased]
 
+### Fixed
+- **图片节点「桥接 dsh-image-gen」的参考图生图退化成文生图**（`0.20.5-local.5`）。
+  `apiGenBridge` 把参考图元数据对象（`{blob, name, category, assetId}`）直接传给了
+  `blobToDataUrl`，而它内部是 `FileReader.readAsDataURL(blob)`——只接受 `Blob`。
+  转换同步抛 `TypeError` 后被 `catch` 静默吞掉，`refs` 恒为空，请求固定以
+  `mode: 'generate'` 发出，画布上表现为「连了参考图却一直按文生图跑」。
+  改为 `blobToDataUrl(b && b.blob ? b.blob : b)`。
+
 ## [0.20.4] — 2026-11-10
 
 ### Added

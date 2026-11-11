@@ -6575,7 +6575,7 @@ function queueThumb(assetId) {
       const refs = [];
       for (const b of (refBlobs || []).slice(0, 4)) {
         try {
-          const dataUrl = await blobToDataUrl(b);
+          const dataUrl = await blobToDataUrl(b && b.blob ? b.blob : b);
           const m = /^data:([^;]+);base64,(.+)$/.exec(String(dataUrl || ''));
           if (m) refs.push({ mediaType: m[1], data: m[2] });
         } catch { /* 单张参考图转换失败不阻塞 */ }
