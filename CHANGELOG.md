@@ -272,6 +272,55 @@ GitHub Releases carry the same notes in English; maintainer-facing runbooks live
 - **Repo housekeeping.** `.superpowers/` (SDD process directories) and `.worktrees/`
   (isolated work trees) are now git-ignored.
 
+## [0.20.5-local.1] — 2026-11-11
+
+本地构建（Local build）：上游 **0.20.4** + 本地 4–10s 分镜表工作流的完整移植。
+版本号带 `-local.1` 后缀并高于上游已发布版本，所以更新检查不会再提示覆盖本地改造；
+每次跟进上游时把本段内容逐条重新落一遍即可（合并基线见 `docs/storyboard-segmentation.md` §3.6）。
+
+### Added
+- **4–10s storyboard boards (local patch set, merged forward).** A generated storyboard longer than
+  10s is auto-split at real shot boundaries into several 4–10s boards (`planStoryboardBoards`),
+  each one video generation; boards carry `boardGroupId/boardIndex/boardCount/boardFrom/boardTo/
+  boardSource/boardScript`, chain by `tail→prev`, and the last board carries the scene's outgoing
+  edge. The per-board scope brief (`boardScript`) makes regeneration touch only that board.
+- **Shot editor (local).** Full-screen editor: every shot field editable (visual/motion/duration/
+  timeBeats/camera/vfx/negative/dialogue/sfx/characters/scene/props/seg/tail/cam), add/delete/
+  reorder shots and dialogue lines; saving re-normalizes fields, recomputes the scope brief and
+  the consistency warnings.
+- **Sub-canvas tools (local).** `canvas_create_canvas` / `canvas_rename_canvas` /
+  `canvas_list_canvases` / `canvas_move_nodes` (nodes and their internal edges move, cross-cut
+  edges are dropped with tombstones; the source canvas records node tombstones).
+- **Image-gen bridge capability alignment (local).** Ratio/quality/channel are aligned with
+  `dsh-image-gen`'s own `describe` (30s cache), the ratio dropdown only offers supported values,
+  and switching a bridged model converges the node ratio instead of failing upstream.
+
+### Changed
+- **Speech scope is now a hard prompt block (local).** Only `<d>…</d>` dialogue may be spoken;
+  shot numbers, durations, parenthetical notes and shot titles must never be read aloud —
+  the structured, assembled and segment paths all carry the clause.
+- **Sound design blocks background music (local).** `overall_soundscape` states "ambience /
+  foley / dialogue only, no BGM", and the negative list names music explicitly.
+- **Segmentation planner is dual-mode.** Video segment planning keeps the upstream greedy packer
+  (call count and cap behaviour byte-identical); storyboard splitting opts into the balanced DP
+  (`strict:true, balance:true, 4–10s`). Drift guard (`test-quote-segments`) still passes.
+
+### Fixed
+- **Bible drafts survive host sync (local).** Pulling the host bible no longer drops locally
+  added, not-yet-named rows (`mergeBibleKeepDrafts`), and a host that returns no bible stamp
+  falls back to a local stamp so the 3s poll cannot overwrite a fresh edit.
+- **Asset matching prefers the bible's linked assets (local).** Expanding a storyboard resolves
+  `assetIds` bindings before name matching, so a styled entity name no longer creates a blank
+  new asset node.
+- **Legacy shot data is normalized on load (local).** String `dialogue` becomes `[{role,line}]`,
+  string `characters/props/timeBeats` become arrays, numeric strings become numbers.
+
+### Internal
+- **G2 treats the per-scene big close-up as advice, not a failure (local).** With 4–10s boards a
+  single board cannot be required to contain one; `gateStoryboard` reports it in `warns`.
+  Two assertions in `scripts/test-production.mjs` were updated accordingly (they now also pin the
+  warn text), and `scripts/test-changelog.mjs` accepts the `-local.N` suffix.
+
 ## [0.20.1] — 2026-11-06
 
 ### Added

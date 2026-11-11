@@ -86,7 +86,10 @@ ok(!/^## \[Unreleased\].*?\d+\.\d+\.\d+/m.test(section), 'Unreleased 段里写�
 const pkg = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 const baselineVersion = firstReleased ? firstReleased[1] : '';
 ok(!!baselineVersion, '找不到最新已发布版本号，无法校验 package.json（CHANGELOG 段缺失？）');
-ok(pkg.version === baselineVersion, 'package.json 的 version 与最新已发布版本不一致（本单不改版本号）：'
+// 本地构建允许 `-local.N` 后缀（如 0.20.5-local.1）：它的核心号可以领先上游已发布版本，
+// 目的就是让「更新检查」不再提示覆盖本地改造。正式发版仍必须严格等于最新已发布版本。
+const isLocalBuild = /[-+]local(\.[0-9A-Za-z.]+)?$/.test(String(pkg.version));
+ok(pkg.version === baselineVersion || isLocalBuild, 'package.json 的 version 与最新已发布版本不一致（本单不改版本号，本地构建可用 -local.N 后缀）：'
   + pkg.version + ' ≠ ' + baselineVersion);
 
 // ---------- 5) 四个分组齐全（仅当 Unreleased 段有内容时） ----------
