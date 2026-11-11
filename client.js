@@ -97,10 +97,50 @@ function revealCanvasInRight() {
       return n;
     }
     /** 文档级归一（幂等）：迁移两次结果一致。改 type + 校正已有结果媒体节点的框比例，不动 data / edges / 坐标。 */
+    /** 兼容旧数据：分镜镜头的 dialogue 若被写成字符串（"角色：台词"，多行多句），
+     *  归一为 [{role,line}]。画布编辑器/视频提示词都按数组消费，字符串会让 .map 崩。 */
+    function normalizeShotDialogue(n) {
+      if (!n || n.type !== 'storyboard') return;
+      const shots = n.data && n.data.shots;
+      if (!Array.isArray(shots)) return;
+      const clean = (arr) => arr
+        .filter((x) => x && String(x.role == null ? '' : x.role).trim() && String(x.line == null ? '' : x.line).trim())
+        .map((x) => ({ role: String(x.role).trim(), line: String(x.line).trim().slice(0, 400) }));
+      for (const s of shots) {
+        if (!s || typeof s !== 'object') continue;
+        const d = s.dialogue;
+        if (typeof d === 'string') {
+          const arr = [];
+          for (const raw of d.split(/\r?\n/)) {
+            const line = String(raw || '').trim();
+            if (!line) continue;
+            const m = line.match(/^([^：:]{1,16})[：:]\s*(.+)$/);
+            const role = (m ? m[1] : '').replace(/[（(].*?[）)]\s*$/, '').trim();
+            const text = (m ? m[2] : line).trim();
+            if (role && text) arr.push({ role, line: text });
+          }
+          if (arr.length) s.dialogue = arr; else delete s.dialogue;
+        } else if (Array.isArray(d)) {
+          const arr = clean(d);
+          if (arr.length) s.dialogue = arr; else delete s.dialogue;
+        } else if (d != null) {
+          delete s.dialogue;
+        }
+        // 顺带把常被写成字符串的数组字段归一（characters / props / timeBeats），避免同类崩溃
+        for (const k of ['characters', 'props']) {
+          const v = s[k];
+          if (typeof v === 'string') s[k] = v.split(/[、,，\n]/).map((x) => x.trim()).filter(Boolean);
+        }
+        if (typeof s.timeBeats === 'string') s.timeBeats = s.timeBeats.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+        if (typeof s.duration === 'string' && s.duration.trim() !== '' && Number.isFinite(Number(s.duration))) s.duration = Number(s.duration);
+      }
+    }
+
     function normalizeGraphDoc(doc) {
       if (!doc || typeof doc !== 'object') return doc;
       for (const n of Object.values(doc.nodes || {})) {
         normalizeNode(n);
+        normalizeShotDialogue(n);
         // 旧文档里 360×360 的图片/视频盒子会在预览上下/左右留白：按记录比例（或资产尺寸）校正
         normalizeMediaNodeSize(n);
       }
@@ -1016,6 +1056,52 @@ function revealCanvasInRight() {
       'storyboardReqLabel': '额外要求（风格、节奏、镜头语言…）',
       'storyboardCountLabel': '分镜数量',
       'shotsLabel': '分镜列表',
+      // —— 4–10s 分镜表拆表 + 编辑器 ——
+      'editStoryboard': '编辑分镜表',
+      'editShotHint': '点击铅笔或双击镜头编辑（改画面/时长/台词，保存即生效）',
+      'splitBoards': '拆成 4–10s 分镜表',
+      'splitBoardsHint': '按真实镜头边界，把本表拆成多张 4–10 秒的分镜表（每张正好一次视频生成）',
+      'splitBoardsDone': '已按 4–10s 拆成 {n} 张分镜表；每张可单独编辑、单独生成，接戏由上一张的尾镜承接',
+      'splitBoardsNoop': '本表总时长已在 4–10 秒区间内，无需再拆',
+      'splitBoardsSingleShot': '有单镜超过 10 秒：拆不开，请先把这镜拆成两镜（或在编辑器里缩短时长）',
+      'splitBoardsWarn': '有 {n} 张分镜表不在 4–10 秒区间（单镜超长或切点受限），已如实保留，请手动调整',
+      'splitBoardsVideoStale': '有 {n} 个已铺开的视频节点仍引用原表：请在每张新表上重新「铺开」，旧视频节点不会自动重连',
+      'boardSplitAuto': '生成完成：已按 4–10s 自动拆成 {n} 张分镜表（每张一次视频生成）',
+      'boardHint': '4–10s 拆表 {i}/{n}',
+      'boardScopedHint': '重生成只改本表',
+      'boardScopedSourceHint': '本表范围说明书（拆表后锁定）',
+      'boardScopedEditHint': '拆表后这张表只认上面的范围说明书：要改画面/台词请用「编辑分镜表」逐镜改，不要改这里',
+      'boardPlanHint': '将拆成 {n} 张 4–10s 分镜表',
+      'boardEditorEmpty': '本表还没有镜头：点左侧「新增镜头」，或先让 AI 生成一版',
+      'discardEdits': '有未保存的修改，确定放弃？',
+      'shotSaved': '分镜已保存，铺开/生成会使用新镜头',
+      'shotTitle': '镜头标题',
+      'shotDuration': '时长（秒）',
+      'shotVisual': '画面（景别/人物/场景/光线）',
+      'shotMotion': '动作 / 运镜',
+      'shotTimeBeats': '时间节拍（每行一拍，0s→中段→结尾）',
+      'shotCamera': '机位 / 焦段 / 光圈',
+      'shotVfx': '特效 / 细节',
+      'shotNegative': '负面项',
+      'shotDialogue': '台词（说话人 + 台词原文）',
+      'shotSfx': '音效 / 环境音',
+      'shotCharacters': '角色（顿号或逗号分隔）',
+      'shotScene': '场景',
+      'shotProps': '道具（顿号或逗号分隔）',
+      'shotSeg': '段落类型',
+      'shotCam': '运镜延续（留给下一镜）',
+      'shotStart': '起始态',
+      'shotAdvanced': '衔接字段（高级：接点尾态 / 运镜延续 / 起始态）',
+      'addShot': '新增镜头',
+      'deleteShot': '删除镜头',
+      'moveShotUp': '上移',
+      'moveShotDown': '下移',
+      'saveShots': '保存分镜',
+      'cancelEdit': '取消',
+      'shotCountTotal': '共 {n} 镜 · {t}s',
+      'dialogueRole': '说话人',
+      'dialogueLine': '台词原文',
+      'addDialogue': '加一句台词',
       'settingsLabel': '生成设置',
       'durationLabel': '时长',
       'resolutionLabel': '分辨率',
@@ -1042,7 +1128,7 @@ function revealCanvasInRight() {
       'projectFilter': '项目',
       'allProjects': '全部项目',
       'currentProject': '当前项目',
-      'expandDone': '已铺开为一次多镜头生成：{n} 镜合成为一条视频（时长 = 各镜之和）',
+      'expandDone': '已铺开 {n} 镜：按镜头切段生成（每段 ≤ 单段上限，段间在换镜头处硬切）',
       'expandGenCreated': '已为 {n} 个缺失资产新建图片节点（设定图提示词已按技能规范写好）——先生成资产图，再生成视频',
       'expandAssetReused': '{n} 个直接复用资产库已有图片',
       'multiShotHint': '多镜头模式：提示词由上游分镜表组合（全部镜头按顺序+时长合成一条提示词），一次性生成整段视频',
@@ -1302,6 +1388,7 @@ function revealCanvasInRight() {
       'stoppedToast': '已手动停止生成',
       'apiTimeout': '请求超时（毫秒）',
       'uploadFailed': '导入失败',
+      'importedN': '已导入 {n} 个资产',
       'syncFailed': '与 Host 同步失败',
       'dataRootBrowse': '浏览选择目录',
       'dataRootPicking': '请在弹出的窗口中选择目录（可直接取消）…',
@@ -1334,6 +1421,7 @@ function revealCanvasInRight() {
       'segNew_character': '新角色入场',
       'segScene_change': '换场',
       'segCloseup': '特写插入',
+      'segState_jump': '同机位状态跳变',
       'segCut': '特写插入',
       'seamOk': '接缝通过',
       'seamFail': '接缝偏跳',
@@ -1996,6 +2084,52 @@ function revealCanvasInRight() {
       'storyboardReqLabel': 'Extra requirements (style, pacing, camera language…)',
       'storyboardCountLabel': 'Shot count',
       'shotsLabel': 'Shots',
+      // —— 4–10s board split + shot editor ——
+      'editStoryboard': 'Edit storyboard',
+      'editShotHint': 'Click the pencil or double-click a shot to edit (visual / duration / dialogue; saved immediately)',
+      'splitBoards': 'Split into 4–10s boards',
+      'splitBoardsHint': 'Split this board into 4–10s boards at real shot boundaries (each board = one video generation)',
+      'splitBoardsDone': 'Split into {n} storyboard boards at 4–10s; each can be edited and generated separately, continuity carried by the previous board tail',
+      'splitBoardsNoop': 'This board is already within 4–10s — nothing to split',
+      'splitBoardsSingleShot': 'A single shot exceeds 10s: split that shot into two (or shorten it in the editor) first',
+      'splitBoardsWarn': '{n} board(s) fall outside 4–10s (overlong shot or constrained cut points); kept as-is for manual adjustment',
+      'splitBoardsVideoStale': '{n} expanded video node(s) still reference the original board: re-expand each new board; old video nodes are not rewired automatically',
+      'boardSplitAuto': 'Done: automatically split into {n} 4–10s storyboard boards (each = one video generation)',
+      'boardHint': '4–10s board {i}/{n}',
+      'boardScopedHint': 'regeneration edits this board only',
+      'boardScopedSourceHint': 'Board-scope brief (locked after split)',
+      'boardScopedEditHint': 'After splitting, this board only follows the scope brief above: edit the shots with “Edit storyboard”, do not rewrite this field',
+      'boardPlanHint': 'Will split into {n} 4–10s boards',
+      'boardEditorEmpty': 'No shots in this board yet: use “Add shot” on the left, or generate with AI first',
+      'discardEdits': 'You have unsaved changes. Discard them?',
+      'shotSaved': 'Storyboard saved; expansion / generation now use the new shots',
+      'shotTitle': 'Shot title',
+      'shotDuration': 'Duration (s)',
+      'shotVisual': 'Frame (shot size / subject / set / light)',
+      'shotMotion': 'Action / camera move',
+      'shotTimeBeats': 'Time beats (one per line, 0s → middle → end)',
+      'shotCamera': 'Camera / lens / aperture',
+      'shotVfx': 'VFX / details',
+      'shotNegative': 'Negative prompt',
+      'shotDialogue': 'Dialogue (speaker + exact line)',
+      'shotSfx': 'SFX / ambience',
+      'shotCharacters': 'Characters (comma separated)',
+      'shotScene': 'Scene',
+      'shotProps': 'Props (comma separated)',
+      'shotSeg': 'Segment type',
+      'shotCam': 'Camera carry-over (for the next shot)',
+      'shotStart': 'Start state',
+      'shotAdvanced': 'Continuity fields (advanced: tail / camera carry-over / start state)',
+      'addShot': 'Add shot',
+      'deleteShot': 'Delete shot',
+      'moveShotUp': 'Move up',
+      'moveShotDown': 'Move down',
+      'saveShots': 'Save storyboard',
+      'cancelEdit': 'Cancel',
+      'shotCountTotal': '{n} shots · {t}s',
+      'dialogueRole': 'Speaker',
+      'dialogueLine': 'Exact line',
+      'addDialogue': 'Add line',
       'settingsLabel': 'Generation settings',
       'durationLabel': 'Duration',
       'resolutionLabel': 'Resolution',
@@ -2022,7 +2156,7 @@ function revealCanvasInRight() {
       'projectFilter': 'Project',
       'allProjects': 'All projects',
       'currentProject': 'Current project',
-      'expandDone': 'Expanded to one multi-shot generation: {n} shots composed into a single video',
+      'expandDone': 'Expanded {n} shots into shot-boundary segments (each ≤ the per-segment limit)',
       'expandGenCreated': 'Created {n} image node(s) for assets that had no image yet, with sheet prompts already written — generate the asset images first, then the video',
       'expandAssetReused': '{n} reused from the asset library',
       'multiShotHint': 'Multi-shot mode: the prompt is composed from the upstream storyboard (all shots, in order, with durations) and generated as one clip',
@@ -2283,6 +2417,7 @@ function revealCanvasInRight() {
       'stoppedToast': 'Generation stopped',
       'apiTimeout': 'Request timeout (ms)',
       'uploadFailed': 'Import failed',
+      'importedN': 'Imported {n} asset(s)',
       'syncFailed': 'Failed to sync with Host',
       'dataRootBrowse': 'Browse for folder',
       'dataRootPicking': 'Pick a folder in the dialog (cancel anytime)…',
@@ -2315,6 +2450,7 @@ function revealCanvasInRight() {
       'segNew_character': 'New character',
       'segScene_change': 'Scene change',
       'segCloseup': 'Insert',
+      'segState_jump': 'State jump',
       'segCut': 'Insert',
       'seamOk': 'Seam OK',
       'seamFail': 'Seam jump',
@@ -3557,6 +3693,65 @@ body[data-ds-dark-theme] .dshic-pick-item.is-on{background:color-mix(in srgb,var
   background:var(--dshic-send-bg);color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;flex:none;}
 .dshic-send:hover{background:#000;}
 .dshic-send:disabled{background:#d9dbe1;cursor:default;}
+/* 分镜镜头行：双击/铅笔进入编辑器 */
+.dshic-shot-list.is-fill .dshic-shot-item{position:relative;padding-right:20px;cursor:pointer;}
+.dshic-shot-edit{position:absolute;right:0;top:1px;width:18px;height:18px;padding:0;border:1px solid transparent;border-radius:5px;
+  background:transparent;color:var(--dshic-ink3);display:grid;place-items:center;cursor:pointer;opacity:.28;transition:opacity .12s;}
+.dshic-shot-item:hover .dshic-shot-edit{opacity:1;border-color:var(--dshic-line2);background:var(--dshic-card);}
+.dshic-shot-edit:hover{color:var(--dshic-accent);}
+/* 分镜表编辑器（全屏浮层：左侧镜头清单 + 右侧逐镜表单） */
+.dshic-board-editor-overlay{position:fixed;inset:0;z-index:330;background:color-mix(in srgb,var(--dsw-alias-label-primary) 32%,transparent);
+  display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;}
+.dshic-board-editor{width:min(960px,calc(100vw - 32px));height:min(82vh,780px);background:var(--dshic-card);
+  border:1px solid var(--dshic-line2);border-radius:16px;box-shadow:var(--dshic-shadow-lg);
+  display:flex;flex-direction:column;overflow:hidden;box-sizing:border-box;}
+body[data-ds-dark-theme] .dshic-board-editor{border-color:var(--dsw-alias-border-l2);}
+.dshic-board-editor-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;
+  border-bottom:1px solid var(--dshic-line);flex:none;}
+.dshic-board-editor-title{display:flex;align-items:center;min-width:0;font-size:14px;color:var(--dshic-ink);}
+.dshic-board-editor-title .dshic-hint{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.dshic-board-editor-body{display:flex;flex:1;min-height:0;}
+.dshic-board-editor-list{width:230px;flex:none;border-right:1px solid var(--dshic-line);display:flex;flex-direction:column;
+  gap:3px;min-height:0;padding:8px;overflow-y:auto;box-sizing:border-box;}
+.dshic-be-list-head{display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--dshic-ink3);
+  padding:2px 4px 6px;flex:none;}
+.dshic-be-item{display:flex;align-items:flex-start;gap:7px;width:100%;border:1px solid transparent;border-radius:8px;
+  background:transparent;color:var(--dshic-ink2);padding:6px 7px;text-align:left;font:inherit;cursor:pointer;box-sizing:border-box;}
+.dshic-be-item:hover{background:var(--dshic-accent-soft);}
+.dshic-be-item.is-on{background:var(--dshic-accent-soft);border-color:color-mix(in srgb,var(--dshic-accent) 35%,transparent);color:var(--dshic-ink);}
+.dshic-be-idx{flex:none;width:18px;height:18px;border-radius:5px;background:var(--dshic-field-bg);display:grid;
+  place-items:center;font-size:10px;color:var(--dshic-ink3);}
+.dshic-be-item-main{min-width:0;display:flex;flex-direction:column;gap:1px;}
+.dshic-be-item-title{font-size:11.5px;color:var(--dshic-ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.dshic-be-item-sub{font-size:10px;color:var(--dshic-ink3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.dshic-be-add{margin-top:4px;justify-content:center;flex:none;}
+.dshic-board-editor-form{flex:1;min-width:0;overflow-y:auto;padding:12px 14px;display:flex;flex-direction:column;gap:10px;}
+.dshic-be-field{display:flex;flex-direction:column;gap:4px;min-width:0;}
+.dshic-be-label{font-size:10.5px;color:var(--dshic-ink3);}
+.dshic-be-field .dshic-input,.dshic-be-field .dshic-textarea{width:100%;box-sizing:border-box;}
+.dshic-be-field .dshic-input{height:28px;font-size:11.5px;}
+.dshic-be-field .dshic-textarea{min-height:54px;resize:vertical;line-height:1.5;font-size:11.5px;}
+.dshic-be-grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.dshic-be-core{display:flex;flex-direction:column;gap:10px;}
+.dshic-be-grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;}
+.dshic-be-dialogues{display:flex;flex-direction:column;gap:5px;}
+.dshic-be-dialogue{display:flex;align-items:center;gap:5px;}
+/* 台词行：说话人定宽、台词原文占满剩余宽度。
+   注意 .dshic-be-field .dshic-input 的 width:100% 特异性更高，必须用两级选择器覆盖，
+   否则说话人输入框会吃掉整行、台词原文被挤成 0 宽（用户看到"只有说话人"）。 */
+.dshic-be-dialogue .dshic-be-role{width:96px;min-width:96px;flex:0 0 96px;}
+.dshic-be-dialogue .dshic-be-line{width:auto;flex:1 1 120px;min-width:80px;}
+.dshic-be-advanced{border:1px solid var(--dshic-line);border-radius:8px;padding:7px 9px;display:flex;flex-direction:column;gap:8px;}
+.dshic-be-advanced summary{cursor:pointer;font-size:11px;color:var(--dshic-ink3);}
+.dshic-be-empty{padding:30px 12px;text-align:center;font-size:12px;color:var(--dshic-ink3);}
+.dshic-board-editor-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 14px;
+  border-top:1px solid var(--dshic-line);flex:none;flex-wrap:wrap;}
+.dshic-be-foot-left,.dshic-be-foot-right{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.dshic-be-foot-right .dshic-hint{margin-right:4px;}
+@media (max-width:720px){
+  .dshic-board-editor-list{width:170px;}
+  .dshic-be-grid2,.dshic-be-grid3{grid-template-columns:1fr;}
+}
 `;
 
     // ============================================================
@@ -3657,7 +3852,15 @@ body[data-ds-dark-theme] .dshic-pick-item.is-on{background:color-mix(in srgb,var
           // viaImageGen/imageGenProvider 必须透传：生成侧靠它路由到 dsh-image-gen 的 /studio；
           // 丢字段 → useBridge 判 false → 走 apiImage → baseUrl 空 → 「未配置图片 API」（桥接必炸）
           const via = !!(p.viaImageGen || m.viaImageGen);
-          out.push({ ref: p.id + '|' + m.id, providerId: p.id, providerName: p.name || p.id, modelId: m.id, model: String(m.model).trim(), baseUrl: p.baseUrl || '', apiKey: p.apiKey || '', extra: p.extra || '', size: p.size || '', responseFormat: p.responseFormat || '', mode: p.mode || 'generations', ...(via ? { viaImageGen: true, imageGenProvider: m.viaImageGen || p.imageGenProvider || '' } : {}) });
+          // 桥接能力（ratios/qualities/channel）一并透传：比例下拉与生成请求都以它们为准（0.20.2）
+          const cap = via ? {
+            ...(Array.isArray(m.ratios) ? { ratios: m.ratios } : {}),
+            ...(Array.isArray(m.qualities) ? { qualities: m.qualities } : {}),
+            ...(m.defaultRatio ? { defaultRatio: m.defaultRatio } : {}),
+            ...(m.defaultQuality ? { defaultQuality: m.defaultQuality } : {}),
+            ...(m.channel ? { channel: m.channel } : {}),
+          } : {};
+          out.push({ ref: p.id + '|' + m.id, providerId: p.id, providerName: p.name || p.id, modelId: m.id, model: String(m.model).trim(), baseUrl: p.baseUrl || '', apiKey: p.apiKey || '', extra: p.extra || '', size: p.size || '', responseFormat: p.responseFormat || '', mode: p.mode || 'generations', ...(via ? { viaImageGen: true, imageGenProvider: m.viaImageGen || p.imageGenProvider || '', ...cap } : {}) });
         }
       }
       return out;
@@ -3955,8 +4158,13 @@ body[data-ds-dark-theme] .dshic-pick-item.is-on{background:color-mix(in srgb,var
           .then((r) => {
             if (r && r.bibleUpdatedAt) {
               lsSet(LS_BIBLE_SYNC + pid, r.bibleUpdatedAt);
-              biblePushSnap.set(pid, JSON.stringify(bible));
+            } else {
+              // 宿主未回传设定集戳（旧版 projectsPut 只回 {ok,id,updatedAt}）：用本地时间兜底推进同步戳。
+              // 不推进的话，3s 轮询会误判「宿主更新过」，把刚添加的空白条目（宿主 normalizeBible 会丢弃空名行）
+              // 连同输入框一起拉掉——设定集点「添加」后输入框闪现即逝的根因。
+              lsSet(LS_BIBLE_SYNC + pid, Date.now());
             }
+            biblePushSnap.set(pid, JSON.stringify(bible));
           })
           .catch(() => { /* 静默 */ });
       } catch { /* 忽略 */ }
@@ -3968,6 +4176,18 @@ body[data-ds-dark-theme] .dshic-pick-item.is-on{background:color-mix(in srgb,var
       saveBibleLocal(pid, b);
       if (biblePushTimers.has(pid)) clearTimeout(biblePushTimers.get(pid));
       biblePushTimers.set(pid, setTimeout(() => { biblePushTimers.delete(pid); pushBible(pid, loadBible(pid)); }, 800));
+    }
+    /** 用宿主版本覆盖本地设定集时，保留本地「未命名的草稿条目」。
+     *  宿主 normalizeBible 会丢弃空名行（AI 起草时要过滤垃圾），但用户在设定集面板里刚点「添加」、
+     *  还没命名的行是真实草稿——被同步覆盖掉就是「输入框闪一下就消失」。 */
+    function mergeBibleKeepDrafts(pid, hostBible) {
+      const local = loadBible(pid);
+      const out = { ...(hostBible || {}) };
+      for (const k of ['characters', 'scenes', 'props']) {
+        const drafts = (Array.isArray(local[k]) ? local[k] : []).filter((x) => x && !String(x.name || '').trim());
+        out[k] = [...(Array.isArray(hostBible && hostBible[k]) ? hostBible[k] : []), ...drafts];
+      }
+      return out;
     }
     function bibleBlock(b) {
       if (!b) return '';
@@ -3987,8 +4207,11 @@ body[data-ds-dark-theme] .dshic-pick-item.is-on{background:color-mix(in srgb,var
     // 以下为纯函数（无副作用），供 scripts/test-mentions.mjs 抽取单测
     // <<<MENTION_PURE_BEGIN>>>
     /** @资产名@ 的词法（双 @ 精确包裹）：终止符是闭合 @，绝不可能把后文吞进名称；
-     *  名称内禁止 @、空白与常见标点。前端渲染时隐藏两个 @，名称显示为蓝色加粗。 */
-    const MENTION_RE = /@([^@\s，。；：、,.;:!?！？()（）\[\]【】"'“”<>《》/\\|]{1,64}?)@/g;
+     *  名称内禁止 @、空白与常见标点。前端渲染时隐藏两个 @，名称显示为蓝色加粗。
+     *  【全角括号必须允许】设定集里带括号的造型名（林晚（医院）/林晚（唐装男装））是合法实体名；
+     *  把（）当终止符会把 @林晚（医院）@ 切成 @林晚@（医院）@，解析退回短名「林晚」→
+     *  提示词永远用原造型的设定（本 bug 已实测复现）。 */
+    const MENTION_RE = /@([^@\s，。；：、,.;:!?！？\[\]【】"'“”<>《》/\\|]{1,64}?)@/g;
     /** 解析提示词里的 @名称（含位置，按出现顺序）。 */
     function parseMentions(text) {
       const out = [];
@@ -4114,11 +4337,27 @@ body[data-ds-dark-theme] .dshic-pick-item.is-on{background:color-mix(in srgb,var
           : '';
         return `${entityLabelOf(e.kind)} ${e.name}：${desc}${voiceLine}`;
       });
+      // 视频路径的统一朗读范围兜底：只允许念标注为「台词」的对白；镜头编号/时长/括号注记/
+      // 画面文字一律静音。分镜自动组装路径已自带这条（跳过，避免同一条规则出现两遍）。
+      const speechScope = (!light && !/朗读范围|speech_scope/i.test(String(prompt || '')))
+        ? (zh
+          ? '朗读范围（硬性）：只朗读提示词里标注为台词/对白的句子（「台词：…」或引号内人物说的话）；镜头编号、时长、括号注记、镜头标题一律不得朗读，不得处理成旁白或口型。画面中的字幕/牌匾/屏幕文字按画面需要正常呈现，但不得朗读、不得当成台词，也不得额外叠加字幕条。'
+          : 'Speech scope (hard): speak ONLY lines explicitly marked as dialogue (after a "Dialogue:" label or quoted speech by a character). Never read out shot numbers, durations, parenthetical notes or shot titles. On-screen text (signs, plaques, phone screens) must still render as the picture requires, but must not be read aloud, treated as dialogue, lip-synced, or duplicated as extra subtitle bars.')
+        : '';
+      // 视频路径的统一声音兜底：只保留环境声/拟音/台词，禁止背景音乐（配乐由后期统一处理）。
+      // 分镜自动组装路径已自带这条（跳过，避免同一条规则出现两遍）。
+      const noMusic = (!light && !/背景音乐|配乐|\bBGM\b|no background music/i.test(String(prompt || '')))
+        ? (zh
+          ? '声音设计（硬性）：只保留环境声、拟音/音效与人物台词；严禁背景音乐、配乐、BGM、旋律铺底、和弦与鼓点节奏，不要自动加音乐（配乐由后期统一处理）。'
+          : 'Sound design (hard): diegetic ambience, foley/SFX and dialogue ONLY; absolutely no background music, score, BGM, melodic pads, chords or drum grooves; never auto-add music (music is handled in post).')
+        : '';
       return [
         bibleStyleAnchor(bible) ? (zh ? '风格：' : 'Style: ') + bibleStyleAnchor(bible) : '',
         bind ? (zh ? '参考图 → ' : 'Refs -> ') + bind : '',
         stripMentionMarks(prompt),
         entLines.length ? (zh ? '设定集：' : 'Series bible: ') + entLines.join('；') : '',
+        speechScope,
+        noMusic,
       ].filter(Boolean).join('\n');
     }
     /** 资产命名时间戳（MM-DD HH:MM）：同节点多次生成靠它区分。 */
@@ -4137,13 +4376,29 @@ body[data-ds-dark-theme] .dshic-pick-item.is-on{background:color-mix(in srgb,var
      *  无法对上已知名的裸 @ 原样保留（不误伤普通文本）。 */
     function repairUnclosedMentions(text, knownNames) {
       const t = String(text || '');
-      const names = (knownNames || []).filter((x) => x && String(x).trim()).map((x) => String(x).trim());
+      // 长名优先：必须先试「林晚（医院）」，否则短名「林晚」先命中，括号会被甩到名字外面
+      const names = (knownNames || []).filter((x) => x && String(x).trim()).map((x) => String(x).trim())
+        .sort((a, b) => b.length - a.length);
       if (!t || !names.length) return t;
       const stop = /[\s@，。；：、！？…（）【】\[\]"'“”<>《》/\\|]/;
+      // 补闭合后允许紧邻的字符：空白、句读、除括号外的终止符，或下一处 @ —— 只有这些才算「名字到此为止」
+      const boundary = /[\s@，。；：、！？…【】\[\]"'“”<>《》/\\|]/;
       let out = '';
       let i = 0;
       while (i < t.length) {
         if (t[i] !== '@') { out += t[i]; i++; continue; }
+        // ① 已知名整体命中优先（名字里可以带全角括号）：命中就按整名处理，绝不因为「（」切断
+        let whole = '';
+        for (const k of names) { if (t.startsWith(k, i + 1)) { whole = k; break; } }
+        if (whole) {
+          const end = i + 1 + whole.length;
+          const nxt = t[end];
+          if (nxt === '@') { out += t.slice(i, end + 1); i = end + 1; continue; } // 已闭合：原样
+          if (nxt === undefined || boundary.test(nxt)) { out += '@' + whole + '@'; i = end; continue; } // 补闭合
+          // 名字后面还连着别的字（如 @林晚（梦境）@ 这种未登记的组合名）：原样保留，绝不拆成短名
+          out += t.slice(i, end); i = end; continue;
+        }
+        // ② 未命中已知名：退回按终止符扫描，命中前缀/全名才补闭合
         let j = i + 1;
         while (j < t.length && !stop.test(t[j])) j++;
         const name = t.slice(i + 1, j);
@@ -4388,9 +4643,14 @@ body[data-ds-dark-theme] .dshic-pick-item.is-on{background:color-mix(in srgb,var
      */
     function planShotSegments(shots, opts) {
       const o = opts || {};
+      // strict=true：给「分镜表拆分」用的硬区间模式——绝不为了少切一段而超出 maxSeconds
+      //（普通视频切段仍允许 +2s 容差，避免切出 2–3s 碎片段；分镜表则是 4–10s 的硬产品口径）。
+      const strict = o.strict === true;
+      // 从一个非切点镜开始一段的代价：越大越倾向于把边界留在真实换镜头处。
+      const cutPenalty = Number.isFinite(Number(o.cutPenalty)) ? Math.max(0, Number(o.cutPenalty)) : 6;
       const list = (Array.isArray(shots) ? shots : []).filter((s) => s && (String(s.visual || '').trim() || String(s.motion || '').trim() || (Array.isArray(s.dialogue) && s.dialogue.length)));
       const maxSeconds = Math.max(1, Number(o.maxSeconds) || 15);
-      const minSeconds = Math.max(0, Math.min(Number(o.minSeconds) || 2, maxSeconds));
+      const minSeconds = Math.max(0, Math.min(Number.isFinite(Number(o.minSeconds)) ? Number(o.minSeconds) : 5, maxSeconds));
       const warnings = [];
       const durOf = (s) => Math.max(0.3, Math.round((Number(s && s.duration) || 3) * 10) / 10);
       // 预解每镜的段落类型（与 shotContinuityPlan 同一套推断，保证分段与提示词口径一致）
@@ -4427,25 +4687,61 @@ body[data-ds-dark-theme] .dshic-pick-item.is-on{background:color-mix(in srgb,var
         return { end: bestCut, forced: false, acc };
       };
 
+      // 均衡切段（0.21.x）：以 targetSeconds（默认 7.5s）为目标做 DP，把每段尽量铺在 5–10s，
+      // 单段硬上限仍是 maxSeconds（允许 +2s 容差，避免为了死守上限切出 2–3s 的碎片段）。
+      // 旧贪心"能塞多少塞多少"在 10s 上限下会把 1.5s 特写切成独立一段。
+      const targetSeconds = Math.max(3, Math.min(Number(o.targetSeconds) || 7.5, maxSeconds));
+      const bounds = [];
+      {
+        const n = list.length;
+        const dp = new Array(n + 1).fill(Infinity);
+        const back = new Array(n + 1).fill(-1);
+        dp[0] = 0;
+        for (let b = 1; b <= n; b++) {
+          let sum = 0;
+          for (let a = b - 1; a >= 0; a--) {
+            sum += durOf(list[a]);
+            const over = sum > maxSeconds + (strict ? 0 : 2) + 1e-6;
+            // 单镜本身超上限：允许它独立成段（成本极高），否则整张表会退化成"一段装下所有镜头"。
+            // 多镜累计超上限就停止向前扩展——这正是 DP 的段边界。
+            if (over && a !== b - 1) break;
+            if (dp[a] === Infinity) { if (over) break; continue; }
+            // 边界在 a 之前：a 是切点镜（下一段换镜头）或 a-1 是切点镜（上一段以换镜头收尾）都算干净。
+            const startSafe = a === 0 || isCutPoint((plans[a] && plans[a].seg) || 'continuation')
+              || isCutPoint((plans[a - 1] && plans[a - 1].seg) || 'continuation') ? 0 : cutPenalty;
+            let cost = Math.pow(sum - targetSeconds, 2) + startSafe;
+            if (sum < minSeconds) cost += Math.pow(minSeconds - sum, 2) * (strict ? 30 : 20);
+            if (over) cost += 1000 + Math.pow(sum - maxSeconds, 2) * 20;
+            if (dp[a] + cost < dp[b]) { dp[b] = dp[a] + cost; back[b] = a; }
+            if (over) break;
+          }
+        }
+        let b = n;
+        while (b > 0 && back[b] >= 0) { bounds.unshift({ from: back[b], to: b - 1 }); b = back[b]; }
+        if (!bounds.length) bounds.push({ from: 0, to: n - 1 });
+      }
       const segments = [];
-      let i = 0;
+      let bi = 0;
       let warnMark = warnings.length;
-      while (i < list.length && segments.length < 128) {
-        // 段首必须是切点；若不是（说明上一段是被 forced 断开的），本镜保持原 seg
+      while (bi < bounds.length && segments.length < 128) {
         warnMark = warnings.length;
-        const brk = findBreak(i);
-        let end = brk.end;
+        const i = bounds[bi].from;
+        const end = bounds[bi].to;
+        const brk = { forced: false };
         let seamRisk = 'none';
         let reason = '';
         const firstSeg = (plans[i] && plans[i].seg) || 'continuation';
-        const opensOnCut = segments.length === 0 || isCutPoint(firstSeg);
+        // 合法边界有两侧：本段首镜是切点（换镜头从本段开始），或上一段末镜是切点
+        //（上一段以换镜头收尾，本段是"切回来"的续帧）。只看首镜会把后一种误判成硬切。
+        const prevLastSeg = segments.length ? segments[segments.length - 1].lastSeg : '';
+        const opensOnCut = segments.length === 0 || isCutPoint(firstSeg) || isCutPoint(prevLastSeg);
         if (!opensOnCut) {
           seamRisk = 'forced';
-          reason = '上一段超长被迫硬切，本段从镜中断点继续，动作相位可能不连续';
-          warnings.push(`第 ${i + 1} 镜起的一段是硬切（上一段超长且找不到换镜头切点）：这一段与上一段的接缝只能靠尾帧+提示词硬接`);
+          reason = '本段从镜中硬切：上一段在到达时长上限前没有可用的换镜头切点，只能按区间硬分，动作相位可能不连续';
+          warnings.push(`第 ${i + 1} 镜起的一段从镜中硬切（上一段没有可用的换镜头切点，只能按 4–10s 区间硬分）：这一段与上一段的接缝只能靠尾帧+提示词硬接`);
         }
-        // 段内若含"必须承接"的 continuation，且不是首段、且首镜也不是切点 → 需要尾帧接力
-        const needsTailChain = segments.length > 0 && !isCutPoint(firstSeg);
+        // 段内若含"必须承接"的 continuation，且边界两侧都不是切点 → 才需要尾帧接力。
+        const needsTailChain = segments.length > 0 && !isCutPoint(firstSeg) && !isCutPoint(prevLastSeg);
         if (needsTailChain) {
           seamRisk = seamRisk === 'forced' ? 'forced' : 'chain';
           reason = reason || '本段首镜是续帧镜头，需用上一段尾帧接力';
@@ -4475,17 +4771,17 @@ body[data-ds-dark-theme] .dshic-pick-item.is-on{background:color-mix(in srgb,var
           reason,
           warnMark,
         });
-        if (end === i && brk.forced) {
+        if (end === i && durOf(list[i]) > maxSeconds + 1e-6) {
           warnings.push(`第 ${i + 1} 镜单镜时长 ${durOf(list[i])}s 已超单次生成上限 ${maxSeconds}s：这一段只能单独生成，并期望厂商钳制或报错`);
         }
-        i = end + 1;
+        bi++;
       }
       // 尾部碎段并回上一段：把 20.8s 切成「19.8 + 1.0」既没意义又必然误报硬切（1 秒那段一定从镜中开始）。
       // 只有"末段很短且并回去只超上限一点点"才合并；中段碎块不动，避免掩盖真正的切点问题。
       if (segments.length > 1) {
         const last = segments[segments.length - 1];
         const prev = segments[segments.length - 2];
-        const tol = Math.max(0.6, maxSeconds * 0.1);
+        const tol = strict ? 0 : Math.max(0.6, maxSeconds * 0.1);
         const tinyTail = last.duration <= Math.max(2.5, maxSeconds * 0.2);
         const fits = (prev.duration + last.duration) <= maxSeconds + tol;
         if (tinyTail && fits) {
@@ -4497,7 +4793,8 @@ body[data-ds-dark-theme] .dshic-pick-item.is-on{background:color-mix(in srgb,var
           prev.lastSeg = last.lastSeg;
           prev.closesOnCut = last.closesOnCut;
           segments.pop();
-          warnings.push(`末段只有 ${last.duration}s，已并回上一段（合并后 ${prev.duration}s，超出单次上限 ${Math.round((prev.duration - maxSeconds) * 10) / 10}s 以内）：比切出一个 1 秒的碎片更好生成`);
+          const over = Math.round((prev.duration - maxSeconds) * 10) / 10;
+          warnings.push(`末段只有 ${last.duration}s，已并回上一段（合并后 ${prev.duration}s` + (over > 0 ? `，超出单次上限 ${over}s 以内` : '，仍在区间内') + '）：比切出一个 1 秒的碎片更好生成');
         }
       }
 
@@ -4505,12 +4802,192 @@ body[data-ds-dark-theme] .dshic-pick-item.is-on{background:color-mix(in srgb,var
       const cleanCuts = segments.every((s) => s.opensOnCut);
       const cutMode = cleanCuts ? 'clean' : 'forced';
       if (cutMode === 'forced') {
-        warnings.push('本次切段存在硬切点：建议把超长的续帧段在分镜里拆成两镜（第二镜标换场/特写插入），让切点落在真实镜头上');
+        warnings.push('本次切段存在硬切点：建议在连续动作里插入一个换镜头（换场 / 特写插入 / 新角色入场），让切点落在真实镜头上');
       }
       if (segments.length > 1 && !cleanCuts) {
         warnings.push(`共 ${segments.length} 段，其中 ${segments.filter((s) => !s.opensOnCut).length} 段从镜中断点开始——弱衔接模型（如 MiniMax）对这些段会明显吃力`);
       }
       return { segments, total, max: maxSeconds, cutMode, warnings };
+    }
+
+    // ============================================================
+    // 分镜表 4–10s 拆表（产品口径：一张分镜表 ≈ 一次视频生成）
+    // ============================================================
+    // 为什么在分镜表层拆，而不是继续用"一张大表 + 内部切段"：
+    //   ① 用户要的是"每一场多张分镜表"，表本身就是编辑/生成/资产单位；
+    //   ② 4–10s 正好覆盖主流视频模型单次生成区间，每张表 = 一次调用，不用再在表内藏分段；
+    //   ③ 表一多，接戏关系仍由 prev/tail 连线承载，expandStoryboard 对每张表各建一个视频节点。
+    const BOARD_MIN_SECONDS = 4;
+    const BOARD_MAX_SECONDS = 10;
+    const BOARD_TARGET_SECONDS = 7;
+
+    /** 把镜头清单按真实切点分组为 4–10s 的分镜表。返回结构同 planShotSegments。 */
+    function planStoryboardBoards(shots, opts) {
+      const o = opts || {};
+      const plan = planShotSegments(shots, {
+        maxSeconds: Number(o.maxSeconds) || BOARD_MAX_SECONDS,
+        minSeconds: Number(o.minSeconds) || BOARD_MIN_SECONDS,
+        targetSeconds: Number(o.targetSeconds) || BOARD_TARGET_SECONDS,
+        strict: true,
+        cutPenalty: Number.isFinite(Number(o.cutPenalty)) ? Number(o.cutPenalty) : 10,
+      });
+      return plan;
+    }
+
+    /** 去掉旧的「· 2/3」后缀，避免再次拆表时标签层层叠加。 */
+    function storyboardBoardBaseLabel(label) {
+      return String(label || '').replace(/\s*·\s*\d+\s*\/\s*\d+\s*$/, '').trim();
+    }
+
+    /** 拆表说明书里的镜头清单：比 storyboardAssetText 多带衔接/节拍/机位/特效/负面，保证单表重生成不丢字段。 */
+    function storyboardBoardShotText(shots) {
+      return (shots || []).map((x, i) => {
+        const s = x || {};
+        const lines = [
+          `【${String(s.title || ('镜' + (i + 1)))}】${Number(s.duration) || 3}s`,
+          `画面：${String(s.visual || '')}`,
+          `动作：${String(s.motion || '')}`,
+        ];
+        if (String(s.seg || '').trim()) lines.push(`段落类型：${String(s.seg).trim()}`);
+        if (String(s.tail || '').trim()) lines.push(`接点尾态：${String(s.tail).trim()}`);
+        if (String(s.cam || '').trim()) lines.push(`运镜延续：${String(s.cam).trim()}`);
+        if (String(s.start || '').trim()) lines.push(`起始态：${String(s.start).trim()}`);
+        if (Array.isArray(s.timeBeats) && s.timeBeats.length) lines.push(`时间节拍：${s.timeBeats.map(String).join(' → ')}`);
+        if (String(s.camera || '').trim()) lines.push(`机位：${String(s.camera).trim()}`);
+        if (String(s.vfx || '').trim()) lines.push(`特效：${String(s.vfx).trim()}`);
+        if (String(s.negative || '').trim()) lines.push(`负面：${String(s.negative).trim()}`);
+        const dls = (Array.isArray(s.dialogue) ? s.dialogue : []).map((d) => String(d && d.role || '').trim() + '：' + String(d && d.line || '').trim()).filter((t) => t.replace('：', '').trim());
+        if (dls.length) lines.push(`台词：${dls.join('；')}`);
+        if (String(s.sfx || '').trim()) lines.push(`音效：${String(s.sfx).trim()}`);
+        return lines.join('\n');
+      }).join('\n\n');
+    }
+
+    /** 拆出的每张表都带一份"本表范围"说明书：之后单独重生成这张表时，只改本段，不会把整场再生成一遍。 */
+    function storyboardBoardScript(source, baseLabel, seg, index, total, zh) {
+      const head = String(source || '').trim().slice(0, 6000);
+      const scope = zh
+        ? [
+            `【本表范围·硬性】本表是「${baseLabel}」按 4–10 秒拆出的第 ${index + 1}/${total} 张分镜表（原表第 ${seg.startIndex + 1}–${seg.endIndex + 1} 镜，约 ${seg.duration}s）。`,
+            '本表镜头（重新生成/润色时只改这些镜头，不得扩展到其它时间段，不得重复其它表的剧情）：',
+            storyboardBoardShotText(seg.shots),
+          ].join('\n')
+        : [
+            `[BOARD SCOPE - HARD] This is board ${index + 1}/${total} of "${baseLabel}", split at 4-10s (original shots ${seg.startIndex + 1}-${seg.endIndex + 1}, ~${seg.duration}s).`,
+            'Shots in this board (when regenerating, rewrite ONLY these shots; never extend to other time ranges or repeat other boards):',
+            storyboardBoardShotText(seg.shots),
+          ].join('\n');
+      return (head ? head + '\n\n' : '') + scope;
+    }
+
+    /** 在指定列下方找第一个不与现有节点重叠的 y（新建拆表节点用）。 */
+    function freeBoardY(x, y, w, h) {
+      let yy = Math.round(Number(y) || 0);
+      for (let guard = 0; guard < 80; guard++) {
+        const hit = Object.values(S.graph.nodes).find((o) => o && o.type !== 'group' && !(o.data && o.data.hidden)
+          && (Number(o.x) || 0) < x + w + 28 && (Number(o.x) || 0) + (Number(o.w) || 360) + 28 > x
+          && (Number(o.y) || 0) < yy + h + 28 && (Number(o.y) || 0) + (Number(o.h) || 360) + 28 > yy);
+        if (!hit) break;
+        yy = (Number(hit.y) || 0) + (Number(hit.h) || 360) + 40;
+      }
+      return yy;
+    }
+
+    /**
+     * 把一张分镜表按 4–10s 拆成多张（原节点保留为第 1 张）。
+     * opts: { silent:true 不弹成功 toast（自动拆表用）, auto:true 标记来自生成完成 }
+     * @returns {{total:number, ids:string[], plan:object}|null}
+     */
+    function splitStoryboardIntoBoards(nodeId, opts) {
+      const o = opts || {};
+      const n0 = S.graph.nodes[nodeId];
+      if (!n0 || n0.type !== 'storyboard') return null;
+      const shots0 = (n0.data.shots || []).slice();
+      if (!shots0.length) {
+        if (!o.silent) toast(T('expandNoShots'));
+        return null;
+      }
+      const plan = planStoryboardBoards(shots0);
+      const total = plan.segments.length;
+      if (total < 2) {
+        if (!o.silent) {
+          const only = plan.segments[0];
+          // 单镜超长 / 总时长本来就在区间内：分别给不同提示，不假装拆成功
+          if (only && only.duration > BOARD_MAX_SECONDS + 1e-6) toast(T('splitBoardsSingleShot'));
+          else toast(T('splitBoardsNoop'));
+        }
+        return null;
+      }
+      const zh = effLang() !== 'en';
+      // 原剧本来源（首次拆表 = 上游场景文本；再次拆表 = 本表已有的 boardScript）
+      let source = '';
+      try { source = storyboardScriptText(n0); } catch { source = String(n0.data.script || '').trim(); }
+      const baseLabel = (storyboardBoardBaseLabel(n0.data.label) || T('nStoryboard')).slice(0, 30);
+      const groupId = n0.data.boardGroupId || n0.id;
+      const boardSource = n0.data.boardSource || source;
+      const created = [];
+      update((s) => {
+        const live = s.graph.nodes[nodeId];
+        if (!live) return;
+        // ① 原节点 = 第 1 张
+        const first = plan.segments[0];
+        live.data.shots = first.shots;
+        live.data.label = baseLabel + ' · 1/' + total;
+        live.data.boardGroupId = groupId;
+        live.data.boardIndex = 0;
+        live.data.boardCount = total;
+        live.data.boardFrom = first.startIndex;
+        live.data.boardTo = first.endIndex;
+        live.data.boardSource = boardSource;
+        live.data.boardScript = storyboardBoardScript(boardSource, baseLabel, first, 0, total, zh);
+        live.data.segMaxSeconds = BOARD_MAX_SECONDS;
+        // ② 其余表：竖排在原表下方，prev 串联
+        let prev = live;
+        let y = (Number(live.y) || 0) + (Number(live.h) || 360) + 40;
+        for (let i = 1; i < total; i++) {
+          const seg = plan.segments[i];
+          y = freeBoardY(Number(live.x) || 0, y, Number(live.w) || 360, Number(live.h) || 360);
+          const board = newNode('storyboard', { x: Number(live.x) || 0, y });
+          board.data.label = baseLabel + ' · ' + (i + 1) + '/' + total;
+          board.data.shots = seg.shots;
+          board.data.requirement = live.data.requirement || '';
+          board.data.count = 0;
+          board.data.model = live.data.model;
+          board.data.cont = live.data.cont;
+          board.data.segMaxSeconds = BOARD_MAX_SECONDS;
+          board.data.boardGroupId = groupId;
+          board.data.boardIndex = i;
+          board.data.boardCount = total;
+          board.data.boardFrom = seg.startIndex;
+          board.data.boardTo = seg.endIndex;
+          board.data.boardSource = boardSource;
+          board.data.boardScript = storyboardBoardScript(boardSource, baseLabel, seg, i, total, zh);
+          s.graph.nodes[board.id] = board;
+          s.graph.edges.push({ id: uid('e'), fromNode: prev.id, fromPort: 'tail', toNode: board.id, toPort: 'prev' });
+          created.push(board.id);
+          prev = board;
+          y = board.y + (Number(board.h) || 360) + 40;
+        }
+        // ③ 原表原本指向"下一场 prev"的 tail 连线，改由最后一张表接出去
+        if (prev.id !== nodeId) {
+          for (const e of s.graph.edges) {
+            if (e.fromNode === nodeId && e.fromPort === 'tail') e.fromNode = prev.id;
+          }
+        }
+        s.sel = new Set([nodeId].concat(created));
+      });
+      if (!o.noHistory) pushHistory();
+      flushSave();
+      if (!o.silent) {
+        toast(T('splitBoardsDone').replace('{n}', String(total)));
+        const bad = plan.segments.filter((sg) => sg.duration > BOARD_MAX_SECONDS + 1e-6 || sg.duration < BOARD_MIN_SECONDS - 1e-6).length;
+        if (bad) setTimeout(() => toast(T('splitBoardsWarn').replace('{n}', String(bad))), 500);
+        if (plan.warnings && plan.warnings.length) setTimeout(() => toast(plan.warnings[0]), 900);
+        // 已经铺开过的视频节点不会自动迁到新表：如实提醒重新铺开，绝不静默让旧视频继续吃错镜头。
+        const staleVideos = S.graph.edges.filter((e) => e.fromNode === nodeId && S.graph.nodes[e.toNode] && S.graph.nodes[e.toNode].type === 'video').length;
+        if (staleVideos) setTimeout(() => toast(T('splitBoardsVideoStale').replace('{n}', String(staleVideos))), 1300);
+      }
+      return { total, ids: [nodeId].concat(created), plan };
     }
     /** 单段是否值得依赖"尾帧接力"：只有强衔接模型 + 该段确实跨了连续动作才算。 */
     function segmentNeedsHardFrame(seg, modelName) {
@@ -4698,7 +5175,8 @@ body[data-ds-dark-theme] .dshic-pick-item.is-on{background:color-mix(in srgb,var
       // 名称 → <Subject N>（长名优先，避免"瓦力"吃掉"瓦力的铃铛"）；顺带清掉 @引用@ 的包裹符号，
       // 否则会留下「@<Subject 2>@」这种残迹（@ 是画布内的引用语法，不该发给视频模型）
       const ordered = subjects.slice().sort((a, b) => b.name.length - a.name.length);
-      const mentionRe = /@([^@\s，。；、,;:.!?！？「」（）()]{1,24})@/g;
+      // 名称内允许全角括号：造型名「林晚（医院）」必须整体命中，否则只能退回短名「林晚」
+      const mentionRe = /@([^@\s，。；、,;:.!?！？「」]{1,24})@/g;
       const rewrite = (text) => {
         let out = String(text || '');
         if (out.includes('@')) {
@@ -4751,13 +5229,19 @@ body[data-ds-dark-theme] .dshic-pick-item.is-on{background:color-mix(in srgb,var
       const bibleBlock = entityBibleBlock(textOnly, bible, zh);
       if (bibleBlock) outs.push(bibleBlock);
       // ② 总述（只写事实，不臆造剧情）
-      const first = String(list[0].title || '').trim();
-      const last = String(list[list.length - 1].title || '').trim();
+      // 【镜头标题绝不进提示词】title 是编导侧的检索标签，不是画面内容；而大量标题本身就是台词
+      // （如「我晚上回去」「眼前有景道不得」「好！别客气」）。一旦写进请求，带同步音频的视频模型
+      // 会把它当成对白/旁白念出来（概率性），summary 里带「」的标题还会被当成字幕。
+      // 这里只给镜数与时长——标题仍留在分镜表/画布/记忆里做检索，不进模型。
+      // 节点上的补充说明：**自动组装稿不算补充说明**。分镜表驱动的节点曾被回写成
+      // 「【多镜头一次性生成】…」整段旧提示词，它会被拼进 summary 带到下一次请求里 ——
+      // 用户改了分镜角色，模型仍读到旧角色文本（本条为"提示词还是原来的"第二根因）。
+      const extraNote = String(o.prompt || '').trim();
+      const autoComposed = /^【(多镜头一次性生成|按镜头切段)/.test(extraNote);
       outs.push('summary:');
       outs.push('[参考生成] 目标视频共 ' + list.length + ' 镜、总时长 ' + (Math.round(total * 10) / 10) + ' 秒'
-        + (first || last ? '：从「' + (first || '起始镜') + '」开始，到「' + (last || '收束镜') + '」结束' : '')
         + '。主体：' + subjects.map((s) => '<Subject ' + sid(s) + '>').join('、') + '。'
-        + (o.prompt ? ' ' + String(o.prompt).trim() : ''));
+        + (extraNote && !autoComposed ? ' ' + extraNote : ''));
       // ③ 保真核对（每个主体出现在哪些镜）
       outs.push('retention_analysis:');
       subjects.forEach((sub) => {
@@ -4775,6 +5259,12 @@ body[data-ds-dark-theme] .dshic-pick-item.is-on{background:color-mix(in srgb,var
           ? '台词必须由画面内对应的主体当场开口说出（口型与台词同步、语气贴合情绪）；严禁画外音/旁白。'
           : 'Dialogue must be spoken on screen by the matching subject with lip-sync; never voice-over.');
       }
+      // 【朗读范围·硬性】带同步音频/配音的视频模型会把提示词里"像话"的中文顺手念出来
+      // （括号注记、引号短句、屏幕文字都是高发区）。明确只允许念 <d>…</d> 里的台词，
+      // 其余文字一律静音——与上面"剔除镜头标题"构成双保险。
+      outs.push(zh
+        ? '朗读范围（硬性）：**只有** <d>…</d> 内、且挂在「台词：」后面的文字可以朗读，必须由对应主体开口说出，口型同步；镜头编号、时间码、括号里的标注、镜头标题一律**不得朗读**。画面中的字幕/牌匾/屏幕文字按画面需要正常呈现，但**不得朗读、不得处理成旁白/台词或口型**，也不得额外叠加字幕条。'
+        : 'Speech scope (hard): ONLY text inside <d>...</d> that follows a "Dialogue:" line may be spoken, by the matching subject with lip-sync. Shot numbers, timecodes, parenthetical notes and shot titles must NEVER be read aloud. On-screen text (subtitles, plaques, phone screens) must still render as the picture requires, but must NEVER be read aloud, treated as dialogue/voice-over, lip-synced, or duplicated as extra subtitle bars.');
       // 跨段续帧：首帧锚定（上一段尾帧作为本段第 1 帧）——放在逐镜之前，权重最高
       const anchor = frameAnchorText({ hasFrame: !!o.hasFrame, role: o.frameRole, zh });
       if (anchor) outs.push(anchor);
@@ -4820,19 +5310,30 @@ body[data-ds-dark-theme] .dshic-pick-item.is-on{background:color-mix(in srgb,var
         }
         const sfx = rewrite(String(s.sfx || '').trim());
         if (sfx) parts.push((zh ? '音效：' : 'SFX: ') + sfx);
-        const title = String(s.title || '').trim();
-        outs.push('[Shot ' + (i + 1) + '] ' + fmtT(starts[i]) + (zh ? ' 起' : '')
-          + (title ? '（' + title + '）' : '') + '：' + parts.join(zh ? '；' : '; '));
+        // 镜头标题（s.title）刻意不写进这一行：它是编导检索标签，写进来会被音频模型当台词念。
+        // 镜头定位靠 [Shot N] + 绝对时间码已经足够，不需要标题。
+        outs.push('[Shot ' + (i + 1) + '] ' + fmtT(starts[i]) + (zh ? ' 起' : '') + '：' + parts.join(zh ? '；' : '; '));
       });
-      // ⑤ 声音景观（各镜音效合并）
+      // ⑤ 声音景观（各镜音效合并）+ 无背景音乐硬约束
+      //    带原生音频的视频模型（H3 / Seedance generate_audio 等）默认会"为了电影感"铺一层配乐。
+      //    用户口径：**允许环境声、拟音/音效、人物台词，不允许任何背景音乐**。
+      //    这条必须写在声音段里，不能只靠 negative——负向词对音频分支的影响很弱。
       const sfxAll = [...new Set(list.map((s) => String(s.sfx || '').trim()).filter(Boolean))];
-      outs.push('overall_soundscape:');
-      outs.push(sfxAll.length ? sfxAll.join('；') : (zh ? '仅保留场景环境声，不添加额外音效' : 'Ambient scene sound only'));
-      // ⑥ 非叙事音乐（仅在用户显式给出时输出，绝不臆造）
       const music = String(o.music || '').trim();
+      outs.push('overall_soundscape:');
+      outs.push((sfxAll.length ? sfxAll.join('；') : (zh ? '仅保留场景环境声与拟音' : 'Ambient scene sound and foley only'))
+        + (music
+          ? (zh ? '（只允许第 ⑥ 段显式给出的音乐；不得额外添加任何其它音乐）' : ' (only the music explicitly given in section 6; no other music)')
+          : (zh
+            ? '（声音只允许：环境声、拟音/音效、人物台词；**严禁任何背景音乐、配乐、BGM、旋律、和弦铺底、鼓点/节奏型音乐**，不要因为"电影感/情绪需要"自动加音乐。配乐统一在后期处理。）'
+            : ' (Sound design: diegetic ambience, foley/SFX and spoken dialogue ONLY. ABSOLUTELY NO background music, score, BGM, melody, chord pads or drum/rhythmic music; never add music "for cinematic feel". Music is handled in post.)')));
+      // ⑥ 非叙事音乐（仅在用户显式给出时输出；没有就明确写"无"，把"不要音乐"变成一条事实约束）
       if (music) {
         outs.push('non_diegetic_music:');
         outs.push(music);
+      } else {
+        outs.push('non_diegetic_music:');
+        outs.push(zh ? '无（禁止添加任何背景音乐/配乐/BGM）' : 'None — do not add any background music, score or BGM');
       }
       // ⑦ 跨段接戏（仅当本段承接上一段：有首帧尾帧接力或分镜标了承接）
       const contLine = String(o.continuity || '').trim();
@@ -4858,9 +5359,11 @@ body[data-ds-dark-theme] .dshic-pick-item.is-on{background:color-mix(in srgb,var
       const nm = String(name || '').trim() || (zh ? '未命名资产' : 'Unnamed asset');
       const raw = String(desc || '').trim();
       // 外观要点：优先「外观：…」片段（技能的写法约定），否则整段描述；去掉「声音：…」（画图用不到）
+      // 注意：分句只认句号——设定集里常用「；」分隔「发型；衣着；配饰」，按「；」截断会把衣服鞋子整段丢掉
+      // （实测：摊主的布巾/短褐/蓝布围裙/草鞋全被截掉，设定图画成一个没有年代信息的裸上身胖子）。
       const look = (() => {
-        const ap = /外观[：:]\s*([^。；\n]+)/.exec(raw);
-        const seg = ap ? ap[1] : raw.replace(/声音[：:][^。；\n]*/g, '').trim();
+        const ap = /外观[：:]\s*([^。\n]+)/.exec(raw);
+        const seg = ap ? ap[1].replace(/声音[：:][^。\n]*/g, '').trim() : raw.replace(/声音[：:][^。\n]*/g, '').trim();
         return seg.replace(/\s+/g, ' ').trim();
       })();
       const style = bibleStyleAnchor(bible) || (zh ? '写实电影感' : 'realistic cinematic');
@@ -5878,6 +6381,48 @@ function queueThumb(assetId) {
       return null;
     }
 
+    // ---- 桥接能力（比例/清晰度）对齐：以 dsh-image-gen 的 describe 为准 ----
+    // 画布自己的比例档（16:9/9:16/4:3/21:9…）不一定被对方支持：对方尺寸表为空时只认 1:1/3:2/2:3
+    // 且清晰度只有 standard，照搬节点比例会被它判「该 Provider 不支持所选比例/清晰度」。
+    // 这里先取一次 describe（30s 缓存）把请求对齐到它支持的档位，并把被调整的事实回报给节点。
+    let bridgeDescCache = { at: 0, data: null };
+    async function bridgeDescribe(force) {
+      if (!force && bridgeDescCache.data && Date.now() - bridgeDescCache.at < 30000) return bridgeDescCache.data;
+      try {
+        const r = await fetch('/plugins/dsh-image-gen/studio', { headers: { accept: 'application/json' } });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const j = await r.json();
+        if (j && Array.isArray(j.providers)) bridgeDescCache = { at: Date.now(), data: j };
+      } catch { /* 探测失败：退回设置里缓存的能力，绝不阻塞生成 */ }
+      return bridgeDescCache.data;
+    }
+    /** 取某 provider+model 的能力档（同一模型多渠道时优先已配置的那条，并把 channel 带回请求）。 */
+    function bridgeCapOf(desc, provider, model) {
+      const list = (desc && Array.isArray(desc.providers)) ? desc.providers : [];
+      const hit = list.filter((p) => p && p.provider === provider
+        && (p.model === model || (Array.isArray(p.modelOptions) && p.modelOptions.some((o) => o && o.value === model))));
+      return hit.find((p) => p.configured) || hit[0] || null;
+    }
+    /** 比例对齐：支持则原样，不支持则用它的默认档（并回报，绝不静默换成别的构图）。 */
+    function bridgeRatioOf(cap, wantRatio, cfg) {
+      const list = ((cap && cap.ratioOptions) || []).map((o) => (o && o.value) || '').filter(Boolean);
+      const allowed = list.length ? list : (Array.isArray(cfg && cfg.ratios) ? cfg.ratios.slice() : []);
+      const want = String(wantRatio || '').trim();
+      if (!allowed.length) return { ratio: want || '1:1', adjusted: false, allowed };
+      if (want && allowed.includes(want)) return { ratio: want, adjusted: false, allowed };
+      const fallback = (cap && cap.defaultRatio && allowed.includes(cap.defaultRatio)) ? cap.defaultRatio : allowed[0];
+      return { ratio: fallback, adjusted: true, allowed };
+    }
+    /** 清晰度对齐：优先用它的默认档（openai-compat 空尺寸表时只有 standard，画布没有这个档位选项）。 */
+    function bridgeQualityOf(cap, wantQuality, cfg) {
+      const list = ((cap && cap.qualityOptions) || []).map((o) => (o && o.value) || '').filter(Boolean);
+      const allowed = list.length ? list : (Array.isArray(cfg && cfg.qualities) ? cfg.qualities.slice() : []);
+      const want = String(wantQuality || '').trim();
+      if (!allowed.length) return want || 'high';
+      if (want && allowed.includes(want)) return want;
+      if (cap && cap.defaultQuality && allowed.includes(cap.defaultQuality)) return cap.defaultQuality;
+      return allowed[0];
+    }
     /** dsh-image-gen 桥接生图：走它的 /studio 路由（密钥留在它宿主侧，前端零配置）。
      *  GET 取模型清单由探测函数负责；这里只做 POST 生成 + 取图。返回 Blob（与 apiImage 同契约）。 */
     async function apiGenBridge(prompt, refBlobs, g, opts) {
@@ -5891,14 +6436,23 @@ function queueThumb(assetId) {
           if (m) refs.push({ mediaType: m[1], data: m[2] });
         } catch { /* 单张参考图转换失败不阻塞 */ }
       }
+      const cap = bridgeCapOf(await bridgeDescribe(), cfg.provider, cfg.model);
+      const picked = bridgeRatioOf(cap, opts && opts.ratio, cfg);
+      if (picked.adjusted) {
+        const want = String((opts && opts.ratio) || '').trim() || '未设置';
+        const msg = 'dsh-image-gen 的「' + cfg.model + '」不支持 ' + want + ' 比例，本次按 ' + picked.ratio
+          + ' 生成（它支持：' + picked.allowed.join('/') + '；想换比例请在 dsh-image-gen 的尺寸表里加上该比例）';
+        if (opts && typeof opts.warn === 'function') opts.warn(msg); else console.warn('[infinite-canvas] ' + msg);
+      }
       const body = {
         mode: refs.length ? 'edit' : 'generate',
         provider: cfg.provider,
         model: cfg.model,
         prompt: String(prompt || ''),
-        ratio: String((opts && opts.ratio) || '1:1'),
-        quality: String((opts && opts.quality) || 'high'),
+        ratio: picked.ratio,
+        quality: bridgeQualityOf(cap, opts && opts.quality, cfg),
       };
+      if (cap && cap.channel) body.channel = cap.channel;
       if (refs.length) body.references = refs;
       const res = await fetch('/plugins/dsh-image-gen/studio', {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
@@ -5966,9 +6520,7 @@ function queueThumb(assetId) {
         const d = j && j.data && j.data[0];
         if (d && d.b64_json) return base64ToBlob(d.b64_json, 'image/png');
         if (d && d.url) {
-          const r2 = await fetchViaProxy(d.url, { method: 'GET', timeoutMs: 120000, label: '下载图片' });
-          if (!r2.ok) throw new Error('下载生成图片失败 HTTP ' + r2.status);
-          return r2.blob;
+          return await downloadGeneratedImage(d.url, { baseUrl: base });
         }
         throw new Error('图片编辑 API 响应中没有 data[0].b64_json / url');
       }
@@ -6027,9 +6579,7 @@ function queueThumb(assetId) {
       const d = j && j.data && j.data[0];
       if (d && d.b64_json) return base64ToBlob(d.b64_json, 'image/png');
       if (d && d.url) {
-        const r2 = await fetchViaProxy(d.url, { method: 'GET', timeoutMs: 120000, label: '下载图片' });
-        if (!r2.ok) throw new Error('下载生成图片失败 HTTP ' + r2.status);
-        return r2.blob;
+        return await downloadGeneratedImage(d.url, { baseUrl: base });
       }
       throw new Error('图片 API 响应中没有 data[0].b64_json / url');
     }
@@ -6218,9 +6768,7 @@ function queueThumb(assetId) {
         const st = String(q.task.status || '');
         if (st === 'succeeded') {
           if (!q.task.output_url) throw new Error('优云图片任务成功但没有 output_url');
-          const dl = await fetchViaProxy(q.task.output_url, { method: 'GET', timeoutMs: 180000, label: '下载生成图片' });
-          if (!dl.ok) throw new Error('下载生成图片失败 HTTP ' + dl.status);
-          return dl.blob;
+          return await downloadGeneratedImage(q.task.output_url);
         }
         if (FINAL[st]) throw new Error('优云图片任务' + (st === 'blocked' ? '被审核拦截' : st) + '：' + (q.task.error_message || q.task.error_code || st));
         if (Date.now() > deadline) throw new Error('优云图片任务超过 20 分钟未完成（任务 id ' + tid + '，可凭 id 继续回查）');
@@ -6315,6 +6863,49 @@ function queueThumb(assetId) {
       const st = Number(err && err.status) || 0;
       if (!st) return true; // 无 HTTP 状态 = 网络抖动/代理超时（fetchViaProxy 直接抛错）
       return st === 403 || st === 404 || st === 408 || st === 409 || st === 425 || st === 429 || st >= 500;
+    }
+    /** 图片 URL 下载（生成成功 ≠ 文件已可下载）：厂商返回的 url 指向的 CDN
+     *  在出图后 10–60 秒内常见 502/503/504（冷缓存/回源未铺开），Host 代理下载也可能
+     *  因大图慢速被 120s 掐断（504）。生成只扣费一次、却只有一次下载机会 → 带窗口重试，
+     *  每次尝试给足 180s，并保留最后一次真实状态码与代理回包，便于判断是网络还是上游。
+     *  · 仅在 retryableDownloadError 判定可重试时循环；401/400 等配置错误立即抛；
+     *  · 用户手动停止优先于重试。 */
+    const IMAGE_DOWNLOAD_RETRY_MS = 4 * 60 * 1000;
+    const IMAGE_DOWNLOAD_RETRY_STEP_MS = 8 * 1000;
+    async function downloadGeneratedImage(url, opts) {
+      const o = opts || {};
+      let target = String(url || '');
+      // data: URL 直接解（不走代理、不重试）；相对地址按图片 API 的 base 解析（厂商偶发返回 /v1/files/…）
+      if (/^data:/i.test(target)) {
+        const r0 = await fetch(target);
+        if (!r0.ok) throw new Error('下载生成图片失败 HTTP ' + r0.status);
+        return r0.blob;
+      }
+      if (o.baseUrl) { try { target = new URL(target, o.baseUrl).toString(); } catch { /* 保持原样 */ } }
+      if (!/^https?:\/\//i.test(target)) throw new Error('下载生成图片失败：图片地址不合法（' + target.slice(0, 120) + '）');
+      const windowMs = o.windowMs == null ? IMAGE_DOWNLOAD_RETRY_MS : Math.max(0, Number(o.windowMs) || 0);
+      const stepMs = o.stepMs == null ? IMAGE_DOWNLOAD_RETRY_STEP_MS : Math.max(0, Number(o.stepMs) || 0);
+      const perTryMs = Number(o.timeoutMs) > 0 ? Number(o.timeoutMs) : 180000;
+      const deadline = Date.now() + windowMs;
+      for (let attempt = 1; ; attempt++) {
+        if (genAborted()) throw new Error(T('stoppedNote'));
+        let err = null;
+        try {
+          const r = await fetchViaProxy(target, { method: 'GET', timeoutMs: perTryMs, label: '下载生成图片' });
+          if (r.ok) return r.blob;
+          err = new Error('下载生成图片失败 HTTP ' + r.status + (r.text ? '：' + String(r.text).slice(0, 200) : ''));
+          err.status = r.status;
+        } catch (e) {
+          err = e instanceof Error ? e : new Error(String(e));
+        }
+        const retryable = retryableDownloadError(err);
+        if (!retryable || Date.now() >= deadline) {
+          if (retryable && attempt > 1) err.message += '（已重试 ' + attempt + ' 次，窗口 ' + Math.round(windowMs / 1000) + 's 用尽）';
+          throw err;
+        }
+        try { console.info('[IC] download image not ready (attempt ' + attempt + ', ' + err.message + ') — retrying'); } catch { /* 忽略 */ }
+        await sleep(stepMs);
+      }
     }
     /** 三宝：succeeded 后等 CDN 缓存铺开的下载重试窗口（实测 2–3 分钟，最迟 5 分钟；留 10 分钟余量）。
      *  生成成功只有一次下载机会 → 单次 502 不能让整次生成作废。 */
@@ -7900,7 +8491,11 @@ function queueThumb(assetId) {
       const seen = new Set([sbId]);
       for (let hop = 0; hop < 32 && curSb; hop++) {
         const prevEdge = S.graph.edges.find((x) => x.toNode === curSb.id && x.toPort === 'prev');
-        const upSb = prevEdge && S.graph.nodes[prevEdge.fromNode];
+        let upSb = prevEdge && S.graph.nodes[prevEdge.fromNode];
+        // 跨场 prev 误连到上一场第 1 张时，续帧应找上一场**最后一张**的视频。
+        if (upSb && upSb.type === 'storyboard' && curSb && upSb.data && curSb.data && upSb.data.boardGroupId !== curSb.data.boardGroupId) {
+          upSb = storyboardGroupLast(upSb);
+        }
         if (!upSb || upSb.type !== 'storyboard' || seen.has(upSb.id)) break;
         seen.add(upSb.id);
         const vids = S.graph.edges
@@ -8606,7 +9201,7 @@ function queueThumb(assetId) {
       if (targetCanvas) saveGraphDoc(hp.id, graph, targetCanvas);
       else saveGraphDoc(hp.id, graph);
       if (full.bible) {
-        saveBibleLocal(hp.id, full.bible);
+        saveBibleLocal(hp.id, mergeBibleKeepDrafts(hp.id, full.bible));
         if (full.bibleUpdatedAt) lsSet(LS_BIBLE_SYNC + hp.id, full.bibleUpdatedAt);
       }
       // 指定画布且正是当前画布：把内容并进内存（否则只落本地缓存，切换时读到）
@@ -8647,6 +9242,10 @@ function queueThumb(assetId) {
       // 节点以内存画布为种子（与下方 edges 的 live 优先同理）：450ms 防抖窗口内新建的节点、
       // 刚被 Ctrl+Z 恢复的节点都只存在于内存，若从落盘文档起合并会被本次合并结果抹掉
       const nodes = { ...((live && live.nodes) ? live.nodes : local.nodes) };
+      // Host 墓碑优先（0.21.x）：本地还留着的、已被 Host 删除的节点必须一起删掉。
+      // 旧逻辑只"不把 Host 节点加进来"，本地副本因此赖着不走，下一次推送又把它推回 Host
+      //（Host 的"撤销恢复"判定 pushTs >= tombstoneAt 会把墓碑清掉）→ 子画布删节点永远删不掉。
+      for (const nid of deadNodes) delete nodes[nid];
       for (const [nid, n] of Object.entries(full.nodes || {})) {
         if (deadNodes.has(nid)) continue;
         const cur = nodes[nid];
@@ -8669,7 +9268,7 @@ function queueThumb(assetId) {
       saveGraphDoc(pid, { nodes, edges: keep, view: local.view, tombstones: tombOut, edgeTombstones: local.edgeTombstones || [] }, cid);
       // 设定集随全量文档一起合并：Agent 用 canvas_update_bible 补的设定集在这里落地（设定集是项目级）
       if (full.bible) {
-        saveBibleLocal(pid, full.bible);
+        saveBibleLocal(pid, mergeBibleKeepDrafts(pid, full.bible));
         if (full.bibleUpdatedAt) lsSet(LS_BIBLE_SYNC + pid, full.bibleUpdatedAt);
       }
       // 技能配置随项目文档一起回写：对话侧用 canvas_skill_pack set:true 改的配置，
@@ -8805,9 +9404,10 @@ function queueThumb(assetId) {
               try {
                 const full = await hostRpc('projectsGet', { id: hp.id });
                 if (full && full.bible) {
-                  saveBibleLocal(hp.id, full.bible);
+                  const mergedPull = mergeBibleKeepDrafts(hp.id, full.bible); // 保留本地未命名草稿行
+                  saveBibleLocal(hp.id, mergedPull);
                   lsSet(LS_BIBLE_SYNC + hp.id, hp.bibleUpdatedAt);
-                  biblePushSnap.set(hp.id, JSON.stringify(full.bible)); // 已是最新：后续保存不必回推
+                  biblePushSnap.set(hp.id, JSON.stringify(mergedPull)); // 已是最新：后续保存不必回推
                   if (hp.id === S.activeId) update((s) => { s.assetsTick++; });
                 }
               } catch { /* 忽略 */ }
@@ -9185,7 +9785,7 @@ function queueThumb(assetId) {
         '- 本节点输出**一集**的剧本：成片时长 1-2 分钟（60-120 秒），共 4-10 个场景；',
         '- **每个场景必须以「【场N】场景名（地点·时间）」单独一行开头**（如【场1】城市街头（夜））——这是后续自动铺开到分镜的分场标记，格式不可省略或改写；',
         '- 每场按内容写足（成片 10–30 秒量级，约 150–400 字含该场全部对白）；全部场景时长之和 ≈ 1-3 分钟；',
-        '- 场景头之后：可视化动作描写 + 对白（角色：台词，单独成行）；需要的声音（环境音/旁白）标注在括号里；',
+        '- 场景头之后：可视化动作描写 + 对白（角色：台词，单独成行）；需要的声音（环境音/音效/旁白）标注在括号里，**不要写配乐/背景音乐提示**（配乐由后期统一处理）；',
         '- **【资产锚定·硬性】正文中所有角色/场景/道具名称一律写成 @名称@ 引用形式**（前后各一个 @ 精确包裹，名称与设定集逐字一致，如「@陈拾@ 在 @城市街头@ 的 @铁皮围挡@ 旁」）——下游分镜生成靠这些锚点识别资产并挂接参考图；叙述性文字正常书写，不要把动作描述包进 @…@；',
         '- 结尾单独一行「人物：」与「场景/道具：」清单，便于后续资产制作。',
       ].join('\n') : [
@@ -9194,7 +9794,7 @@ function queueThumb(assetId) {
         '- This node outputs ONE episode: 1-2 minutes of screen time (60-120s), 4-10 scenes;',
         '- **Every scene MUST start with its own line "【SCENE N】name (location · time)"** — this marker drives the automatic per-scene expansion and must not be omitted;',
         '- Each scene is written to what it needs (10-30 seconds of screen time, ≈150-400 words incl. dialogue); all scenes sum to ≈1-3 minutes;',
-        '- After each scene header: visual action + dialogue ("Character: line" on its own lines); mark sounds in brackets;',
+        '- After each scene header: visual action + dialogue ("Character: line" on its own lines); mark sounds (ambience/SFX/narration) in brackets; **never write music/score cues** (music is handled in post);',
         '- **[ASSET ANCHORING - HARD] wrap every character/scene/prop name as @Name@** (an @ on each side, names verbatim from the bible, e.g. "@Chen@ stands by @Wall@ at @Street@") - downstream storyboard generation relies on these anchors to attach references; keep narration text normal, never wrap action descriptions inside @...@;',
         '- End with "Characters:" and "Locations/Props:" lists for asset production.',
       ].join('\n');
@@ -9267,7 +9867,7 @@ function queueThumb(assetId) {
       ]);
       const jsonContract = zh
         ? [
-            '把剧本拆解为「按镜头切段生成」的分镜脚本：铺开时系统会按真实镜头边界把分镜切成若干次生成，每次只把本段的镜头写进同一条提示词，由视频模型生成那一段（镜头间由模型直接硬切，不是一镜一视频再拼接）。',
+            '把剧本拆解为「按镜头切段生成」的分镜脚本：生成完成后，系统会按 4–10 秒把这张表拆成多张分镜表（每张一次视频生成）；每张表内部再按真实镜头边界切镜，镜头间由模型直接硬切（不是一镜一视频再拼接）。',
             '只输出一个 JSON 对象：{"shots":[' + contFields + ']}。',
             '规则：',
             '- visual 是本镜画面描述（景别、人物外观与站位、场景、光线、构图，60 字内）；',
@@ -9280,7 +9880,7 @@ function queueThumb(assetId) {
             '- characters/scene/props 使用剧本与设定集中的名称（不带 @），便于匹配资产；无道具给空数组；',
             '- **dialogue 是本镜的角色台词**：把剧本中落在这一镜的对白逐行搬进来（{"role":"角色名","line":"台词原文"}），台词必须**逐字来自剧本**、不新写不改写；本镜无台词给空数组；一镜尽量只放一个角色的台词（单说话人镜头利于声音参考提取）；',
             '- **【音话同步·硬性】有台词的镜头必须让说话角色在画面内开口说话**：景别用近景/中近景，脸部朝向可见（正面或 3/4 侧脸），禁止背对镜头、脸部被遮挡、人物出画；visual 或 motion 里必须写明「开口说话、口型清晰可见」；台词**绝不能**处理成画外音/旁白（否则成片里人嘴是闭的、声音飘在背景里）；若某句台词在剧本里说话人无法入画，就把这句台词安排到能看见他说话的那一镜；',
-            '- **sfx 是本镜的音效/环境音**：剧本里括号标注的「（音效：…）（环境音：…）」按内容对齐到最贴近的镜头**逐字搬入**（多个用顿号连接）；无音效的镜头给空字符串——音效是成片声音设计的一部分，绝不丢弃；',
+            '- **sfx 是本镜的音效/环境音**：剧本里括号标注的「（音效：…）（环境音：…）」按内容对齐到最贴近的镜头**逐字搬入**（多个用顿号连接）；无音效的镜头给空字符串——音效是成片声音设计的一部分，绝不丢弃；**sfx 只写环境声/拟音/物理音效，绝不写音乐、配乐、BGM 或"紧张配乐"这类提示（配乐由后期统一处理）**；',
             '- **negative 是本镜要排除的失败项**（逗号分隔的短语）：默认写通用项「换脸、五官漂移、服装变化、手部畸形、多指、穿模、闪烁、风格突变、动作僵硬、嘴型与台词不同步」，再按题材补 1–2 项（古装加「现代物件」；室内加「窗外光线突变」；多人加「人物身份互换」）；',
             '- **【完整覆盖】分镜必须覆盖所给剧本的全部内容**：每一个动作、每一句对白都要落在某个镜头里——不概述、不省略、不跳过、不"挑选重点"；镜头数量与总时长由剧本体量自然决定，宁多勿漏（容量超限由上层拆分剧本处理，不由分镜偷工减料）；',
             '- **镜头按实际内容切分**：一个连续动作段落 = 一镜，数量由内容自然决定（3-10 镜都正常）——绝不凑数、绝不使用固定数量；',
@@ -9289,6 +9889,7 @@ function queueThumb(assetId) {
             '- duration 为该镜时长，**支持一位小数**；**按节奏谱系分配、拒绝均匀分布**：普通叙事/对话/环境交代 2–4s，快速冲突/打斗/追逐 0.3–0.8s（快切），重要反转/冲击/卡点 1–2s，长镜头情绪沉淀 ≥5s——同一场里至少制造一次明显的节奏变化（例：3s 叙事 → 0.6s 快切×2 → 1.5s 反转 → 5s 情绪长镜），画面再精致、时长全一样就没有节奏感；总时长按内容需要写足（不设硬上限）；镜头顺序即叙事顺序，末镜收束情绪；**若下方给了「承接约束」，第 1 镜必须承接上一场尾镜的画面与人物状态（不得重新建立场景/跳回远景），无承接约束时首镜才交代场景**；',
             '- **按情绪选景别**：孤独/绝望/宏大危机=远景；对峙/动作/关系建立=全景；对话/试探/信息交换=中景；震惊/怀疑/内心动摇=近景；崩溃/嘶吼/情绪爆发=特写；关键细节/道具揭示=大特写——冲突用全景、揭秘转近景、爆发给特写、反转可拉远，景别变化本身在讲情绪；',
             '- **快切镜头（<1.5s）的 visual/motion 要极短**（一个动作、一句画内信息），信息量大的镜头才配长时长——时长与内容量必须匹配；',
+            '- **【4–10s 拆表·硬性】一张分镜表可以超过 10 秒：生成完成后，系统会按真实镜头边界把这张表自动拆成多张 4–10 秒的分镜表（每张正好一次视频生成）。所以请把切点留在「换场 / 特写插入 / 新角色入场」上，让每一刀都是干净的硬切；不要为了凑 4–10 秒把同一个连续动作拆开——连续动作宁可给一镜更长 duration，由系统在最近切点处分组。**',
             '- 只输出 JSON，不要输出任何其他内容。',
           ].concat(FX_RULES, contOn ? [
             '',
@@ -9303,7 +9904,7 @@ function queueThumb(assetId) {
             '- **轴线一致**：两人对话，同一轴线关系（如男左女右）在相邻镜必须保持一致，不得越轴。',
           ] : []).join('\n')
         : [
-            'Break the script into shots for SHOT-BOUNDARY SEGMENTED generation: when expanded, the system splits the storyboard at real shot boundaries into several generations, each composing only its own shots into one prompt (the video model generates that segment; hard cuts inside the model — not one video per shot stitched together).',
+            'Break the script into shots for SHOT-BOUNDARY SEGMENTED generation: after generation the system splits this storyboard into several 4-10s boards (each board = one video generation); inside each board the shots are composed into one prompt and the video model hard-cuts between them (not one video per shot stitched together).',
             'Output only one JSON object: {"shots":[' + contFields + ']}.',
             'Rules:',
             '- visual = the shot\'s frame description (shot size, wardrobe, staging, light, framing, <=60 words);',
@@ -9316,7 +9917,7 @@ function queueThumb(assetId) {
             '- characters/scene/props arrays must use plain names from the script and series bible (no @) so assets match; empty props array if none;',
             '- **dialogue = the character lines that fall in this shot**, moved verbatim from the script ({"role":"Name","line":"exact line"}); never rewrite lines; empty array if none; keep one speaker per shot when possible (helps voice-reference extraction);',
             '- **[LIP-SYNC - HARD] any shot carrying dialogue must show the speaker TALKING ON SCREEN**: use a close-up / medium close-up with the face visible (frontal or 3/4), never back-to-camera, never obscured, never off-frame; state "speaks on screen, mouth clearly visible" in visual or motion; dialogue must NEVER become voice-over/narration (otherwise the final cut has a closed mouth with the voice floating in the background); if a line cannot be on camera in the script, move that line to the shot where the speaker is visible;',
-            '- **sfx = sound cues / ambience for this shot**: bracketed notes like (SFX: ...) (Ambience: ...) from the script are moved verbatim into the closest matching shot (join multiples with commas); empty string if none — sound design is part of the film, never drop it;',
+            '- **sfx = sound cues / ambience for this shot**: bracketed notes like (SFX: ...) (Ambience: ...) from the script are moved verbatim into the closest matching shot (join multiples with commas); empty string if none — sound design is part of the film, never drop it; **sfx must describe ambience/foley/physical sound ONLY — never music, score, BGM or cues like "tense score" (music is handled in post)**;',
             '- **negative = failure modes this shot must exclude** (comma-separated phrases): always include "face swap, facial drift, wardrobe change, deformed hands, extra fingers, clipping, flicker, style jump, stiff motion, lip-sync mismatch", plus 1-2 genre additions (period drama: "modern objects"; interior: "abrupt window light change"; multiple people: "identity swap");',
             '- **[FULL COVERAGE] the shots must cover EVERYTHING in the given script**: every action and every line must land in some shot — no summarizing, no omitting, no cherry-picking; shot count and total duration follow naturally from the script size (more is better than missing); capacity overflow is handled upstream by splitting the script, never by thinning the shots;',
             '- **Never use straight double quotes " inside JSON string values** — quoted text (signs/subtitles/lines) uses 「」 instead;',
@@ -9325,6 +9926,7 @@ function queueThumb(assetId) {
             '- duration is the shot length in seconds, **one decimal allowed**; **assign by pacing spectrum, never uniform**: normal narrative/dialogue 2-4s, fast conflict/fight/chase 0.3-0.8s (rapid cuts), key reversal/impact 1-2s, long emotional take >=5s — every scene must contain at least one obvious rhythm change (e.g. 3s narrative -> 0.6s cuts x2 -> 1.5s reversal -> 5s emotional take); identical durations kill the rhythm; total duration follows what the scene needs - no hard cap (vendor limits differ and change; if exceeded the video call reports it explicitly, then you split or adjust); shot order = narrative order; last shot lands the emotion; **if a CONTINUITY CONSTRAINT is given below, shot 1 must continue the previous scene\'s last frame and character state (no re-establishing, no wide reset); only without a constraint does shot 1 establish the scene**;',
             '- **Pick the shot size by emotion**: loneliness/despair/grand crisis = wide; confrontation/action/relationship = full; dialogue/probing/info exchange = medium; shock/suspicion/inner shake = close-up; breakdown/screaming/emotional burst = extreme close-up; key detail/prop reveal = big close-up — conflicts play wide, reveals move close, bursts go extreme, reversals can pull wide; the changing distance itself tells the emotion;',
             '- **Rapid cuts (<1.5s) get minimal visual/motion** (one action, one piece of in-frame information); long durations are earned by information density — duration must match content;',
+            '- **[4-10s BOARD SPLIT - HARD] one storyboard may exceed 10s: after generation the system automatically splits it at real shot boundaries into several 4-10s storyboard boards (each board = exactly one video generation). Keep boundaries on "scene change / insert close-up / new character enters" so every split is a clean cut; never break ONE continuous action into separate boards just to hit 4-10s - give that shot a longer duration and let the system group it at the nearest cut point.**',
             '- Output JSON only.',
           ].concat(FX_RULES, contOn ? [
             '',
@@ -9377,7 +9979,7 @@ function queueThumb(assetId) {
         }
         const sh = prevTail.shot;
         if (!sh) return null;
-        const dl = (sh.dialogue || []).map((d) => d.role + (zh ? '：' : ': ') + d.line).join(zh ? '；' : '; ');
+        const dl = (Array.isArray(sh.dialogue) ? sh.dialogue : []).map((d) => d.role + (zh ? '：' : ': ') + d.line).join(zh ? '；' : '; ');
         const tailState = String(sh.tail || '').trim();
         const camState = String(sh.cam || '').trim();
         return zh
@@ -9584,6 +10186,9 @@ function queueThumb(assetId) {
       activeCanvasId: null,
       // 统一弹窗（资产 + 设定集 + 记忆）：'bible' | 'assets' | 'memory' | null；纯 UI 状态
       panelModal: null,
+      // 分镜表编辑器（纯 UI 状态）：{ nodeId, shotIndex } | null。独立于生成面板，避免节点内嵌编辑器被画布变换裁切。
+      storyboardEditId: null,
+      storyboardEditShot: 0,
       memoryViewer: null,    // 记忆查看器状态：{ loaded, index, open, body }（随项目切换重拉）
       // 工具栏项目下拉（位置由按钮真实矩形计算）：{left, top} | null；纯 UI 状态
       projectMenu: null,
@@ -9692,8 +10297,9 @@ function queueThumb(assetId) {
             ...(bibleField.__bibleChanged ? { bible: bibleField.bible } : {}),
           },
         }).then((r) => {
-          if (bibleField.__bibleChanged && r && r.bibleUpdatedAt) {
-            lsSet(LS_BIBLE_SYNC + S.activeId, r.bibleUpdatedAt);
+          if (bibleField.__bibleChanged) {
+            if (r && r.bibleUpdatedAt) lsSet(LS_BIBLE_SYNC + S.activeId, r.bibleUpdatedAt);
+            else lsSet(LS_BIBLE_SYNC + S.activeId, Date.now()); // 旧版宿主不回传戳：兜底推进，防轮询误拉覆盖
             biblePushSnap.set(S.activeId, JSON.stringify(bibleField.bible));
           }
         }).catch((err) => {
@@ -10367,9 +10973,19 @@ function queueThumb(assetId) {
           ? '标注「台词」的对白必须由**画面内可见的角色当场开口说出**（口型与台词同步、语气贴合情绪、面部朝镜头可见）；严禁处理成画外音/旁白；同步音频开启时按台词生成人声。'
           : 'Dialogue must be SPOKEN ON SCREEN by the visible character (lip-synced to the line, matching emotion, face toward camera); never render it as voice-over/narration; generate speech when synced audio is on.');
       }
+      // 【朗读范围·硬性】只念「台词：」后面的对白。镜头编号/时长/括号注记/画面文字都不念——
+      // 音频模型对"括号里的中文短句"尤其容易顺手念出来（镜头标题被当台词的根因就在这）。
+      lines.push(zh
+        ? '朗读范围（硬性）：只朗读「台词」后面列出的对白；镜头编号、时长、括号注记、镜头标题一律不得朗读，不得处理成旁白或口型。画面中的字幕/牌匾/屏幕文字按画面需要正常呈现，但不得朗读、不得当成台词，也不得额外叠加字幕条。'
+        : 'Speech scope (hard): speak ONLY the dialogue listed after "Dialogue:"; never read out shot numbers, durations, parenthetical notes or shot titles. On-screen text (subtitles/plaques/screens) must still render as the picture requires, but must not be read aloud, treated as dialogue, lip-synced, or duplicated as extra subtitle bars.');
       // 状态跳变段（奇幻特效叙事）：镜头之间是"状态硬切"——后一镜的主体/特效在第 1 帧已完整在场。
       // 负向词里的"凭空出现"对这类段不适用，替换为更精确的禁令（见下方 negation 组装）。
       const hasStateJump = shots.some((s) => String(s.seg || '').trim().toLowerCase() === 'state_jump');
+      // 【声音设计·硬性】只要环境声/拟音/台词，不要背景音乐——模型默认会给"电影感"铺配乐。
+      // 写成独立一段而不是塞进 negative：音频分支对负向词基本不响应。
+      lines.push(zh
+        ? '声音设计（硬性）：只做环境声、拟音/音效与人物台词；**严禁背景音乐、配乐、BGM、旋律铺底、和弦与鼓点节奏**，不要因为"电影感/情绪"自动加音乐（配乐由后期统一处理）。'
+        : 'Sound design (hard): diegetic ambience, foley/SFX and dialogue ONLY; absolutely NO background music, score, BGM, melodic pads, chords or drum grooves; never auto-add music for cinematic feel (music is handled in post).');
       if (hasStateJump) {
         lines.push(zh
           ? '本段含同机位状态跳变镜：跳变靠**硬切**呈现——跳变镜的主体/特效在第 1 帧就已完整在场（静止），前后镜之间不演出任何进入/飞入/移动/凝聚的中间过程；运动可以由特效承担，人物/生物本体允许全程静止。'
@@ -10406,12 +11022,12 @@ function queueThumb(assetId) {
         : '';
       if (hasStateJump) {
         lines.push(zh
-          ? '禁止：换脸、五官漂移、服装变化、手部畸形、多指、穿模、画面闪烁、风格突变、动作僵硬、口型与台词不同步、主体未在首帧完整在场、主体缓慢走入或移入画面、跳变过程被演成动画' + (negLine ? '、' + negLine : '') + '。'
-          : 'Never: face swap, facial drift, wardrobe change, deformed hands, extra fingers, clipping, flicker, style jump, stiff motion, lip-sync mismatch, subject not fully present in frame 1, subject walking or drifting slowly into frame, the jump animated as a morph' + (negLine ? ', ' + negLine : '') + '.');
+          ? '禁止：换脸、五官漂移、服装变化、手部畸形、多指、穿模、画面闪烁、风格突变、动作僵硬、口型与台词不同步、主体未在首帧完整在场、主体缓慢走入或移入画面、跳变过程被演成动画、朗读镜头标注或画面文字、背景音乐/配乐/BGM' + (negLine ? '、' + negLine : '') + '。'
+          : 'Never: face swap, facial drift, wardrobe change, deformed hands, extra fingers, clipping, flicker, style jump, stiff motion, lip-sync mismatch, subject not fully present in frame 1, subject walking or drifting slowly into frame, the jump animated as a morph, reading out shot labels or on-screen text, background music/score/BGM' + (negLine ? ', ' + negLine : '') + '.');
       } else {
         lines.push(zh
-          ? '禁止：换脸、五官漂移、服装变化、手部畸形、多指、穿模、画面闪烁、风格突变、动作僵硬、人物凭空出现或消失、口型与台词不同步' + (negLine ? '、' + negLine : '') + '。'
-          : 'Never: face swap, facial drift, wardrobe change, deformed hands, extra fingers, clipping, flicker, style jump, stiff motion, characters popping in or out, lip-sync mismatch' + (negLine ? ', ' + negLine : '') + '.');
+          ? '禁止：换脸、五官漂移、服装变化、手部畸形、多指、穿模、画面闪烁、风格突变、动作僵硬、人物凭空出现或消失、口型与台词不同步、朗读镜头标注或画面文字、背景音乐/配乐/BGM' + (negLine ? '、' + negLine : '') + '。'
+          : 'Never: face swap, facial drift, wardrobe change, deformed hands, extra fingers, clipping, flicker, style jump, stiff motion, characters popping in or out, lip-sync mismatch, reading out shot labels or on-screen text, background music/score/BGM' + (negLine ? ', ' + negLine : '') + '.');
       }
       return lines.join('\n');
     }
@@ -10484,11 +11100,22 @@ function queueThumb(assetId) {
     /** 承接来源（**只认连线，不靠名字**）：本分镜「衔接上一镜」输入口(prev) 连到的上游分镜表，
      *  取它的**最后一镜**作为本场第 1 镜的承接依据；未连线返回 null（不加约束）。
      *  也允许连文本节点：直接把文本作为承接描述使用。 */
+    /** 同组 4–10s 拆表里最后一张（跨场 prev 若误连到第 1 张，自动纠正到末张）。 */
+    function storyboardGroupLast(sb) {
+      if (!sb || sb.type !== 'storyboard' || !sb.data || !sb.data.boardGroupId) return sb;
+      const group = Object.values(S.graph.nodes).filter((x) => x && x.type === 'storyboard' && x.data && x.data.boardGroupId === sb.data.boardGroupId);
+      if (group.length < 2) return sb;
+      group.sort((a, b) => (Number(a.data && a.data.boardIndex) || 0) - (Number(b.data && b.data.boardIndex) || 0));
+      return group[group.length - 1];
+    }
     function prevSceneTail(n) {
       const e = S.graph.edges.find((x) => x.toNode === n.id && x.toPort === 'prev');
       if (!e) return null;
-      const src = S.graph.nodes[e.fromNode];
+      let src = S.graph.nodes[e.fromNode];
       if (!src || !src.data) return null;
+      // 跨场 prev 应接上一场**最后一张**表；若连到了同组第 1 张（旧 runner/手误），这里自动纠正。
+      // 同组内 board1→board2 的 prev 不动，否则会把下一张的尾态当成上一张。
+      if (src.type === 'storyboard' && (!n.data || src.data.boardGroupId !== n.data.boardGroupId)) src = storyboardGroupLast(src);
       if (src.type === 'storyboard') {
         const shots = src.data.shots || [];
         if (!shots.length) return { label: String(src.data.label || ''), shot: null };
@@ -10517,6 +11144,10 @@ function queueThumb(assetId) {
     /** 分镜节点的剧本来源：**连线上游与手动粘贴二选一**——
      *  连了线就只用连线（上游没生成完会明确报错，绝不偷用粘贴的文本混着来）。 */
     function storyboardScriptText(n) {
+      // 4–10s 拆表后的表带着「本表范围」说明书：重生成只针对本段，
+      // 否则又拿整场剧本生成一次、再拆一次，会不断复制出重复分镜表。
+      const scoped = String(n.data.boardScript || '').trim();
+      if (scoped) return scoped;
       const e = S.graph.edges.find((x) => x.toNode === n.id && x.toPort === 'script');
       if (e) {
         const src = S.graph.nodes[e.fromNode];
@@ -10597,12 +11228,17 @@ function queueThumb(assetId) {
     async function genStoryboardNode(n) {
       const st = storyboardScriptText(n);
       if (!st) throw new Error(T('aiNeedScript'));
+      // 拆表后的单表重生成：镜头数沿用本表现有镜头数，避免模型又按整场篇幅写出别的段。
+      const boardScoped = String(n.data.boardScript || '').trim();
+      const countArg = boardScoped && Array.isArray(n.data.shots) && n.data.shots.length
+        ? n.data.shots.length
+        : Number(n.data.count) || 0;
       update((s) => { const nd = s.graph.nodes[n.id]; if (nd) { nd.data.aiStatus = 'running'; nd.data.aiError = null; nd.data.warnings = []; } });
       aiStreamClear(n.id);
       flushSave();
       try {
         const prev = prevSceneTail(n); // 场 N-1 的尾镜 → 作为本场第 1 镜的硬性承接约束
-        const shots = await aiStoryboardShots(st, n.data.requirement, Number(n.data.count) || 0, n.data.model, (kind, d) => aiStreamAppend(n.id, kind, d), prev, { cont: n.data.cont !== false });
+        const shots = await aiStoryboardShots(st, n.data.requirement, countArg, n.data.model, (kind, d) => aiStreamAppend(n.id, kind, d), prev, { cont: n.data.cont !== false });
         // 未闭合引用自愈：句尾丢闭合 @ 的引用按设定集名补全（否则参考图静默丢失）
         const _known = bibleNames(loadBible(S.activeId));
         for (const sh of shots) {
@@ -10621,7 +11257,9 @@ function queueThumb(assetId) {
         }
         update((s) => {
           const nd = s.graph.nodes[n.id];
-          if (nd) { nd.data.shots = shots; nd.data.aiStatus = 'idle'; nd.data.warnings = warnings; nd.data.status = 'done'; nd.data.error = null; nd.data.contFrom = prev ? prev.label : null; }
+          // 先落 shots 但仍标记 running：4–10s 自动拆表要在这之后完成，
+          // Host/对话侧的 canvasExec 必须等拆表落盘后才能安全读同组全部表。
+          if (nd) { nd.data.shots = shots; nd.data.warnings = warnings; nd.data.status = 'running'; nd.data.error = null; nd.data.contFrom = prev ? prev.label : null; }
           s.assetsTick++;
         });
         await saveTextAssetRecord(S.activeId, {
@@ -10629,7 +11267,21 @@ function queueThumb(assetId) {
           text: storyboardAssetText(shots),
           category: 'storyboard', prompt: st.slice(0, 200),
         });
-        update((s) => { s.assetsTick++; });
+        // 产品口径：生成后按 4–10 秒自动拆成多张分镜表（每张 = 一次视频生成）。
+        // 拆表是"分镜表"层的动作，失败不影响本次分镜结果。
+        const totalDur = shots.reduce((a, sh) => a + Math.max(0, Number(sh.duration) || 0), 0);
+        if (!boardScoped && totalDur > BOARD_MAX_SECONDS + 1e-6) {
+          try {
+            const split = splitStoryboardIntoBoards(n.id, { silent: true, auto: true, noHistory: true });
+            if (split) setTimeout(() => toast(T('boardSplitAuto').replace('{n}', String(split.total))), 350);
+          } catch { /* 拆表失败不阻断分镜 */ }
+        }
+        update((s) => {
+          const nd = s.graph.nodes[n.id];
+          if (nd) { nd.data.aiStatus = 'idle'; nd.data.status = 'done'; nd.data.error = null; }
+          s.assetsTick++;
+        });
+        pushHistory();
         flushSave();
         return shots;
       } catch (e) {
@@ -10748,9 +11400,23 @@ function queueThumb(assetId) {
         if (type !== 'image' && type !== 'video') throw new Error(T('nodeNotRunnable'));
         let prompt = resolvePrompt(n);
         const bible = loadBible(S.activeId);
-        // 未闭合引用自愈：@糯糯。 → @糯糯@（按设定集名归一），修复结果回写节点让用户可见
+        // 未闭合引用自愈：@糯糯。 → @糯糯@（按设定集名归一），修复结果回写节点让用户可见。
+        // 【例外】分镜表驱动生成的节点（上游连了 storyboard→prompt）：提示词由分镜表现场组装，
+        // 回写会把「这一次的旧组装稿」烤进节点提示词框，用户改了分镜后框里还显示旧角色，
+        // 而且下一次生成会被当作 summary 的补充文本再次带上（"改了角色提示词还是原来的"根因之一）。
+        // 因此这类节点只清掉旧的自动组装残留，不回写。
         const _fixed = repairUnclosedMentions(prompt, bibleNames(bible));
-        if (_fixed !== prompt) { prompt = _fixed; update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.prompt = _fixed; }); }
+        if (_fixed !== prompt) {
+          prompt = _fixed;
+          const _sbFed = S.graph.edges.some((x) => x.toNode === n.id && x.toPort === 'prompt'
+            && S.graph.nodes[x.fromNode] && S.graph.nodes[x.fromNode].type === 'storyboard');
+          update((s) => {
+            const nd = s.graph.nodes[n.id];
+            if (!nd) return;
+            if (_sbFed) { if (/^【(多镜头一次性生成|按镜头切段)/.test(String(nd.data.prompt || '').trim())) nd.data.prompt = ''; }
+            else nd.data.prompt = _fixed;
+          });
+        }
         if (type === 'image') {
           // 参考图 = **只取连进 ref 口的连线**（顺序 refOrder）；@引用只注入文字设定，不追加图片
           const { refs, entities } = await collectRefs(n, prompt, bible);
@@ -10774,7 +11440,8 @@ function queueThumb(assetId) {
           for (let i = 0; i < want; i++) {
             if (want > 1) update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.progress = (i + 1) + '/' + want; });
             const blob = useBridge
-              ? await apiGenBridge(p, metas, { provider: mcfg.imageGenProvider, model: mcfg.model }, { ratio: n.data.ratio })
+              ? await apiGenBridge(p, metas, { provider: mcfg.imageGenProvider, model: mcfg.model, ratios: mcfg.ratios, qualities: mcfg.qualities },
+                { ratio: n.data.ratio, quality: n.data.size, warn: addWarn })
               : await apiImage(p, metas, mcfg, {
               size: n.data.size, ratio: n.data.ratio, nodeExtra: n.data.imgExtra, warn: addWarn,
               // 任务式厂商（三宝图片）：任务 id 就是凭证——代理超时/页面关闭后仍可凭 id 回查（与视频同口径）
@@ -10822,6 +11489,11 @@ function queueThumb(assetId) {
           // 手写厂商结构化提示词 = 高级直通路径：保留用户的 subject/shot 结构，
           // 只补实体设定文字；风格锁与承接前置块都不再追加，避免污染厂商协议格式。
           const handStructured = handWritten.includes('subject_definitions');
+          // 旧协议「[Shot N] 00:00.000 起（镜头标题）」：标题是编导标签，不是台词——带音频的模型
+          // 会概率性把它念出来。手写提示词不改用户内容（直通承诺），但必须在节点上可见地提示。
+          if (handWritten && /\[Shot\s*\d+\][^\n（]{0,20}?起（[^）\n]{1,40}）/.test(handWritten)) {
+            addWarn('提示词里带了「[Shot N] …起（镜头标题）」的旧写法：镜头标题会被视频模型当台词念出来。请删掉括号里的标题（画布自动组装的提示词已不再带标题）。');
+          }
           // 分镜衔接规划：段落类型（续帧/换场/新角色/特写插入）+ 首镜承接口 + 是否接力尾帧
           const zh = effLang() !== 'en';
           const plan = (() => {
@@ -11635,6 +12307,7 @@ function queueThumb(assetId) {
       link: 'M10 13a5 5 0 007.1 0l2.4-2.4a5 5 0 00-7.1-7.1L11 4.9M14 11a5 5 0 00-7.1 0L4.5 13.4a5 5 0 007.1 7.1L13 19.1',
       camera: 'M4 8h3l1.5-2h7L17 8h3v11H4zM12 16a3 3 0 100-6 3 3 0 000 6z',
       memory: 'M5 5h14M5 10h14M5 15h9M5 20h6M18 15v5M15.5 17.5h5',
+      check: 'M4 12l5 5L20 6',
       chat: 'M4 5h16v11H9l-5 4V5z',
     };
     function Ic(name, size) { return h(Icon, { d: ICONS[name], size: size || 14 }); }
@@ -12519,6 +13192,15 @@ function queueThumb(assetId) {
           window.removeEventListener('resize', position);
         };
       }, [nid]);
+      // 桥接能力预取（图片节点）：比例/清晰度以 dsh-image-gen 的 describe 为准，取到后重渲染让比例下拉收敛
+      const [, bumpBridgeCap] = useState(0);
+      useEffect(() => {
+        if (!n || n.type !== 'image') return;
+        if (bridgeDescCache.data) return;
+        let alive = true;
+        bridgeDescribe().then((d) => { if (alive && d) bumpBridgeCap((v) => v + 1); });
+        return () => { alive = false; };
+      }, [nid]);
       // Ctrl/⌘+滚动写在画布上会缩放：面板内保持原生滚动（全局 wheel 处理器已排除 .dshic-composer）
       if (!n) return null;
       const kind = n.type;
@@ -12546,13 +13228,29 @@ function queueThumb(assetId) {
         return opts;
       })();
       const modelRef = isImage ? nodeImageModelRef(n) : isVideo ? nodeVideoModelRef(n) : (n.data.model || '');
-      const setModel = (v) => update((s) => {
-        const nd = s.graph.nodes[n.id];
-        if (!nd) return;
-        if (isImage) { nd.data.imageModel = v; delete nd.data.imageApiId; }
-        else if (isVideo) { nd.data.videoModel = v; delete nd.data.videoApiId; }
-        else nd.data.model = v;
-      });
+      const setModel = (v) => {
+        // 切到桥接模型时就地收敛比例：否则节点上留着的 16:9 会被 dsh-image-gen 判「不支持所选比例」
+        const mc = isImage ? resolveImageModelCfg(settings, v) : null;
+        const bcap = (mc && mc.viaImageGen) ? bridgeCapOf(bridgeDescCache.data, mc.imageGenProvider, mc.model) : null;
+        update((s) => {
+          const nd = s.graph.nodes[n.id];
+          if (!nd) return;
+          if (isImage) {
+            nd.data.imageModel = v; delete nd.data.imageApiId;
+            if (bcap) {
+              const fromDesc = (Array.isArray(bcap.ratioOptions) ? bcap.ratioOptions : []).map((o) => (o && o.value) || '').filter(Boolean);
+              const list = fromDesc.length ? fromDesc : (Array.isArray(mc.ratios) ? mc.ratios : []);
+              if (list.length && !list.includes(String(nd.data.ratio || ''))) {
+                nd.data.ratio = (bcap.defaultRatio && list.includes(bcap.defaultRatio)) ? bcap.defaultRatio : list[0];
+                const sz = nodeSizeForRatio(nd.data.ratio, { hasFooter: mediaHasFooter(nd) });
+                nd.w = sz.w; nd.h = sz.h;
+              }
+            }
+          }
+          else if (isVideo) { nd.data.videoModel = v; delete nd.data.videoApiId; }
+          else nd.data.model = v;
+        });
+      };
       const setData = (key, v) => update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data[key] = v; });
       // 比例变化：媒体节点立即按「预览区比例 + 固定栏」重排外框（有结果才有操作栏；空态不加操作栏）
       const setRatio = (v) => update((s) => {
@@ -12566,7 +13264,10 @@ function queueThumb(assetId) {
       });
       const onRatio = (v) => { setRatio(v); schedulePushFor(n.id); };
       const promptKey = kind === 'script' ? 'idea' : isStoryboard ? 'script' : kind === 'text' ? 'text' : 'prompt';
-      const promptVal = String(n.data[promptKey] || '');
+      // 4–10s 拆出的表：生成只认锁定的「本表范围」说明书。这里把它如实显示出来（只读），
+      // 避免用户以为改上方剧本/留空会改变本表——单表内容请用「编辑分镜表」逐镜改。
+      const boardScopedSource = isStoryboard && String(n.data.boardScript || '').trim();
+      const promptVal = boardScopedSource ? String(n.data.boardScript) : String(n.data[promptKey] || '');
       const setPrompt = (v) => setData(promptKey, v);
       const promptPlaceholder = () => {
         if (kind === 'text') return T('textPlaceholder');
@@ -12668,7 +13369,22 @@ function queueThumb(assetId) {
           try { if (ta) { ta.focus(); ta.selectionStart = ta.selectionEnd = caretAt; } } catch { /* 忽略 */ }
         }, 0);
       };
-      const ratioOpts = RATIOS.map((x) => ({ value: x, label: x }));
+      // 图片节点走 dsh-image-gen 桥接时：比例下拉只给**对方支持的档位**（画布的 16:9/21:9 等它多半不认，
+      // 照发会被判「该 Provider 不支持所选比例」）。当前值即使不在列表里也保留，避免历史节点显示空。
+      const bridgeRatioList = (() => {
+        if (!isImage) return null;
+        const mc = resolveImageModelCfg(settings, nodeImageModelRef(n));
+        if (!mc || !mc.viaImageGen) return null;
+        const cap = bridgeCapOf(bridgeDescCache.data, mc.imageGenProvider, mc.model);
+        const fromDesc = ((cap && Array.isArray(cap.ratioOptions)) ? cap.ratioOptions : []).map((o) => (o && o.value) || '').filter(Boolean);
+        if (fromDesc.length) return fromDesc;
+        return (Array.isArray(mc.ratios) && mc.ratios.length) ? mc.ratios.slice() : null;
+      })();
+      const ratioOpts = (() => {
+        if (!bridgeRatioList) return RATIOS.map((x) => ({ value: x, label: x }));
+        const cur = String(n.data.ratio || '16:9');
+        return (bridgeRatioList.includes(cur) ? bridgeRatioList : bridgeRatioList.concat([cur])).map((x) => ({ value: x, label: x }));
+      })();
       const sizeOpts = IMAGE_SIZES.map((x) => ({ value: x, label: x }));
       const countOpts = [1, 2, 3, 4].map((x) => ({ value: String(x), label: String(x) }));
       // 视频分辨率：H3（V2 协议）扩展档位 480P/768P/1080P/2K/4K（大小写敏感），其余用标准三档；
@@ -12764,11 +13480,14 @@ function queueThumb(assetId) {
           h('input', { ref: fileRef, type: 'file', accept: 'image/*', style: { display: 'none' }, onChange: onFile }),
           h('div', { className: 'dshic-composer-prompt' },
             h(PromptArea, {
-              value: promptVal, minHeight: 70, readOnly: isStoryboard && wiredScript,
+              value: promptVal, minHeight: 70, readOnly: isStoryboard && (wiredScript || !!boardScopedSource),
               inputRef: taRef,
-              placeholder: (isStoryboard && wiredScript) ? T('connected') : promptPlaceholder(),
+              placeholder: boardScopedSource ? T('boardScopedSourceHint') : ((isStoryboard && wiredScript) ? T('connected') : promptPlaceholder()),
               onChange: setPrompt,
-            })),
+            }),
+            boardScopedSource
+              ? h('div', { className: 'dshic-hint', style: { padding: '2px 2px 0' } }, T('boardScopedEditHint'))
+              : null),
           isStoryboard
             ? h(PromptArea, {
                 value: n.data.requirement || '', minHeight: 34,
@@ -12825,8 +13544,8 @@ function queueThumb(assetId) {
           // MiniMax 这类弱衔接模型建议填 6–10；Seedance 2.5 可以填到 15。
           isStoryboard
             ? h(PopupSelect, {
-                value: String(Number(n.data.segMaxSeconds) || 15), width: 84, title: T('segMaxLabel'), className: 'is-segmax',
-                options: [6, 8, 10, 12, 15, 20, 30].map((x) => ({ value: String(x), label: x + 's' })),
+                value: String(Number(n.data.segMaxSeconds) || 10), width: 84, title: T('segMaxLabel'), className: 'is-segmax',
+                options: [5, 6, 8, 10, 12, 15, 20].map((x) => ({ value: String(x), label: x + 's' })),
                 onChange: (v) => setData('segMaxSeconds', Number(v)),
                 editable: true, min: 1, max: 300, integer: false, decimals: 1,
                 customLabel: (v) => String(v) + 's', customPlaceholder: T('customSegMaxPh'),
@@ -13744,13 +14463,302 @@ function queueThumb(assetId) {
     }
 
     /** 分镜表节点：节点内只显示结果（N 镜 · 总时长 + 镜头清单 + 切段预览）；镜头数/承接分镜/生成在 GenComposer 面板里。 */
+    // ============================================================
+    // 分镜表编辑器（4–10s 拆表后的单表编辑）
+    // ============================================================
+    // 之前分镜表只读：用户要改一镜的画面/时长/台词，只能让 AI 整表重生成。
+    // 现在镜头清单是**一等可编辑数据**：点铅笔或双击镜头打开编辑器，逐镜改完保存即落盘，
+    // 视频提示词/声音参考/铺开都立刻使用新值（不需要重建节点）。
+    function openStoryboardEditor(nodeId, shotIndex) {
+      update((s) => {
+        const nd = s.graph.nodes[nodeId];
+        if (!nd || nd.type !== 'storyboard') return;
+        s.storyboardEditId = nodeId;
+        s.storyboardEditShot = Math.max(0, Math.floor(Number(shotIndex) || 0));
+      });
+    }
+    function closeStoryboardEditor() {
+      update((s) => { s.storyboardEditId = null; s.storyboardEditShot = 0; });
+    }
+
+    /** 编辑器保存前的归一化：与 aiStoryboardShots 的字段上限一致，避免手改绕过容量/长度约束。 */
+    function normalizeEditedShot(s, i) {
+      const src = s || {};
+      const listOf = (v) => (Array.isArray(v) ? v : (typeof v === 'string' ? v.split(/[,，、\n]/) : []))
+        .map((x) => String(x).trim()).filter(Boolean);
+      const beats = Array.isArray(src.timeBeats)
+        ? src.timeBeats
+        : (typeof src.timeBeats === 'string' ? src.timeBeats.split('\n') : []);
+      // seg 归一：旧数据/手输别名统一成规范值；不认识的值留空（由 shotContinuityPlan 推断）。
+      const segRaw = String(src.seg || '').trim().toLowerCase();
+      const segAlias = { cut: 'closeup', close: 'closeup', insert: 'closeup', cont: 'continuation', open: 'opening', scene: 'scene_change', jump: 'state_jump' };
+      const segOk = ['opening', 'continuation', 'scene_change', 'new_character', 'closeup', 'state_jump'];
+      const seg = segAlias[segRaw] || (segOk.includes(segRaw) ? segRaw : '');
+      return {
+        title: String(src.title || (T('shotPrefix') + (i + 1))).trim().slice(0, 24),
+        visual: String(src.visual || ''),
+        motion: String(src.motion || ''),
+        tail: String(src.tail || '').trim().slice(0, 120),
+        cam: String(src.cam || '').trim().slice(0, 80),
+        start: String(src.start || '').trim().slice(0, 120),
+        seg,
+        timeBeats: beats.map(String).map((x) => x.trim()).filter(Boolean).slice(0, 4),
+        camera: String(src.camera || '').trim().slice(0, 160),
+        vfx: String(src.vfx || '').trim().slice(0, 160),
+        negative: String(src.negative || '').trim().slice(0, 200),
+        characters: listOf(src.characters).slice(0, 6),
+        scene: String(src.scene || '').trim(),
+        props: listOf(src.props).slice(0, 6),
+        duration: Math.max(0.3, Math.round((Number(src.duration) || 3) * 10) / 10),
+        dialogue: (Array.isArray(src.dialogue) ? src.dialogue : []).slice(0, 6)
+          .map((d) => ({ role: String(d && d.role || '').trim().slice(0, 24), line: String(d && d.line || '').trim().slice(0, 200) }))
+          .filter((d) => d.role && d.line),
+        sfx: String(src.sfx || '').trim().slice(0, 120),
+      };
+    }
+
+    function StoryboardEditor() {
+      const nodeId = S.storyboardEditId;
+      const node = nodeId ? S.graph.nodes[nodeId] : null;
+      const [shots, setShots] = useState([]);
+      const [idx, setIdx] = useState(0);
+      const [dirty, setDirty] = useState(false);
+      const [saving, setSaving] = useState(false);
+      // 打开/切换节点时把节点里的 shots 拷成草稿：编辑期间不污染画布数据，保存才整体写回。
+      useEffect(() => {
+        if (!nodeId) return;
+        const nd = S.graph.nodes[nodeId];
+        if (!nd) return;
+        const src = Array.isArray(nd.data.shots) ? nd.data.shots : [];
+        setShots(JSON.parse(JSON.stringify(src)));
+        setIdx(Math.min(Math.max(0, Math.floor(Number(S.storyboardEditShot) || 0)), Math.max(0, src.length - 1)));
+        setDirty(false);
+      }, [nodeId]);
+      useEffect(() => {
+        if (!nodeId) return undefined;
+        const onKey = (e) => {
+          if (e.key === 'Escape') {
+            e.preventDefault(); e.stopPropagation();
+            if (dirty && typeof window !== 'undefined' && typeof window.confirm === 'function' && !window.confirm(T('discardEdits'))) return;
+            closeStoryboardEditor();
+          }
+        };
+        window.addEventListener('keydown', onKey, true);
+        return () => window.removeEventListener('keydown', onKey, true);
+      }, [nodeId, dirty]);
+      if (!nodeId || !node) return null;
+      const shot = shots[idx] || null;
+      const total = Math.round(shots.reduce((a, sh) => a + Math.max(0, Number(sh.duration) || 0), 0) * 10) / 10;
+      const boardPlan = shots.length ? planStoryboardBoards(shots) : null;
+      const patch = (p) => {
+        setShots((prev) => prev.map((sh, i) => (i === idx ? { ...sh, ...p } : sh)));
+        setDirty(true);
+      };
+      const requestClose = () => {
+        if (dirty && typeof window !== 'undefined' && typeof window.confirm === 'function' && !window.confirm(T('discardEdits'))) return;
+        closeStoryboardEditor();
+      };
+      const input = (value, onChange, placeholder, extra) => h('input', {
+        className: 'dshic-input', value: value == null ? '' : String(value), placeholder: placeholder || '',
+        onChange: (e) => onChange(e.target.value), ...(extra || {}),
+      });
+      const area = (value, onChange, rows) => h('textarea', {
+        className: 'dshic-textarea', rows: rows || 3, value: value == null ? '' : String(value),
+        onChange: (e) => onChange(e.target.value),
+      });
+      const field = (label, control) => h('label', { className: 'dshic-be-field' },
+        h('span', { className: 'dshic-be-label' }, label), control);
+      const setDialogue = (di, p) => {
+        const arr = (Array.isArray(shot && shot.dialogue) ? shot.dialogue : []).slice();
+        arr[di] = { ...(arr[di] || {}), ...p };
+        patch({ dialogue: arr });
+      };
+      const addDialogue = () => patch({ dialogue: [...(Array.isArray(shot && shot.dialogue) ? shot.dialogue : []), { role: '', line: '' }] });
+      const removeDialogue = (di) => patch({ dialogue: (Array.isArray(shot && shot.dialogue) ? shot.dialogue : []).filter((_, i) => i !== di) });
+      const addShot = () => {
+        const at = Math.min(idx + 1, shots.length);
+        const next = normalizeEditedShot({ title: T('shotPrefix') + (shots.length + 1), duration: 3, seg: 'continuation' }, shots.length);
+        setShots((prev) => { const arr = prev.slice(); arr.splice(at, 0, next); return arr; });
+        setIdx(at);
+        setDirty(true);
+      };
+      const delShot = () => {
+        if (!shots.length) return;
+        const next = shots.filter((_, i) => i !== idx);
+        setShots(next);
+        setIdx(Math.min(idx, Math.max(0, next.length - 1)));
+        setDirty(true);
+      };
+      const moveShot = (dir) => {
+        const to = idx + dir;
+        if (to < 0 || to >= shots.length) return;
+        setShots((prev) => {
+          const arr = prev.slice();
+          const tmp = arr[idx]; arr[idx] = arr[to]; arr[to] = tmp;
+          return arr;
+        });
+        setIdx(to);
+        setDirty(true);
+      };
+      const save = async () => {
+        if (saving) return;
+        setSaving(true);
+        const clean = shots.map(normalizeEditedShot);
+        const totalSec = Math.round(clean.reduce((a, sh) => a + (Number(sh.duration) || 0), 0) * 10) / 10;
+        const zh = effLang() !== 'en';
+        update((s) => {
+          const nd = s.graph.nodes[nodeId];
+          if (nd) {
+            nd.data.shots = clean;
+            nd.data.aiStatus = 'idle';
+            nd.data.status = 'done';
+            nd.data.aiError = null;
+            // 拆出来的表：范围说明书要跟着手改后的镜头走，否则单表重生成又拿旧镜头清单去写。
+            if (Number(nd.data.boardCount) > 1) {
+              const from = Number(nd.data.boardFrom) || 0;
+              const segLike = { shots: clean, startIndex: from, endIndex: from + Math.max(0, clean.length - 1), duration: totalSec };
+              nd.data.boardTo = segLike.endIndex;
+              nd.data.boardScript = storyboardBoardScript(
+                String(nd.data.boardSource || ''), storyboardBoardBaseLabel(nd.data.label) || T('nStoryboard'),
+                segLike, Number(nd.data.boardIndex) || 0, Number(nd.data.boardCount) || 1, zh
+              );
+            }
+          }
+        });
+        try {
+          const warnings = await checkShotConsistency(clean);
+          update((s) => { const nd = s.graph.nodes[nodeId]; if (nd) nd.data.warnings = warnings; });
+        } catch { /* 校验失败保留旧告警，不阻断保存 */ }
+        pushHistory();
+        flushSave();
+        setSaving(false);
+        setDirty(false);
+        toast(T('shotSaved'));
+        closeStoryboardEditor();
+      };
+      const segOptions = ['continuation', 'scene_change', 'new_character', 'closeup', 'opening', 'state_jump'];
+      const segLabel = (v) => T('seg' + String(v || 'continuation').charAt(0).toUpperCase() + String(v || 'continuation').slice(1));
+      return h('div', {
+        className: 'dshic-board-editor-overlay', 'data-role': 'storyboard-editor',
+        onPointerDown: (e) => { if (e.target === e.currentTarget) requestClose(); },
+      },
+        h('div', { className: 'dshic-board-editor', onPointerDown: (e) => e.stopPropagation() },
+          h('div', { className: 'dshic-board-editor-head' },
+            h('div', { className: 'dshic-board-editor-title' },
+              h('b', {}, T('editStoryboard')),
+              h('span', { className: 'dshic-hint', style: { marginLeft: 8 } }, String(node.data.label || '')),
+            ),
+            h('button', { type: 'button', className: 'dshic-iconbtn', title: T('cancel'), onClick: requestClose }, '✕'),
+          ),
+          h('div', { className: 'dshic-board-editor-body' },
+            h('div', { className: 'dshic-board-editor-list' },
+              h('div', { className: 'dshic-be-list-head' },
+                h('span', {}, T('shotsLabel')),
+                h('span', { className: 'dshic-hint' }, String(shots.length) + ' · ' + total + 's')),
+              shots.map((sh, i) => h('button', {
+                key: i, type: 'button', className: cls('dshic-be-item', i === idx && 'is-on'),
+                onClick: () => setIdx(i),
+              },
+                h('span', { className: 'dshic-be-idx' }, String(i + 1)),
+                h('span', { className: 'dshic-be-item-main' },
+                  h('span', { className: 'dshic-be-item-title' }, String(sh.title || '—')),
+                  h('span', { className: 'dshic-be-item-sub' }, (Number(sh.duration) || 0) + 's' + (String(sh.visual || '').trim() ? ' · ' + String(sh.visual).trim().slice(0, 18) : ''))),
+              )),
+              h('button', { type: 'button', className: 'dshic-mini dshic-be-add', onClick: addShot, disabled: shots.length >= MAX_STORYBOARD_SHOTS },
+                Ic('plus', 11), T('addShot')),
+            ),
+            h('div', { className: 'dshic-board-editor-form' },
+              shot
+                ? [
+                    h('div', { key: 'row1', className: 'dshic-be-grid2' },
+                      field(T('shotTitle'), input(shot.title, (v) => patch({ title: v }), T('shotTitle'))),
+                      field(T('shotDuration'), h('input', {
+                        type: 'text', inputMode: 'decimal', className: 'dshic-input',
+                        value: shot.duration == null ? '' : String(shot.duration),
+                        onChange: (e) => patch({ duration: e.target.value }),
+                      })),
+                    ),
+                    h('div', { key: 'row2', className: 'dshic-be-grid2' },
+                      field(T('shotSeg'), h('select', {
+                        className: 'dshic-input', value: segOptions.includes(String(shot.seg || '')) ? String(shot.seg) : 'continuation',
+                        onChange: (e) => patch({ seg: e.target.value }),
+                      }, segOptions.map((v) => h('option', { key: v, value: v }, segLabel(v))))),
+                      field(T('shotSfx'), input(shot.sfx, (v) => patch({ sfx: v }), T('shotSfx'))),
+                    ),
+                    h('div', { key: 'core', className: 'dshic-be-core' },
+                      field(T('shotVisual'), area(shot.visual, (v) => patch({ visual: v }), 4)),
+                      field(T('shotMotion'), area(shot.motion, (v) => patch({ motion: v }), 3)),
+                      field(T('shotTimeBeats'), area((shot.timeBeats || []).join('\n'), (v) => patch({ timeBeats: v.split('\n').map((x) => x.trim()).filter(Boolean) }), 3)),
+                      field(T('shotCamera'), input(shot.camera, (v) => patch({ camera: v }), T('shotCamera'))),
+                    ),
+                    h('div', { key: 'row3', className: 'dshic-be-grid2' },
+                      field(T('shotVfx'), input(shot.vfx, (v) => patch({ vfx: v }), T('shotVfx'))),
+                      field(T('shotNegative'), input(shot.negative, (v) => patch({ negative: v }), T('shotNegative'))),
+                    ),
+                    h('div', { key: 'dialogue', className: 'dshic-be-field' },
+                      h('span', { className: 'dshic-be-label' }, T('shotDialogue')),
+                      h('div', { className: 'dshic-be-dialogues' },
+                        (Array.isArray(shot.dialogue) ? shot.dialogue : []).map((d, di) => h('div', { key: di, className: 'dshic-be-dialogue' },
+                          h('input', {
+                            className: 'dshic-input dshic-be-role', value: String(d.role || ''), placeholder: T('dialogueRole'),
+                            style: { width: 96, minWidth: 96, flex: '0 0 96px' },
+                            onChange: (e) => setDialogue(di, { role: e.target.value }),
+                          }),
+                          h('input', {
+                            className: 'dshic-input dshic-be-line', value: String(d.line || ''), placeholder: T('dialogueLine'),
+                            style: { width: 'auto', minWidth: 80, flex: '1 1 120px' },
+                            onChange: (e) => setDialogue(di, { line: e.target.value }),
+                          }),
+                          h('button', { type: 'button', className: 'dshic-iconbtn', style: { flex: 'none' }, title: T('deleteShot'), onClick: () => removeDialogue(di) }, '×'),
+                        )),
+                        h('button', { type: 'button', className: 'dshic-mini', onClick: addDialogue }, Ic('plus', 10), T('addDialogue')),
+                      ),
+                    ),
+                    h('div', { key: 'row4', className: 'dshic-be-grid3' },
+                      field(T('shotCharacters'), input((shot.characters || []).join('、'), (v) => patch({ characters: v.split(/[,，、]/).map((x) => x.trim()).filter(Boolean) }), T('shotCharacters'))),
+                      field(T('shotScene'), input(shot.scene, (v) => patch({ scene: v }), T('shotScene'))),
+                      field(T('shotProps'), input((shot.props || []).join('、'), (v) => patch({ props: v.split(/[,，、]/).map((x) => x.trim()).filter(Boolean) }), T('shotProps'))),
+                    ),
+                    h('details', { key: 'adv', className: 'dshic-be-advanced' },
+                      h('summary', {}, T('shotAdvanced')),
+                      field(T('shotTail'), input(shot.tail, (v) => patch({ tail: v }), T('shotTail'))),
+                      field(T('shotCam'), input(shot.cam, (v) => patch({ cam: v }), T('shotCam'))),
+                      field(T('shotStart'), input(shot.start, (v) => patch({ start: v }), T('shotStart'))),
+                    ),
+                  ]
+                : h('div', { className: 'dshic-be-empty' }, T('boardEditorEmpty')),
+            ),
+          ),
+          h('div', { className: 'dshic-board-editor-foot' },
+            h('div', { className: 'dshic-be-foot-left' },
+              h('button', { type: 'button', className: 'dshic-mini', disabled: !shots.length || idx <= 0, onClick: () => moveShot(-1) }, '↑ ' + T('moveShotUp')),
+              h('button', { type: 'button', className: 'dshic-mini', disabled: !shots.length || idx >= shots.length - 1, onClick: () => moveShot(1) }, '↓ ' + T('moveShotDown')),
+              h('button', { type: 'button', className: 'dshic-mini is-ghost', disabled: !shots.length, onClick: delShot }, Ic('trash', 11), T('deleteShot')),
+            ),
+            h('div', { className: 'dshic-be-foot-right' },
+              h('span', { className: 'dshic-hint' },
+                T('shotCountTotal').replace('{n}', String(shots.length)).replace('{t}', String(total))
+                + (boardPlan ? ' · ' + T('boardPlanHint').replace('{n}', String(boardPlan.segments.length)) : '')),
+              h('button', { type: 'button', className: 'dshic-mini', onClick: requestClose }, T('cancelEdit')),
+              h('button', {
+                type: 'button', className: 'dshic-mini', disabled: saving,
+                onClick: save,
+              }, saving ? h('span', { className: 'dshic-spin' }) : Ic('check', 11), T('saveShots')),
+            ),
+          ),
+        ),
+      );
+    }
+
     function StoryboardNodeBody({ n }) {
       const running = n.data.aiStatus === 'running';
       const shots = n.data.shots || [];
       const totalDur = shots.reduce((a, sh) => a + Math.max(0, Number(sh.duration) || 0), 0);
       // 切段预览：把"这张分镜表会被切成几次生成、每次几镜几秒、哪些段要接尾帧"直接显示在节点上，
       // 用户铺开前就知道会切成什么样——不用等到生成完才发现接不上。
-      const segPlan = shots.length ? planShotSegments(shots, { maxSeconds: Number(n.data.segMaxSeconds) || 15 }) : null;
+      const segPlan = shots.length ? planShotSegments(shots, { maxSeconds: Number(n.data.segMaxSeconds) || 10 }) : null;
+      // 拆表预览：生成后会按 4–10 秒自动拆成几张表（每张 = 一次视频生成），拆前就告诉用户。
+      const boardPlan = shots.length ? planStoryboardBoards(shots) : null;
       // 一致性告警的手动重校验：告警是**生成时刻**算的，之后补全设定集不会让它们自动消失——
       // 点刷新按当前设定集重算（checkShotConsistency 读的是实时 bible/资产名索引）
       const [wvChecking, setWvChecking] = useState(false);
@@ -13777,6 +14785,14 @@ function queueThumb(assetId) {
                   .replace('{t}', String(segPlan.total))
                   .replace('{s}', String(Math.max(...segPlan.segments.map((sg) => sg.duration))))),
               h('span', { style: { opacity: 0.75 } }, ' · ' + (segPlan.cutMode === 'clean' ? T('segClean') : T('segForced'))))
+          : null,
+        // 4–10s 拆表提示：已经是拆出来的单表 → 显示 i/N；还是一张大表 → 显示"会拆成几张"。
+        (n.data.boardCount > 1 || (boardPlan && boardPlan.segments.length > 1))
+          ? h('div', { key: 'board', className: 'dshic-hint', 'data-role': 'board-summary' },
+              n.data.boardCount > 1
+                ? '↳ ' + T('boardHint').replace('{i}', String((Number(n.data.boardIndex) || 0) + 1)).replace('{n}', String(n.data.boardCount))
+                  + (n.data.boardScript ? ' · ' + T('boardScopedHint') : '')
+                : '✂ ' + T('boardPlanHint').replace('{n}', String(boardPlan.segments.length)))
           : null,
         n.data.contFrom
           ? h('div', { key: 'cont', className: 'dshic-hint' }, '↩ ' + T('contFrom') + '：' + n.data.contFrom + ' ' + T('lastFrame'))
@@ -13811,7 +14827,12 @@ function queueThumb(assetId) {
               h('div', { key: 'list', className: 'dshic-shot-list is-fill' },
                 shots.map((sh, i) => {
                   const pl = shotContinuityPlan(sh, shots[i - 1], i);
-                  return h('div', { key: i, className: 'dshic-shot-item', onPointerDown: (e) => e.stopPropagation() },
+                  return h('div', {
+                    key: i, className: 'dshic-shot-item',
+                    title: T('editShotHint'),
+                    onPointerDown: (e) => e.stopPropagation(),
+                    onDoubleClick: (e) => { e.stopPropagation(); openStoryboardEditor(n.id, i); },
+                  },
                   h('strong', {}, `${sh.title} · ${sh.duration}s `), ...mentionNodes(sh.visual),
                   pl.seg !== 'continuation'
                     ? h('div', { className: 'dshic-shot-label', style: { marginTop: 2, opacity: 0.9 } }, '〔' + T('seg' + pl.seg.charAt(0).toUpperCase() + pl.seg.slice(1)) + '〕')
@@ -13822,12 +14843,17 @@ function queueThumb(assetId) {
                   String(sh.cam || '').trim()
                     ? h('div', { className: 'dshic-shot-label', style: { marginTop: 2, opacity: 0.85 } }, '🎥 ' + String(sh.cam).trim())
                     : null,
-                  (sh.dialogue || []).length
-                    ? h('div', { className: 'dshic-shot-label', style: { marginTop: 3 } }, '台词 ' + sh.dialogue.map((d) => `${d.role}：${d.line}`).join('；'))
+                  Array.isArray(sh.dialogue) && sh.dialogue.length
+                    ? h('div', { className: 'dshic-shot-label', style: { marginTop: 3 } }, '台词 ' + sh.dialogue.map((d) => `${d.role || ''}：${d.line || ''}`).join('；'))
                     : null,
                   String(sh.sfx || '').trim()
                     ? h('div', { className: 'dshic-shot-label', style: { marginTop: 2, opacity: 0.85 } }, '音效 ' + String(sh.sfx).trim())
                     : null,
+                  h('button', {
+                    key: 'edit', type: 'button', className: 'dshic-shot-edit', title: T('editShotHint'), disabled: running,
+                    onPointerDown: (e) => e.stopPropagation(),
+                    onClick: (e) => { e.stopPropagation(); openStoryboardEditor(n.id, i); },
+                  }, Ic('pencil', 10)),
                 );
                 }),
               ),
@@ -13835,6 +14861,16 @@ function queueThumb(assetId) {
           : null,
         shots.length
           ? h('div', { key: 'acts', className: 'dshic-node-row', 'data-node-foot': '1', style: { alignSelf: 'flex-start' } },
+              h('button', {
+                key: 'edit', type: 'button', className: 'dshic-mini', title: T('editStoryboard'), disabled: running,
+                onPointerDown: (e) => e.stopPropagation(),
+                onClick: () => openStoryboardEditor(n.id, 0),
+              }, Ic('pencil', 11), T('editStoryboard')),
+              h('button', {
+                key: 'split', type: 'button', className: 'dshic-mini', title: T('splitBoardsHint'), disabled: running,
+                onPointerDown: (e) => e.stopPropagation(),
+                onClick: () => splitStoryboardIntoBoards(n.id),
+              }, Ic('board', 11), T('splitBoards')),
               h('button', {
                 key: 'copy', type: 'button', className: 'dshic-mini is-ghost', title: T('copyAll'),
                 onPointerDown: (e) => e.stopPropagation(),
@@ -13880,12 +14916,14 @@ function queueThumb(assetId) {
       if (!shots.length) { toast(T('expandNoShots')); return; }
       const zh = effLang() !== 'en';
       // 切段规划：纯函数，可在面板上预览，也由 scripts/test-segment-plan.mjs 直接断言
-      const plan = planShotSegments(shots, { maxSeconds: Number(n.data.segMaxSeconds) || 15 });
+      const plan = planShotSegments(shots, { maxSeconds: Number(n.data.segMaxSeconds) || 10 });
       const segs = plan.segments.length ? plan.segments : [{ index: 0, shots, startIndex: 0, endIndex: shots.length - 1, duration: plan.total, firstSeg: 'opening', lastSeg: 'continuation', opensOnCut: true, closesOnCut: true, seamRisk: 'none', needsTailChain: false, reason: '' }];
       // 项目资产名称索引（用于把角色/场景/道具连接到已有资产节点）
       const recs = await idbByProject(S.activeId).catch(() => []);
+      const recById = new Map(recs.map((r) => [String(r.id), r]));
       const norm = (s) => String(s || '').trim().toLowerCase();
       const nameIndex = recs.filter((r) => r.kind === 'image').map((r) => ({ id: r.id, name: norm(r.name), raw: String(r.name || ''), category: r.category }));
+      const bible = loadBible(S.activeId);
       // 跨镜去重的实体清单：所有镜头共用的角色/场景/道具各一个参考节点（带品类——决定用哪种设定图版式）
       const entities = [];
       const pushEntity = (nm, kind) => {
@@ -13899,18 +14937,34 @@ function queueThumb(assetId) {
         pushEntity(sh.scene, 'scene');
         (sh.props || []).forEach((nm) => pushEntity(nm, 'prop'));
       }
-      const bible = loadBible(S.activeId);
       let reuseAssets = 0; // 资产库已有 → 只挂节点
       let newGens = 0;     // 库中没有 → 新建带提示词的图片生成节点
       const videoNodeIds = [];
       update((s) => {
-        // 资产库命中（名称相等优先，其次包含匹配）——有图就直接挂资产节点，绝不重复生成
+        // 资产库命中：① 设定集条目**已链接的资产**（assetIds，绑定关系优先）——角色名常带限定
+        //（林晚（现代·受伤前）），与资产名「角色-林晚 受伤前 设定图」没有任何公共子串，只靠名字匹配
+        // 永远命中不了，会静默新建一个空白设定图节点；② 名称精确；③ 名称包含；④ 归属匹配（角色-<名> 前缀）
+        const asHit = (rec) => (rec && rec.kind === 'image'
+          ? { id: rec.id, name: norm(rec.name), raw: String(rec.name || ''), category: rec.category }
+          : null);
         const findLibraryAsset = (name) => {
           const q = norm(name);
           if (!q) return null;
-          return nameIndex.find((x) => x.name === q)
-            || nameIndex.find((x) => x.name.includes(q) || q.includes(x.name))
-            || null;
+          const ent = matchBibleEntity(name, bible);
+          for (const aid of (ent && ent.assetIds) || []) {
+            const hit = asHit(recById.get(String(aid)));
+            if (hit) return hit;
+          }
+          const byName = nameIndex.find((x) => x.name === q)
+            || nameIndex.find((x) => x.name.includes(q) || q.includes(x.name));
+          if (byName) return byName;
+          if (ent) {
+            for (const x of nameIndex) {
+              const rec = recById.get(String(x.id));
+              if (rec && assetBelongsToEntity(rec, ent)) return x;
+            }
+          }
+          return null;
         };
         const findAssetNodeById = (assetId) => {
           if (!assetId) return null;
@@ -18647,9 +19701,20 @@ const DIRECTOR_KEY_HELP = [
       const onImport = async (e) => {
         const files = [...((e.target.files) || [])];
         e.target.value = '';
+        // 上传落点跟随当前分类页签：在「角色 / 场景 / 道具」下点上传，导入的图就该归到该分类。
+        // 旧实现一律存成「通用」，而这些页签的筛选会把「通用」挡在外面 —— 用户看到的就是
+        // "选了图片，什么都没发生"（文件其实已经入库，只是被当前筛选藏起来了）。
+        const targetCat = ['character', 'scene', 'prop'].includes(filter) ? filter : 'general';
         let failed = 0;
+        let okN = 0;
+        const cats = new Set();
         for (const f of files) {
-          const kind = f.type.startsWith('video/') ? 'video' : f.type.startsWith('image/') ? 'image' : null;
+          // MIME 为空/不规范时按扩展名兜底（安卓、iOS 的相册/文件选择器经常给空 type）
+          const kind = /^video\//.test(f.type || '') ? 'video'
+            : /^image\//.test(f.type || '') ? 'image'
+              : /\.(png|jpe?g|webp|gif|bmp|heic|heif|avif|tiff?)$/i.test(f.name || '') ? 'image'
+                : /\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(f.name || '') ? 'video'
+                  : null;
           try {
             // 文本（.txt/.md）：入库为文本资产（名称=文件名去扩展名，分类=剧本，归属=当前项目）——
             // 多集小说/剧本一键导入，入库后在资产面板多选批量铺画布（text 节点可直接连分镜表当剧本源）
@@ -18659,13 +19724,26 @@ const DIRECTOR_KEY_HELP = [
                 name: f.name.replace(/\.(txt|md|markdown)$/i, ''),
                 text, category: 'script', source: 'upload',
               });
+              okN++; cats.add('script');
             } else if (kind) {
-              await saveAssetRecord(S.activeId, kind, f, { name: f.name, source: 'upload', category: 'general' });
-            } else { continue; }
+              await saveAssetRecord(S.activeId, kind, f, { name: f.name, source: 'upload', category: targetCat });
+              okN++; cats.add(targetCat);
+            } else { failed++; } // 不支持的类型也要计数：静默跳过 = 用户以为"没反应"
           } catch { failed++; } // 单个失败不影响其余文件
         }
         if (failed) toast(T('uploadFailed') + '（' + failed + '/' + files.length + '）');
-        if (files.length) { bumpView(); update((s) => { s.assetsTick++; }); }
+        if (okN) {
+          // 入库成功就必须有反馈：顺带说明落到哪个分类，避免"选了没反应"的错觉
+          toast(T('importedN').replace('{n}', String(okN)) + (cats.size ? ' · ' + [...cats].map(catLabel).join(' / ') : ''));
+        }
+        if (files.length) {
+          bumpView();
+          update((s) => { s.assetsTick++; });
+          // 翻页停在别的页时，新资产（最新在前）会落在第 1 页 → 同样表现为"没反应"，这里回到第 1 页
+          if (okN) { setPage(0); setPageDraft(null); }
+          // 上传后把筛选切到落点分类，保证刚导入的资产立刻可见（否则会被当前页签挡住）
+          if (okN && filter !== 'all' && filter !== targetCat) setFilter(targetCat);
+        }
       };
       const del = async (a) => {
         // 服务端删除（SQL：行 + FTS + CAS 引用计数；JSON：文件 + assets.json），随后清本地缓存
@@ -19890,8 +20968,16 @@ const DIRECTOR_KEY_HELP = [
         const models = [];
         if (on) for (const p of conf) {
           const opts = (p.modelOptions || []).map((o) => o.value).filter(Boolean);
+          // 能力档一起写进模型条目：比例下拉据此收敛（否则画布给的 16:9 会被对方判「不支持所选比例」）
+          const cap = {
+            ...(Array.isArray(p.ratioOptions) ? { ratios: p.ratioOptions.map((o) => (o && o.value) || '').filter(Boolean) } : {}),
+            ...(Array.isArray(p.qualityOptions) ? { qualities: p.qualityOptions.map((o) => (o && o.value) || '').filter(Boolean) } : {}),
+            ...(p.defaultRatio ? { defaultRatio: p.defaultRatio } : {}),
+            ...(p.defaultQuality ? { defaultQuality: p.defaultQuality } : {}),
+            ...(p.channel ? { channel: p.channel } : {}),
+          };
           for (const m of (opts.length ? opts : [p.model].filter(Boolean))) {
-            models.push({ id: p.provider + '|' + m, model: m, viaImageGen: p.provider });
+            models.push({ id: p.provider + '|' + m, model: m, viaImageGen: p.provider, ...cap });
           }
         }
         if (models.length) {
@@ -19905,9 +20991,8 @@ const DIRECTOR_KEY_HELP = [
         let alive = true;
         (async () => {
           try {
-            const r = await fetch('/plugins/dsh-image-gen/studio', { headers: { accept: 'application/json' } });
-            if (!r.ok) throw new Error('HTTP ' + r.status);
-            const j = await r.json();
+            const j = await bridgeDescribe();
+            if (!j) throw new Error('studio-unavailable');
             const conf = (j.providers || []).filter((p) => p && p.configured);
             const on = !!(loadSettings().imageGen || {}).enabled;
             syncBridgeModels(j, on);
@@ -19929,11 +21014,10 @@ const DIRECTOR_KEY_HELP = [
         // 开/关即时生效：重跑一次探测同步（加回或移除桥接模型条目）
         (async () => {
           try {
-            const r = await fetch('/plugins/dsh-image-gen/studio', { headers: { accept: 'application/json' } });
-            const j = r.ok ? await r.json() : null;
+            const j = await bridgeDescribe(true);
             const conf = j ? (j.providers || []).filter((p) => p && p.configured) : [];
             syncBridgeModels(j, v && conf.length > 0);
-            setSt({ missing: !r.ok, configured: conf.length > 0 });
+            setSt({ missing: !j, configured: conf.length > 0 });
           } catch { syncBridgeModels(null, false); setSt({ missing: true, configured: false }); }
         })();
       };
@@ -20924,6 +22008,7 @@ const DIRECTOR_KEY_HELP = [
           S.rightOpen ? h(Rightbar) : null,
         ),
         h(StudioModal),          // 资产 + 设定集统一弹窗（单例；S.panelModal 控制）
+        h(StoryboardEditor),     // 分镜表编辑器（全屏浮层；S.storyboardEditId 控制）
         h(DirectorStage),        // 3D 导演台（全屏浮层；左侧图标列入口，S.directorOpen 控制）
         h(ProjectNameDialog),    // 新建 / 重命名项目（空名校验）
         S.menu ? h(ContextMenu, { menu: S.menu }) : null,
@@ -21876,7 +22961,7 @@ const DIRECTOR_KEY_HELP = [
           window.__DSH_IC_VENDOR__ = { detectVideoVendor, gatewayPrefixFor, wanEndpoints, vendorBase, VIDEO_REF_CAPS, needsSimpleMediaRetry, buildSimpleMediaRetryBody, wanTaskIdOf, wanStatusOf, wanPollState, buildSanbaoVideoBody, sanbaoTaskIdOf, sanbaoPollState, needsSanbaoMediaRetry, retryableDownloadError, downloadVideoWithRetry, SANBAO_DOWNLOAD_RETRY_MS, SANBAO_DOWNLOAD_RETRY_STEP_MS, buildSanbaoImageBody, sanbaoImageResultOf, sanbaoImagePollState, bibleStyleAnchor };
           // 按镜头切段（分段生成本身就是最容易出错的地方）：规划器 + 强弱模型分流 + 节点段区间解析
           // 供 scripts/test-segment-plan.mjs 直接断言
-          window.__DSH_IC_SEGMENT__ = { planShotSegments, isCutPoint, segmentNeedsHardFrame, videoSegmentOf, shotContinuityPlan };
+          window.__DSH_IC_SEGMENT__ = { planShotSegments, planStoryboardBoards, splitStoryboardIntoBoards, isCutPoint, segmentNeedsHardFrame, videoSegmentOf, shotContinuityPlan };
           window.__DSH_IC_STORYBOARD_PROMPT__ = { buildStoryboardVideoPrompt };
           // 3D 导演台：引擎在 assets/director/engine.js（代码分割），这里只导出面板与
           // 引擎加载器；引擎内部的纯函数由测试直接 ESM import engine.js 断言——
