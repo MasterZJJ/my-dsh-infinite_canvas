@@ -6,7 +6,8 @@
  *   ① 按场检测：命中词触发、对白/回忆排除、空文本不误判、on/off 显式覆盖
  *   ② 契约块：命中打斗才有战斗字段语义 + 动作词表；zh/en 双语
  *   ③ 因果句：只拼存在的字段、空镜返回空、打斗镜完整因果
- *   ④ 几何校验：无回应攻击 / 未指向对手 / 背对写表情 / tail 缺战斗态；非打斗镜不告警
+ *   ④ 几何校验：无回应攻击 / 未指向对手 / 背对写表情 / tail 缺战斗态 /
+ *      **只有结果没有攻防（0.20.6-local.3 新增：缺 attack 或 attack+reaction 双缺）**；非打斗镜不告警
  *   ⑤ 漂移守卫：client.js（vm 加载）与 combat-semantics.js（import）在同一组 fixtures
  *      上输出逐字一致——两端漂移 = 按场检测/契约/因果口径分叉，测试红必须人工对齐
  *   ⑥ 词表与 3D 姿势对齐：COMBAT_ACTION_LEXICON 的 id 必须存在于 engine.js BONE_POSES 打斗段
@@ -137,6 +138,17 @@ const lex = SEG.COMBAT_ACTION_LEXICON;
   ok(geometry(bad[2], true).some((w) => w.includes('可见性矛盾')), '校验：背对镜头写表情被告警');
   ok(geometry(bad[3], true).some((w) => w.includes('战斗态')), '校验：tail 缺战斗态被告警');
   ok(geometry(bad[4], true).length === 0, '校验：非打斗镜零告警');
+
+  // 0.20.6-local.3：结果型缺攻防（实机证据：这两形状的镜被模型自编成锁喉/托枪）
+  const resultOnly = { title: '后坐避枪', impact: '枪杆擦胸而过，沈铁后撤半步', initiative: '李寒攻势落空，沈铁转入反击', nextCombat: '沈铁反手一掌推向下颌', visual: '中近景' };
+  const wRO = geometry(resultOnly, true);
+  ok(wRO.length === 1 && wRO[0].includes('只有结果没有攻防'), '校验：结果型镜缺 attack+reaction 被告警（实际 ' + JSON.stringify(wRO) + '）');
+  const halfChain = { title: '某镜', reaction: '沈铁后仰避开', impact: '枪身擦过胸前', visual: '中景' };
+  const wHC = geometry(halfChain, true);
+  ok(wHC.length === 1 && wHC[0].includes('缺「谁攻的」'), '校验：有回应有结果但缺 attack 被告警（实际 ' + JSON.stringify(wHC) + '）');
+  const fullChain = { title: '反手推颌', attack: '@沈铁@→@李寒@，锁定下颌，掌根自下向上', reaction: '@李寒@ 上身后折、下颌被推偏', impact: '掌根撞上下颌，头侧甩', initiative: '@沈铁@ 转守为攻', nextCombat: '@李寒@ 撤步稳住', tail: '掌根停在颊前｜战斗态：攻势在 @沈铁@', visual: '大特写' };
+  ok(geometry(fullChain, true).length === 0, '校验：补齐攻防后零告警（同一镜的正反例）');
+  ok(geometry(resultOnly, false).some((w) => /result without either side/i.test(w)), '校验：结果型缺攻防的英文告警存在');
   const good = { title: '镜5', attack: '@李寒@→@沈铁@，锁定胸肩', reaction: '@沈铁@ 上架卸力', tail: '枪尖压在肩前｜战斗态：攻势在 @李寒@' };
   ok(geometry(good, true).length === 0, '校验：合规打斗镜零告警');
   ok(geometry(bad[0], false).some((w) => /no statues/i.test(w)), '校验：英文告警存在');

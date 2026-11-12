@@ -84,6 +84,8 @@ export function combatContractAddendum(zh) {
       '- **attack**: "attacker -> target, locked body part, trajectory", e.g. "@Li@->@Shen@, locked on chest/shoulder, spear thrust from lower-left to upper-right" - an attack MUST point at a concrete opponent on screen;',
       '- **reaction (required when attack exists)**: the opponent\'s visible block/dodge/hit action - never a statue receiving a blow, never just "blocked it";',
       '- **impact**: contact part, force direction, knockback/imbalance and environmental damage;',
+      '- **impact must state contact geometry (new hard rule)**: what touches what (palm base on the spear shaft / spear tip grazing the throat), how much deformation or displacement (shaft bows, half-step back, sleeve torn), where in frame the contact sits - result words such as "hits it" cannot be performed; the model leaves the hand hovering in mid-air;',
+      '- **results require both sides (new hard rule)**: a shot carrying impact / initiative / nextCombat must also carry attack and reaction - result-only shots make the model invent its own action (observed: a palm strike became a chokehold, a dodge became gun-cradling);',
       '- **initiative**: who holds the attack and who turns to counter at the end of this shot;',
       '- **nextCombat**: the next shot\'s combat intent, echoing the tail\'s combat state;',
       '- **tail gains a combat state**: write "picture tail state | combat state: who holds the attack, where the weapon/effect is, the hit party\'s state, damage residue" - cross-shot momentum rides entirely on this;',
@@ -99,6 +101,8 @@ export function combatContractAddendum(zh) {
     '- **attack（攻击）**：「攻击者→目标，锁定部位，轨迹方向」，如「@李寒@→@沈铁@，锁定胸肩，自左下向右上横枪突刺」——**攻击必须指向画面里的具体对手**，写明轨迹与锁定部位；',
     '- **reaction（对手回应；有 attack 必写）**：对手的可见防御/闪避/受击动作（如「@沈铁@ 单臂斜上架、掌面外翻、上身侧倾卸力」）——**禁止站桩接招、禁止只写「挡下了」**；',
     '- **impact（接触与受力）**：接触部位、受力方向、击退/失衡与环境破坏（如「枪尖擦肩、沈铁后撤半步、身后木栏断裂」）；',
+    '- **impact 必须写接触几何（新增硬规则）**：谁贴住什么（掌根贴住枪杆／枪尖擦过喉结）、形变或位移多少（枪杆被压出弧、后撤半步、袖口挑裂）、接触发生在画面哪个位置——**「磕上了／打中了」这类结果词模型演不出来**，只会把手悬在空中；',
+    '- **有结果就必须有攻防（新增硬规则）**：写了 impact / initiative / nextCombat 的镜，必须同时有 attack 与 reaction——只写结果的镜，模型会自己发明动作（实测：推颌被演成锁喉，避枪被演成托枪）；',
     '- **initiative（攻守归属）**：本镜结束时谁持攻、谁转入反击；',
     '- **nextCombat（下一镜战斗意图）**：如「@沈铁@ 借卸力之势低身横扫」——与 tail 的战斗态呼应；',
     '- **tail 追加战斗态**：接点尾态写成「画面尾态｜战斗态：攻势在谁、武器/技能位于何处、受击者状态、破坏残留」——**跨镜攻势全靠它传递**；',
@@ -140,6 +144,15 @@ export function validateCombatGeometry(s, zh) {
   if (!shotIsCombat(sh)) return out;
   if (g('attack') && !g('reaction')) out.push(zh ? pre + '有攻击但无对手回应：每次攻击必须写对手的可见防御/闪避/受击（禁站桩）' : pre + 'attack without reaction: every attack needs a visible response (no statues)');
   if (g('attack') && !/→|@/.test(g('attack'))) out.push(zh ? pre + '攻击未指向具体对手（缺少 @对手名@ 或 →）' : pre + 'attack lacks an explicit target (@name@ or ->)');
+  if (!g('attack') && (g('impact') || g('initiative') || g('nextCombat'))) {
+    out.push(zh
+      ? pre + (g('reaction')
+        ? '有对手回应和结果、但缺「谁攻的」（attack）：写明攻击者→目标、锁定部位、轨迹方向'
+        : '只有结果没有攻防：这一镜写了受力/攻守，却缺 attack 与 reaction——模型会自己发明动作（实测：推颌被演成锁喉）')
+      : pre + (g('reaction')
+        ? 'has reaction and result but no attack: state attacker -> target, locked body part, trajectory'
+        : 'result without either side: impact/initiative present but attack and reaction are empty - the model will invent its own action'));
+  }
   const vis = String(sh.visual || '');
   if (/背对|背面|背影/.test(vis) && /表情|眼神|眼眸|面容|脸上的|嘴角/.test(vis)) out.push(zh ? pre + '可见性矛盾：背对镜头却写了表情/眼神' : pre + 'visibility conflict: back to camera yet describing facial expression');
   if (g('attack') && g('tail') && !/战斗态|combat state/i.test(g('tail'))) out.push(zh ? pre + 'tail 建议补「｜战斗态：…」（跨镜攻势靠它传递）' : pre + 'tail should append "| combat state: ..." (cross-shot momentum rides on it)');

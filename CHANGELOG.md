@@ -21,7 +21,7 @@ GitHub Releases carry the same notes in English; maintainer-facing runbooks live
   （此前只有写面没有读面，对话侧读不回 = 参数不可发现）。
 
 ### Changed
-- **版本号升为 `0.20.6-local.2`**（本地构建后缀）：核心号高于上游 0.20.5，更新检查不再提示
+- **版本号升为 `0.20.6-local.3`**（本地构建后缀）：核心号高于上游 0.20.5，更新检查不再提示
   「覆盖本地改造」；正式发版仍须严格等于最新已发布版本号。
 
 ### Fixed
@@ -44,6 +44,17 @@ GitHub Releases carry the same notes in English; maintainer-facing runbooks live
   另新增 `scripts/test-client-language-scope.mjs` 作用域守卫：受检调用点的作用域必须能拿到 `zh`
   （近期上游原版跑必定变红，已实测自证；这类 bug `node --check` 与单元测试都抓不到，
   只有真实生成路径会走到）。已同步提给上游。
+
+- **打斗镜「只有结果、没有攻防」不再静默通过**（0.20.6-local.3，实机证据驱动）。
+  `validateCombatGeometry` 原先只在**有 attack 时**才检查对手回应与指向，attack 为空直接跳过——
+  于是「写了 impact/initiative/nextCombat、却没写 attack/reaction」的镜在闸门上是绿的。
+  两个真实分镜（`后坐避枪` / `反手推颌`）正是这个形状，成片里被模型自编成「托着枪」和「锁喉」。
+  新增判据：`!attack && (impact|initiative|nextCombat)` → 告警（再分「缺 attack」与「攻防双缺」两档文案）。
+  `combat-semantics.js` 与 `client.js` 同步改（漂移守卫断言两端同构），`test-combat-semantics`
+  补 4 条断言（真实失败形状 / 半链 / 补齐后零告警 / 英文文案）。
+- **战斗契约补两条硬规则（同一轮）**：① `impact` 必须写接触几何（谁贴住什么、形变位移多少、
+  接触点在画面哪），禁止「磕上了／打中了」这类结果词；② 有 `impact/initiative/nextCombat` 的镜
+  必须同时有 `attack` 与 `reaction`——只写结果的镜，模型会自己发明动作。
 
 ### Internal
 - **CHANGELOG 门禁与本账对齐**：Unreleased 补齐四分组；`COVERAGE` 清单覆盖本次合入的四条上游
