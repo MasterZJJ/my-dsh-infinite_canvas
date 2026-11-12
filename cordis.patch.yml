@@ -106,6 +106,11 @@
             name: '@deepseek-ai/dsh-tool-skill'
           - id: media-studio-skills
             name: '@ninkch/dsh-infinite-canvas/skills'
+            # 【2026-11-11 修复】本行已永久禁用：主包在 profile bundle 层挂载后，preset 再挂
+            # 同包子路径 = 同一物理包重复激活 → media-studio 预设「加载失败」（broken）。
+            # director-workshop 技能已改由 bundle 层 registerCanvasSkill 注册（index.js），
+            # 本行保留仅为避免旧 profile 补丁残留时的兼容占位，不得重新启用。
+            disabled: true
             config: {}
           - id: command-goal
             name: '@deepseek-ai/dsh-command-goal'
@@ -157,8 +162,10 @@
             config:
               - id: tool-subagent-control
                 name: '@deepseek-ai/dsh-tool-subagent-control'
-              - id: tool-subagent-list-agents
-                name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+                # 【2026-11-11 修复】主入口已统一注册 send_message / interrupt_agent / list_agents
+                # 三个工具（0.2.2-rc.1 exports 只有 ./ ），旧的 ./list-agents 子路径行
+                # （tool-subagent-list-agents）解析不到模块 → auditRows 报 never started →
+                # 整个预设 broken。本注释替代已删除的那一行，勿再添加子路径行。
               - id: tool-subagent
                 name: '@deepseek-ai/dsh-tool-subagent'
                 config:

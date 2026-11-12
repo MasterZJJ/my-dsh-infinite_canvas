@@ -6,6 +6,24 @@ GitHub Releases carry the same notes in English; maintainer-facing runbooks live
 
 ## [Unreleased]
 
+### Added
+- **合入上游 0.20.5：打斗分镜的战斗因果链（按场注入，不按题材整表灌）**。按场打斗检测
+  （命中词判定 + 对白/回忆排除）+ 分镜三态覆盖 `combatMode`（auto=按剧本检测 / on=强制 /
+  off=强制不注入），只有命中场才注入战斗契约：每镜五字段 `attack`（攻击者→目标·锁定部位·轨迹）/
+  `reaction`（对手可见格挡闪避受击，禁止站桩接招）/ `impact`（受力接触与破坏）/ `initiative`
+  （本镜结束谁握攻势）/ `nextCombat`，`tail` 追加「｜战斗态」跨镜传递攻势，`timeBeats` 改攻防三拍；
+  视频提示词逐镜编译【打斗因果】块，并做几何最小校验（无回应攻击 / 未指向对手 / 背对写表情 /
+  tail 缺战斗态 → 可见告警，不拦生成）。宿主侧新增权威模块 `combat-semantics.js`（与 `client.js`
+  同名函数同构，`scripts/test-combat-semantics.mjs` 用 vm 加载真实 client.js 做漂移守卫）。
+  完整说明见 [0.20.5] 段。
+- **对话侧分镜参数读面补齐（上游 0.20.5）**：`canvas_node_status` 现在返回 `targetDuration` /
+  `combatMode` / `cont`，`canvas_update_node` 的 `NODE_PATCH_FIELDS` 白名单、schema 与参数文本同步
+  （此前只有写面没有读面，对话侧读不回 = 参数不可发现）。
+
+### Changed
+- **版本号升为 `0.20.6-local.1`**（本地构建后缀）：核心号高于上游 0.20.5，更新检查不再提示
+  「覆盖本地改造」；正式发版仍须严格等于最新已发布版本号。
+
 ### Fixed
 - **图片节点「桥接 dsh-image-gen」的参考图生图退化成文生图**（`0.20.5-local.5`）。
   `apiGenBridge` 把参考图元数据对象（`{blob, name, category, assetId}`）直接传给了
@@ -13,6 +31,101 @@ GitHub Releases carry the same notes in English; maintainer-facing runbooks live
   转换同步抛 `TypeError` 后被 `catch` 静默吞掉，`refs` 恒为空，请求固定以
   `mode: 'generate'` 发出，画布上表现为「连了参考图却一直按文生图跑」。
   改为 `blobToDataUrl(b && b.blob ? b.blob : b)`。
+- **上游 0.20.5 的两处修复随本次合并落地**：①6789API 结果地址提取全字段化（补
+  `metadata.url` 主字段 + `url`/`videoUrl`/`result_url` + 数组形状），轮询「成功但无地址」改 wait
+  不判死（中转站异步转存），并加 `/content` 代理下载兜底；②media-studio 预设「加载失败」
+  （删除 preset 里 `tool-subagent-list-agents` 子路径行 + 禁用与 bundle 层重复的 skills 挂载行）。
+
+### Internal
+- **CHANGELOG 门禁与本账对齐**：Unreleased 补齐四分组；`COVERAGE` 清单覆盖本次合入的四条上游
+  提交（51883e6 战斗因果链 / 57489f5 6789 地址修复 / 2b5a921 preset 修复 / a9f0647 读面补齐）。
+- **回归入口同步**：`scripts/regress.mjs` 增加 `test-combat-semantics.mjs`；本文件沿用 fork 的 LF
+  行尾（上游该文件为 CRLF，整文件行尾差异会在每次合并时制造无意义冲突）。
+
+## [0.20.5] — 2026-11-11
+
+### Added
+- **Storyboard parameters are now visible to the chat side.** `canvas_node_status`
+  reports the storyboard's total-duration cap and the combat gating mode
+  (`targetDuration` / `combatMode` / `cont`) alongside the other generation
+  parameters, and `canvas_update_node`'s field list documents all three — the
+  chat agent can now read back and set what the canvas UI already offered
+  (`shots` round-trips no longer silently lose these settings).
+- **Combat storyboard: a real cause-and-effect chain for fight scenes.** Fight
+  choreography used to fall apart on the canvas — each shot fought "on its own",
+  opponents received blows like statues, and momentum reset at every cut. The
+  fix grafts the combat-state discipline of a battle-prompt skill reference
+  onto the canvas's existing continuity pipeline (tail → prevTail → continuity
+  block → first-frame anchoring), and it is gated per scene, not per genre:
+  - **Per-scene combat detection**: a lexical detector (explicit action verbs
+    only; dialogue lines and recalled/narrated fights are excluded) decides
+    whether a scene gets the combat contract. A per-storyboard three-state
+    override (`combatMode: auto / on / off`) lets the user force either way;
+    genre tags no longer inject anything.
+  - **Combat fields per shot** (all optional, never invented): `attack`
+    (attacker → target, locked body part, trajectory), `reaction` (the
+    opponent's visible block/dodge/hit — statues banned), `impact` (contact,
+    force direction, knockback, environmental damage), `initiative` (who holds
+    the attack at shot end), `nextCombat` (next shot's combat intent). `tail`
+    gains a combat-state segment ("picture tail | combat state: …") so
+    momentum rides the existing continuity chain across shots AND across
+    separately generated segments; `timeBeats` on combat shots use
+    attack-defense beats (strike → receive → counter/displace).
+  - **Prompt compilation**: every combat shot carries a compact causality
+    block into the video prompt (attack must point at that opponent; the
+    response must be performed; contact produces force and damage; the next
+    segment continues this momentum). A mechanical geometry validator warns
+    (never blocks) on attacks without reactions, attacks without an explicit
+    target, faces described while back to camera, and tails missing the
+    combat state.
+  - **3D pose semantics flow back into text**: the 12 combat bone poses of the
+    3D director stage become a visible body-force lexicon (hip-twist thrusts,
+    palm-out blocks, sitting-back dodges…) injected into the combat contract,
+    so motion beats have real actions to write instead of "swung once".
+  - **fight-rhythm card upgraded**: keeps its measured shot-rhythm baselines
+    and five techniques, adds the attack-defense causality rules, and its
+    honesty note is rewritten — no move names, but visible force chains plus
+    opponent response plus physical results are now required (and stated to
+    work), with keyframe-then-video as the quality upgrade path.
+
+### Fixed
+- **6789API: "task succeeded but no video address in the response" is fixed.**
+  6789-style gateways are new-api relays whose completed response carries the
+  video URL in `metadata.url` — the 0.20.4 extractor only knew
+  `download_url`/`video_url`/`data` wrappers, so a finished task was declared
+  dead. Three layers now: the extractor covers the full field lineage
+  (`metadata.*`, top-level `url`/`videoUrl`/`result_url`, `output` object or
+  `output[]`/`data[]` first item, `content.url`, absolute `file`); a succeeded
+  task with no address waits (transcode delay) instead of failing; and if the
+  response never yields a URL the runner falls back to the guaranteed
+  `/v1/videos/{id}/content` proxy download with the existing 10-minute retry
+  window (409 `video_not_ready` retries automatically).
+- **The media-studio agent preset no longer shows "Failed to load".** Two
+  blockers: the preset declared the subpath plugin
+  `@deepseek-ai/dsh-tool-subagent-control/list-agents`, which no longer exists
+  in the current Harness (the main entry registers `send_message`,
+  `interrupt_agent` and `list_agents` together) — an unresolvable row reads as
+  "never started" and breaks the whole preset; the row is removed with a
+  note. The preset's `@ninkch/dsh-infinite-canvas/skills` row is now disabled
+  (the package is already mounted at the profile bundle layer; a second mount
+  of the same physical package is the documented repeat-mount failure mode),
+  and the `director-workshop` skill is registered by the bundle-level skill
+  provider instead (five skills, one provider). All remaining preset rows
+  were audited against the current Harness exports — no further stale
+  subpaths.
+
+### Changed
+- The fight-rhythm card is no longer injected by genre tags. It rides on
+  per-scene combat detection (with an explicit `auto / on / off` override on
+  each storyboard node), so wuxia projects no longer carry combat rules in
+  their dialogue scenes and untagged action scenes still get them.
+
+### Internal
+- New zero-dependency module `combat-semantics.js` (host-side authority for
+  the combat detector, contract block, causality text and geometry validator)
+  shipped in the npm package, with a drift-guard regression asserting the
+  client.js copies stay byte-identical; the lexicon is regression-checked
+  against the 3D director's bone-pose ids.
 
 ## [0.20.4] — 2026-11-10
 

@@ -162,13 +162,14 @@ try {
   const p = providers[0];
   if (!p || p.name !== 'dsh-infinite-canvas') errs.push('技能提供方 name 不正确');
   const list = await p.list();
-  if (!Array.isArray(list) || list.length !== 4) errs.push(`技能列表应包含 4 个内置技能，实际 ${Array.isArray(list) ? list.length : '非数组'}`);
+  if (!Array.isArray(list) || list.length !== 5) errs.push(`技能列表应包含 5 个内置技能（四件套 + 导演工作坊），实际 ${Array.isArray(list) ? list.length : '非数组'}`);
   const names = (list || []).map((c) => c && c.name).sort();
-  if (names.join(',') !== 'canvas-craft,canvas-director,canvas-layout,canvas-studio') errs.push('内置技能名应为 canvas-craft/canvas-director/canvas-layout/canvas-studio，实际 ' + names.join(','));
+  if (names.join(',') !== 'canvas-craft,canvas-director,canvas-layout,canvas-studio,director-workshop') errs.push('内置技能名应为 canvas-craft/canvas-director/canvas-layout/canvas-studio/director-workshop，实际 ' + names.join(','));
   const needBySkill = {
     'canvas-studio': ['canvas_list_projects', 'canvas_write_node', 'canvas_create_project', 'canvas_get_bible', 'canvas_update_bible', 'canvas_create_node', '设定集先行', 'output'],
     'canvas-craft': ['景别', '运镜', '分镜', '提示词', '设定集'],
     'canvas-layout': ['一类型一列', 'canvas_relayout', '绝不重叠'],
+    'director-workshop': ['导演', '启动仪式'],
   };
   for (const cand of list || []) {
     if (!Number.isFinite(cand.rank)) errs.push(`${cand.name}: 技能 rank 必须是有限数字（registry 强制要求）`);
@@ -336,6 +337,21 @@ try {
   await byName.get('canvas_write_node').execute({ projectId, nodeId: sb.nodeId, target: 'output', text: shotsJson, overwrite: true }, {});
   const docSb3 = await mod._internals.projectsGet({ id: projectId });
   if (!docSb3.nodes[sb.nodeId] || !Array.isArray(docSb3.nodes[sb.nodeId].data.shots) || docSb3.nodes[sb.nodeId].data.shots.length !== 2) errs.push('shots JSON 未写入分镜节点的 data.shots');
+  // 分镜参数读面（0.20.5 补注册）：canvas_update_node 写 targetDuration/combatMode/cont 后
+  // canvas_node_status 必须能读回——写面有读面无 = 对话侧不可发现（2026-11-11 审计缺口）。
+  {
+    await byName.get('canvas_update_node').execute({ projectId, nodeId: sb.nodeId, patch: { targetDuration: 15, combatMode: 'on', cont: true } }, {});
+    const st = await byName.get('canvas_node_status').execute({ projectId, nodeId: sb.nodeId }, {});
+    if (!st || st.targetDuration !== 15) errs.push('canvas_node_status 未读回 targetDuration（写面有读面无）');
+    if (!st || st.combatMode !== 'on') errs.push('canvas_node_status 未读回 combatMode（写面有读面无）');
+    if (!st || st.cont !== true) errs.push('canvas_node_status 未读回 cont（写面有读面无）');
+    if (st && !/总时长硬约束 15s/.test(String(st.text))) errs.push('canvas_node_status 文本未渲染总时长硬约束');
+    if (st && !/打斗判定 on/.test(String(st.text))) errs.push('canvas_node_status 文本未渲染打斗判定');
+    // 非法值宽松归一：combatMode 非三态值 → 归一为 auto（与 cont 宽松归一同口径；抛错会中断整个 patch）
+    await byName.get('canvas_update_node').execute({ projectId, nodeId: sb.nodeId, patch: { combatMode: 'xyz' } }, {});
+    const stBad = await byName.get('canvas_node_status').execute({ projectId, nodeId: sb.nodeId }, {});
+    if (!stBad || stBad.combatMode !== 'auto') errs.push('canvas_update_node 收到非法 combatMode 未归一为 auto（得到 ' + (stBad && stBad.combatMode) + '）');
+  }
   // 连线工具：剧本 → 分镜表（工作流的核心，必须有边且类型校验生效）
   const scriptNode = Object.values(docSb3.nodes).find((n) => n.type === 'script' && n.data.label === '第一节剧本');
   const conn = await byName.get('canvas_connect').execute({ projectId, fromNode: scriptNode.id, toNode: sb.nodeId }, {});

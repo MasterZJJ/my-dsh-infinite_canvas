@@ -2088,6 +2088,11 @@ function nextNodePos(doc, type, connectFromId, size) {
 // canvas-studio＝操作硬约束；canvas-craft＝剧本/分镜/提示词创作方法论；canvas-layout＝节点布局纪律；
 // canvas-director＝导演透镜/题材/规格/影调/运镜（创作控制层，按生成能力切片注入）
 const SKILL_NAMES = ['canvas-studio', 'canvas-craft', 'canvas-layout', 'canvas-director'];
+/** 随包分发的引导技能（skills/<name>/SKILL.md）：原由 preset 里 @ninkch/dsh-infinite-canvas/skills
+ *  行挂载——2026-11-11 诊断：主包已在 profile bundle 层挂载，preset 再挂同包子路径 = 同一物理包
+ *  重复激活（老版 dsh-studio-mode 头注释警告的「重复挂载 → 预设加载失败」）→ media-studio
+ *  预设 broken。改为 bundle 层与四件套一起注册，preset 不再需要独立技能行。 */
+const WORKSHOP_SKILL_NAMES = ['director-workshop'];
 // = @deepseek-ai/dsh-skill 的 BUNDLED_SKILL_RANK（避免 import DSH 包；registry 要求 rank 必须是有限数字）
 const SKILL_RANK = 600;
 /** 解析 SKILL.md 的 YAML frontmatter（仅需 description 与正文）。 */
@@ -2104,8 +2109,26 @@ function registerCanvasSkill(ctx, disposers) {
   const skills = ctx.get('skills');
   if (!skills || typeof skills.registerProvider !== 'function') return false;
   const candidates = [];
+  // 四件套：assets/<name>/SKILL.md
   for (const name of SKILL_NAMES) {
     const assetPath = path.join(HERE, 'assets', name, 'SKILL.md');
+    if (!existsSync(assetPath)) continue;
+    const { description } = parseSkillMd(readFileSync(assetPath, 'utf8'));
+    if (!description) continue;
+    candidates.push({
+      name,
+      description,
+      invocation: { modelInvocable: true, userInvocable: true },
+      provider: 'dsh-infinite-canvas',
+      source: 'bundled',
+      rank: SKILL_RANK,
+      resourceBase: { kind: 'directory', path: path.dirname(assetPath) },
+      locator: assetPath,
+    });
+  }
+  // 导演工作坊：skills/<name>/SKILL.md（原 preset 层挂载，现并入同一 provider；见 WORKSHOP_SKILL_NAMES 注释）
+  for (const name of WORKSHOP_SKILL_NAMES) {
+    const assetPath = path.join(HERE, 'skills', name, 'SKILL.md');
     if (!existsSync(assetPath)) continue;
     const { description } = parseSkillMd(readFileSync(assetPath, 'utf8'));
     if (!description) continue;
@@ -2220,6 +2243,12 @@ function canvasWriteNode(args) {
           camera: String((s && s.camera) || '').trim().slice(0, 200),
           vfx: String((s && s.vfx) || '').trim().slice(0, 160),
           negative: String((s && s.negative) || '').trim().slice(0, 200),
+          // 战斗因果字段（打斗镜专用，全部可选）同规则透传
+          attack: String((s && s.attack) || '').trim().slice(0, 160),
+          reaction: String((s && s.reaction) || '').trim().slice(0, 160),
+          impact: String((s && s.impact) || '').trim().slice(0, 160),
+          initiative: String((s && s.initiative) || '').trim().slice(0, 80),
+          nextCombat: String((s && s.nextCombat) || '').trim().slice(0, 80),
         }));
         if (Number(node.data.boardCount) > 1) node.data.boardScript = boardBriefText(node, node.data.shots);
         node.data.aiStatus = 'idle';
@@ -3059,6 +3088,12 @@ async function canvasNodeStatus(args) {
       camera: String((s && s.camera) || '').slice(0, 200),
       vfx: String((s && s.vfx) || '').slice(0, 160),
       negative: String((s && s.negative) || '').slice(0, 200),
+      // 战斗因果字段（打斗镜专用，全部可选）：node_status 必须透出，否则对话侧读回再写回时会丢失
+      attack: String((s && s.attack) || '').slice(0, 160),
+      reaction: String((s && s.reaction) || '').slice(0, 160),
+      impact: String((s && s.impact) || '').slice(0, 160),
+      initiative: String((s && s.initiative) || '').slice(0, 80),
+      nextCombat: String((s && s.nextCombat) || '').slice(0, 80),
     }))
     : undefined;
   const d = n.data || {};
@@ -3111,6 +3146,11 @@ async function canvasNodeStatus(args) {
     boardIndex: d.boardIndex == null ? null : Number(d.boardIndex),
     boardCount: d.boardCount == null ? null : Number(d.boardCount),
     boardScript: String(d.boardScript || '').slice(0, 2000),
+    // 分镜节点参数（0.20.5 对话侧读面补注册）：总时长硬约束与打斗判定三态——
+    // update_node 白名单里有写面、这里必须有读面，否则对话侧读不回、shots 整表替换场景丢语义
+    targetDuration: d.targetDuration == null ? null : Number(d.targetDuration),
+    combatMode: d.combatMode || null,
+    cont: d.cont === false ? false : true,
     imageModel: d.imageModel || null,
     videoModel: d.videoModel || null,
     model: d.model || null,
@@ -3135,7 +3175,7 @@ async function canvasNodeStatus(args) {
   };
 }
 /** 可被 canvas_update_node 修改的节点字段白名单（结构字段 id/type/x/y/w/h/data 一律不可写）。 */
-const NODE_PATCH_FIELDS = ['prompt', 'idea', 'output', 'text', 'script', 'requirement', 'label', 'ratio', 'size', 'duration', 'resolution', 'frameMode', 'count', 'imageModel', 'videoModel', 'model', 'cont'];
+const NODE_PATCH_FIELDS = ['prompt', 'idea', 'output', 'text', 'script', 'requirement', 'label', 'ratio', 'size', 'duration', 'resolution', 'frameMode', 'count', 'imageModel', 'videoModel', 'model', 'cont', 'targetDuration', 'combatMode'];
 /** 4–10s 拆表子表的「本表范围」说明书：镜头被对话侧整表改掉后重算，避免生成端仍读旧镜头清单。 */
 function boardBriefText(node, shots) {
   const arr = (Array.isArray(shots) ? shots : []).filter(Boolean);
@@ -3198,6 +3238,14 @@ function canvasUpdateNode(args) {
       v = String(v == null ? '' : v).slice(0, 40);
     } else if (k === 'cont') {
       v = !(v === false || v === 'false' || v === 0 || v === '0'); // 分镜衔接开关：默认开
+    } else if (k === 'targetDuration') {
+      // 分镜总时长（秒，一位小数）：0/空 = 自动档（按镜头节奏）。与客户端 setData('targetDuration') 同口径。
+      const num = Math.round(Number(v) * 10) / 10;
+      if (!Number.isFinite(num) || num < 0 || num > 300) throw new Error('targetDuration 需要非负数（0=自动档，上限 300s），收到：' + JSON.stringify(v));
+      v = num || null;
+    } else if (k === 'combatMode') {
+      // 打斗判定三态覆盖：auto=按场检测（缺省）/ on=本场强制按打斗注入 / off=强制不注入
+      v = ['auto', 'on', 'off'].includes(String(v).toLowerCase()) ? String(v).toLowerCase() : 'auto';
     } else {
       v = String(v == null ? '' : v);
     }
@@ -3227,6 +3275,10 @@ function canvasUpdateNode(args) {
       // 只补「本来是空的 + 旧值有」的衔接字段，绝不覆盖调用方明确给的新值
       for (const k2 of ['tail', 'cam', 'start', 'seg']) {
         if (!out[k2] && old[k2]) out[k2] = old[k2];
+      }
+      // 战斗因果字段同规则兜底：旧镜带战斗态而新值没给时按镜序保留（与衔接字段同款，防整表替换冲掉）
+      for (const k2 of ['attack', 'reaction', 'impact', 'initiative', 'nextCombat']) {
+        if (!String(out[k2] || '').trim() && old[k2]) out[k2] = old[k2];
       }
       return out;
     });
@@ -5386,7 +5438,7 @@ export function apply(ctx) {
             additionalProperties: false,
           },
           output: {
-            schema: { type: 'object', properties: { ok: { type: 'boolean' }, text: { type: 'string' }, type: { type: 'string' }, status: { type: 'string' }, x: { type: 'number' }, y: { type: 'number' }, w: { type: 'number' }, h: { type: 'number' }, assetId: { type: 'string' }, prompt: { type: 'string' }, ratio: { type: 'string' }, size: { type: 'string' }, duration: { type: 'number' }, resolution: { type: 'string' }, frameMode: { type: 'string' }, imageModel: { type: 'string' }, videoModel: { type: 'string' }, genWarn: { type: 'string' }, chainFrom: { type: 'string' }, seam: { type: 'object', properties: { ok: { type: 'boolean' }, sim: { type: 'number' }, thr: { type: 'number' }, note: { type: 'string' } } }, tailPickAssetId: { type: 'string' }, historyAssetIds: { type: 'array', items: { type: 'string' } }, warnings: { type: 'array', items: { type: 'string' } }, shots: { type: 'array', items: { type: 'object', properties: { index: { type: 'number' }, title: { type: 'string' }, duration: { type: 'number' }, visual: { type: 'string' }, motion: { type: 'string' }, tail: { type: 'string' }, cam: { type: 'string' }, start: { type: 'string' }, seg: { type: 'string' }, characters: { type: 'array', items: { type: 'string' } }, scene: { type: 'string' }, props: { type: 'array', items: { type: 'string' } }, timeBeats: { type: 'array', items: { type: 'string' } }, camera: { type: 'string' }, vfx: { type: 'string' }, negative: { type: 'string' } } } } }, required: ['ok', 'text'] },
+            schema: { type: 'object', properties: { ok: { type: 'boolean' }, text: { type: 'string' }, type: { type: 'string' }, status: { type: 'string' }, x: { type: 'number' }, y: { type: 'number' }, w: { type: 'number' }, h: { type: 'number' }, assetId: { type: 'string' }, prompt: { type: 'string' }, ratio: { type: 'string' }, size: { type: 'string' }, duration: { type: 'number' }, resolution: { type: 'string' }, frameMode: { type: 'string' }, imageModel: { type: 'string' }, videoModel: { type: 'string' }, count: { type: 'number' }, targetDuration: { type: 'number', description: '分镜总时长硬约束（秒；缺省 = 自动档）' }, combatMode: { type: 'string', enum: ['auto', 'on', 'off'], description: '打斗判定：auto=按场检测 / on=强制打斗 / off=强制非打斗' }, cont: { type: 'boolean', description: '分镜衔接开关（默认 true）' }, genWarn: { type: 'string' }, chainFrom: { type: 'string' }, seam: { type: 'object', properties: { ok: { type: 'boolean' }, sim: { type: 'number' }, thr: { type: 'number' }, note: { type: 'string' } } }, tailPickAssetId: { type: 'string' }, historyAssetIds: { type: 'array', items: { type: 'string' } }, warnings: { type: 'array', items: { type: 'string' } }, shots: { type: 'array', items: { type: 'object', properties: { index: { type: 'number' }, title: { type: 'string' }, duration: { type: 'number' }, visual: { type: 'string' }, motion: { type: 'string' }, tail: { type: 'string' }, cam: { type: 'string' }, start: { type: 'string' }, seg: { type: 'string' }, characters: { type: 'array', items: { type: 'string' } }, scene: { type: 'string' }, props: { type: 'array', items: { type: 'string' } }, timeBeats: { type: 'array', items: { type: 'string' } }, camera: { type: 'string' }, vfx: { type: 'string' }, negative: { type: 'string' }, attack: { type: 'string' }, reaction: { type: 'string' }, impact: { type: 'string' }, initiative: { type: 'string' }, nextCombat: { type: 'string' } } } } }, required: ['ok', 'text'] },
             render: (args, value) => [{ type: 'text', text: String(value.text || '') }],
           },
           timeoutMs: 30000,
@@ -5432,6 +5484,10 @@ export function apply(ctx) {
             if (s.resolution) params.push('分辨率 ' + s.resolution);
             if (s.frameMode) params.push('衔接 ' + s.frameMode);
             if (s.count != null && s.count > 0) params.push('镜头数 ' + s.count);
+            // 分镜节点参数（对话侧读面）：总时长硬约束 / 打斗判定 / 衔接开关
+            if (s.targetDuration != null && s.targetDuration > 0) params.push('总时长硬约束 ' + s.targetDuration + 's');
+            if (s.targetDuration == null) params.push('总时长自动');
+            if (s.combatMode) params.push('打斗判定 ' + s.combatMode);
             if (s.imageModel) params.push('图片模型 ' + s.imageModel);
             if (s.videoModel) params.push('视频模型 ' + s.videoModel);
             if (params.length) lines.push('生成参数: ' + params.join(' · '));
@@ -5447,6 +5503,10 @@ export function apply(ctx) {
               prompt: s.prompt || undefined, ratio: s.ratio || undefined, size: s.size || undefined,
               duration: s.duration == null ? undefined : s.duration, resolution: s.resolution || undefined,
               frameMode: s.frameMode || undefined, imageModel: s.imageModel || undefined, videoModel: s.videoModel || undefined,
+              count: s.count == null ? undefined : s.count,
+              targetDuration: s.targetDuration == null ? undefined : s.targetDuration,
+              combatMode: s.combatMode || undefined,
+              cont: s.cont,
               genWarn: s.genWarn || undefined,
               chainFrom: s.chainFrom || undefined, seam: s.seam || undefined,
               tailPickAssetId: s.tailPickAssetId || undefined,
@@ -5458,7 +5518,7 @@ export function apply(ctx) {
         });
         reg({
           name: 'canvas_update_node',
-          description: '修改无限画布上**已有节点**的字段（改提示词、改比例/清晰度/时长/分辨率等参数）——"改节点"的唯一入口，改完不必删节点重建。可改字段：prompt（图片/视频节点的对话框提示词）、idea/output（剧本节点）、text（文本节点的正文）、script/requirement（分镜表的剧本来源与额外要求）、shots（分镜镜头清单，JSON 数组）、label（节点名）、ratio、size、duration、resolution、frameMode、count、imageModel、videoModel、model、cont（分镜表「分镜衔接」开关，默认 true；关掉后拆镜不写衔接字段、视频不自动续帧）。结构字段（id/type/坐标/宽高）不可改。改完用 canvas_generate_node 触发生成。**这是迭代生成的主路径**：用户对某张图/某段视频不满意（"重来/换一版/不像"）时，改 prompt 后重生成即可，**绝不删掉节点再新建一个**——同一角色/场景/镜的节点永远只有一个，删了重建会丢连线、位置与历史。**前提**：先用 canvas_node_status 读到当前内容，再只传要改的字段。**注意 shots 是整表替换**：只改一镜也要先把 canvas_node_status 返回的全部 shots 取回、改完再整体传回；否则其它镜的 tail/cam/seg 会被冲掉（服务端会按镜序兜底保留，但不要依赖它）。',
+          description: '修改无限画布上**已有节点**的字段（改提示词、改比例/清晰度/时长/分辨率等参数）——"改节点"的唯一入口，改完不必删节点重建。可改字段：prompt（图片/视频节点的对话框提示词）、idea/output（剧本节点）、text（文本节点的正文）、script/requirement（分镜表的剧本来源与额外要求）、shots（分镜镜头清单，JSON 数组）、label（节点名）、ratio、size、duration、resolution、frameMode、count、imageModel、videoModel、model、cont（分镜表「分镜衔接」开关，默认 true；关掉后拆镜不写衔接字段、视频不自动续帧）、targetDuration（分镜**总时长硬约束**秒数，0/不传 = 自动档按镜头节奏；设置后所有镜头 duration 之和严格等于该值）、combatMode（打斗判定三态：auto=按本场剧本自动检测（缺省）/ on=本场强制按打斗注入战斗契约 / off=强制不注入——只影响分镜生成的注入口径）。结构字段（id/type/坐标/宽高）不可改。改完用 canvas_generate_node 触发生成。**这是迭代生成的主路径**：用户对某张图/某段视频不满意（"重来/换一版/不像"）时，改 prompt 后重生成即可，**绝不删掉节点再新建一个**——同一角色/场景/镜的节点永远只有一个，删了重建会丢连线、位置与历史。**前提**：先用 canvas_node_status 读到当前内容，再只传要改的字段。**注意 shots 是整表替换**：只改一镜也要先把 canvas_node_status 返回的全部 shots 取回、改完再整体传回（含每镜的 tail/cam/start/seg/timeBeats/camera/vfx/negative 与打斗字段 attack/reaction/impact/initiative/nextCombat）；否则其它镜的衔接与战斗字段会被冲掉（服务端会按镜序兜底保留，但不要依赖它）。',
           parameters: {
             type: 'object',
             properties: {
@@ -6201,6 +6261,8 @@ export function apply(ctx) {
               genres: { type: 'array', items: { type: 'string' }, description: '可选：临时覆盖题材 id 数组（叙事题材与行业题材都可）' },
               form: { type: 'string', description: '可选：临时覆盖规格 id' },
               look: { type: 'string', description: '可选：临时覆盖影调 id；传空串表示跟随导演' },
+              sceneText: { type: 'string', description: '可选（仅 kind=storyboard 有意义）：本场剧本文本——战斗注入按场检测用，命中打斗才带「打斗节奏」卡；不传则不判定、绝不由题材猜测' },
+              combatMode: { type: 'string', enum: ['auto', 'on', 'off'], description: '可选：打斗判定覆盖——auto=按 sceneText 检测（缺省），on=本场强制按打斗注入，off=强制不注入' },
               set: { type: 'boolean', description: '可选：true = 把本次生效的配置写进项目（之后画布自生成也用同一套）' },
             },
             required: ['projectId'],
@@ -6225,7 +6287,10 @@ export function apply(ctx) {
             if (!['script', 'storyboard', 'prompt', 'assets'].includes(kind)) {
               throw new Error('kind 必须是 script / storyboard / prompt / assets，收到：' + kind);
             }
-            const built = await buildSkillPack({ kind, profile: merged, hereDir: HERE, zh: true });
+            const built = await buildSkillPack({
+              kind, profile: merged, hereDir: HERE, zh: true,
+              ...(kind === 'storyboard' && args.combatMode !== undefined ? { sceneText: String(args.sceneText || ''), combatMode: String(args.combatMode || 'auto') } : {}),
+            });
             if (args.set) {
               doc.skillProfile = merged;
               doc.skillUpdatedAt = Date.now();
