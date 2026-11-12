@@ -2234,7 +2234,7 @@ function canvasWriteNode(args) {
           props: Array.isArray(s && s.props) ? s.props.map(String) : [],
           duration: Number(s && s.duration) || 5,
           dialogue: Array.isArray(s && s.dialogue)
-            ? s.dialogue.slice(0, 6).map((d) => ({ role: String(d && d.role || '').trim().slice(0, 24), line: String(d && d.line || '').trim().slice(0, 200) })).filter((d) => d.role && d.line)
+            ? s.dialogue.slice(0, 6).map((d) => ({ role: String(d && d.role || '').trim().slice(0, 24), line: String(d && d.line || '').trim().slice(0, 200), tone: String(d && d.tone || '').trim().slice(0, 40) })).filter((d) => d.role && d.line)
             : [],
           sfx: String((s && s.sfx) || '').trim().slice(0, 120),
           // 分镜新四字段（动作节拍/机位三件套/特效/负向词）必须透传：对话侧改 shots 时
@@ -3074,7 +3074,7 @@ async function canvasNodeStatus(args) {
       props: Array.isArray(s && s.props) ? s.props.map(String) : [],
       // 台词标注：声音参考提取/对话侧对白定位的数据源
       dialogue: Array.isArray(s && s.dialogue)
-        ? s.dialogue.slice(0, 6).map((d) => ({ role: String(d && d.role || '').slice(0, 24), line: String(d && d.line || '').slice(0, 200) }))
+        ? s.dialogue.slice(0, 6).map((d) => ({ role: String(d && d.role || '').slice(0, 24), line: String(d && d.line || '').slice(0, 200), tone: String(d && d.tone || '').slice(0, 40) }))
         : [],
       // 音效/环境音：声音设计提示，随镜头透出给对话侧与视频提示词
       sfx: String((s && s.sfx) || '').slice(0, 120),

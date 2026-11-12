@@ -21,7 +21,7 @@ GitHub Releases carry the same notes in English; maintainer-facing runbooks live
   （此前只有写面没有读面，对话侧读不回 = 参数不可发现）。
 
 ### Changed
-- **版本号升为 `0.20.6-local.4`**（本地构建后缀）：核心号高于上游 0.20.5，更新检查不再提示
+- **版本号升为 `0.20.6-local.5`**（本地构建后缀）：核心号高于上游 0.20.5，更新检查不再提示
   「覆盖本地改造」；正式发版仍须严格等于最新已发布版本号。
 
 ### Fixed
@@ -64,6 +64,17 @@ GitHub Releases carry the same notes in English; maintainer-facing runbooks live
   修法：结构化路径逐镜追加 `combatCausalityText(s, zh)`（非打斗镜返回空串，不需要额外开关）；
   同时把 `buildStructuredVideoPrompt` 挂进测试缝隙，`test-combat-semantics` 新增 ④b 六条断言
   （含「非打斗镜不注入」与 attack/reaction 原文进请求）。
+
+- **分镜逐镜编辑器「AI 补全本镜」补上人物表情与说话语气（0.20.6-local.5）**。
+  原来的补全提示词只要求「画面/动作/台词原文」，人物全是「站着说话」：表情写不出、语气没有字段可落。
+  本次：① 提示词新增两条硬规则——**表情**必须写成可拍的肌肉级状态（眉/眼睑/鼻翼/下颌/吞咽/屏息），
+  承接上一镜尾态余势，**禁止形容词**；**语气**必须给可执行的发声指令（音量/气声实声/语速/尾音/落点），
+  台词原文一字不改。② `dialogue` 新增 `tone` 字段（编辑器里多一个「语气」输入框，`-local.N` 起随分镜保存）。
+  ③ 语气渲染在 `<d>…</d>` **外面**（`…说（语气：低声压着气、尾音发虚）：<d>[Chinese] 台词</d>`），
+  避免被带音频的模型当成台词念出来；组装路径、结构化路径、本表范围说明、尾镜台词四处同步。
+  ④ 补全时**台词原文绝不改**，只把 AI 给的 `tone` 并进用户已有台词（按 role+line 对齐）。
+  ⑤ 宿主读面同步保留 `tone`（否则保存一次就丢）；`test-local-ai-helpers` 加 11 条源码断言、
+  `test-ref-ownership` 加 2 条功能断言（含「语气不得写进 `<d>`」）。
 
 ### Internal
 - **CHANGELOG 门禁与本账对齐**：Unreleased 补齐四分组；`COVERAGE` 清单覆盖本次合入的四条上游

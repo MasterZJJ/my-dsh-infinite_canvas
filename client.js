@@ -1180,6 +1180,7 @@ function revealCanvasInRight() {
       'aiPolishFail': 'AI 完善失败',
       'aiFillShot': 'AI 补全本镜',
       'aiFillShotHint': '参考上一镜的尾态/运镜与下一镜的画面，补全这一镜（用当前表单内容当输入）',
+      'dialogueTone': '语气（低声/气声/语速/尾音）',
       'aiFilling': '补全中…',
       'aiFillDone': '本镜已补全',
       'aiFillFail': '补全失败',
@@ -2259,6 +2260,7 @@ function revealCanvasInRight() {
       'aiPolishFail': 'AI polish failed',
       'aiFillShot': 'AI fill this shot',
       'aiFillShotHint': 'Fill this shot from the previous shot\'s tail/camera and the next shot (uses the current form as input)',
+      'dialogueTone': 'Tone (whisper / breathy / pace / tail)',
       'aiFilling': 'Filling…',
       'aiFillDone': 'Shot filled',
       'aiFillFail': 'AI fill failed',
@@ -3851,6 +3853,7 @@ body[data-ds-dark-theme] .dshic-board-editor{border-color:var(--dsw-alias-border
    否则说话人输入框会吃掉整行、台词原文被挤成 0 宽（用户看到"只有说话人"）。 */
 .dshic-be-dialogue .dshic-be-role{width:96px;min-width:96px;flex:0 0 96px;}
 .dshic-be-dialogue .dshic-be-line{width:auto;flex:1 1 120px;min-width:80px;}
+.dshic-be-dialogue .dshic-be-tone{width:132px;min-width:96px;flex:0 0 132px;}
 .dshic-be-advanced{border:1px solid var(--dshic-line);border-radius:8px;padding:7px 9px;display:flex;flex-direction:column;gap:8px;}
 .dshic-be-advanced summary{cursor:pointer;font-size:11px;color:var(--dshic-ink3);}
 .dshic-be-empty{padding:30px 12px;text-align:center;font-size:12px;color:var(--dshic-ink3);}
@@ -5010,7 +5013,7 @@ body[data-ds-dark-theme] .dshic-board-editor{border-color:var(--dsw-alias-border
         if (String(s.camera || '').trim()) lines.push(`机位：${String(s.camera).trim()}`);
         if (String(s.vfx || '').trim()) lines.push(`特效：${String(s.vfx).trim()}`);
         if (String(s.negative || '').trim()) lines.push(`负面：${String(s.negative).trim()}`);
-        const dls = (Array.isArray(s.dialogue) ? s.dialogue : []).map((d) => String(d && d.role || '').trim() + '：' + String(d && d.line || '').trim()).filter((t) => t.replace('：', '').trim());
+        const dls = (Array.isArray(s.dialogue) ? s.dialogue : []).map((d) => String(d && d.role || '').trim() + (String(d && d.tone || '').trim() ? '（' + String(d.tone).trim() + '）' : '') + '：' + String(d && d.line || '').trim()).filter((t) => t.replace('：', '').trim());
         if (dls.length) lines.push(`台词：${dls.join('；')}`);
         if (String(s.sfx || '').trim()) lines.push(`音效：${String(s.sfx).trim()}`);
         return lines.join('\n');
@@ -5437,7 +5440,7 @@ body[data-ds-dark-theme] .dshic-board-editor{border-color:var(--dsw-alias-border
         const motion = rewrite(String(s.motion || '').trim());
         if (motion) parts.push((zh ? '运镜/动作：' : 'Camera/Action: ') + motion);
         const dls = (s.dialogue || [])
-          .map((d) => ({ role: String((d && d.role) || '').trim(), line: String((d && d.line) || '').trim() }))
+          .map((d) => ({ role: String((d && d.role) || '').trim(), line: String((d && d.line) || '').trim(), tone: String((d && d.tone) || '').trim().slice(0, 40) }))
           .filter((d) => d.line);
         if (dls.length) {
           const txt = dls.map((d) => {
@@ -5458,7 +5461,9 @@ body[data-ds-dark-theme] .dshic-board-editor{border-color:var(--dsw-alias-border
             const said = useVoice
               ? (zh ? ' 用' + voice + '说' : ' says (voice: ' + voice + ')')
               : (zh ? ' 说' : ' says');
-            return who + said + '：<d>[' + lang + '] ' + d.line + '</d>';
+            const tone = String((d && d.tone) || '').trim().slice(0, 40);
+            const tonePart = tone ? (zh ? '（语气：' + tone + '）' : ' (tone: ' + tone + ')') : '';
+            return who + said + tonePart + '：<d>[' + lang + '] ' + d.line + '</d>';
           }).join('；');
           parts.push((zh ? '台词：' : 'Dialogue: ') + txt);
         }
@@ -10157,7 +10162,7 @@ function queueThumb(assetId) {
     }
     /** 单镜「AI 补全」：当前表单 + 上一镜 tail/cam + 下一镜画面 → 一个完整镜头（JSON）。 */
     async function aiCompleteShot({ cur, prev, next, bible, requirement, nodeLabel, zh }) {
-      const jsonShape = '{"title":"…","visual":"…","motion":"…","timeBeats":["0s …","中段 …","结尾 …"],"camera":"…","vfx":"…","negative":"…","tail":"…","cam":"…","start":"…","seg":"continuation","characters":["…"],"scene":"…","props":["…"],"duration":3,"dialogue":[{"role":"…","line":"…"}],"sfx":"…"}';
+      const jsonShape = '{"title":"…","visual":"…","motion":"…","timeBeats":["0s …","中段 …","结尾 …"],"camera":"…","vfx":"…","negative":"…","tail":"…","cam":"…","start":"…","seg":"continuation","characters":["…"],"scene":"…","props":["…"],"duration":3,"dialogue":[{"role":"…","line":"…","tone":"…"}],"sfx":"…"}';
       const system = [
         zh ? '你是短剧分镜师。只输出一个 JSON 对象，不要解释、不要 Markdown 围栏。' : 'You are a short-drama storyboard artist. Output ONE JSON object only, no prose, no fences.',
         (zh ? 'JSON 结构：' : 'JSON shape: ') + jsonShape,
@@ -10169,6 +10174,10 @@ function queueThumb(assetId) {
           : 'Continue the previous shot tail/cam (or establish the space when first), and leave a tail/cam the next shot can pick up.',
         zh ? 'dialogue 只填用户已给的台词原文，不得新写；sfx 只写环境声/拟音，绝不写音乐/配乐/BGM。'
           : 'dialogue only carries lines the user already gave; sfx is ambience/foley only — never music/score/BGM.',
+        zh ? '表情（必须）：每个有角色的镜，visual 必须写可拍的肌肉级表情——眉/眼睑/鼻翼/下颌/吞咽/屏息/呼吸起伏的具体状态（如「眉心压出竖纹、眼睑半垂、下颌线绷紧」），并承接上一镜尾态的表情余势；禁止形容词（愤怒/悲伤/紧张/凶狠）和「表情复杂/意味深长」这类空话；motion 可写一次微表情变化（眼珠移向、喉结滚动、嘴角向下压）。'
+          : 'Expression (required): every shot with a character must give filmable muscular-level expression in visual - specific states of brow / eyelids / nostrils / jaw / swallowing / held breath / breathing (e.g. "vertical crease between brows, eyelids half lowered, jaw line tight"), carrying the previous shot\'s tail expression forward; no adjectives (angry/sad/tense) and no vague filler; motion may carry one micro-change (eyes flick, throat bobs, mouth corner pulls down).',
+        zh ? '语气（必须）：dialogue 每条除原文 line 外必须给 tone——可执行的发声指令：音量、气声/实声、语速、尾音、情绪落点（如「低声压着气、尾音发虚、几乎气声」）；line 原文一字不改，不得新增或改写台词；用户没写语气时你负责补。'
+          : 'Tone (required): besides the verbatim line, every dialogue entry must carry tone - executable vocal direction: volume, breathy vs chest voice, pace, tail-off, emotional landing (e.g. "low and held-in, tail fading, almost whispered"); never alter or invent the line text; fill the tone when the user left it empty.',
         zh ? 'duration 按节奏给一位小数（快切 0.3–0.8s，对白 2–4s，情绪长镜 ≥5s）；seg 只能是 opening/continuation/scene_change/new_character/closeup/state_jump。'
           : 'duration in seconds (one decimal, pacing-aware); seg must be opening/continuation/scene_change/new_character/closeup/state_jump.',
       ].join('\n');
@@ -10182,7 +10191,7 @@ function queueThumb(assetId) {
           (zh ? '段落：' : 'seg: ') + String(shot.seg || ''),
           (zh ? '尾态：' : 'tail: ') + String(shot.tail || ''),
           (zh ? '运镜：' : 'cam: ') + String(shot.cam || ''),
-          (zh ? '台词：' : 'dialogue: ') + (Array.isArray(shot.dialogue) ? shot.dialogue.map((d) => String((d && d.role) || '') + '：' + String((d && d.line) || '')).join('；') : ''),
+          (zh ? '台词：' : 'dialogue: ') + (Array.isArray(shot.dialogue) ? shot.dialogue.map((d) => String((d && d.role) || '') + (String((d && d.tone) || '').trim() ? '（' + String(d.tone).trim() + '）' : '') + '：' + String((d && d.line) || '')).join('；') : ''),
           (zh ? '音效：' : 'sfx: ') + String(shot.sfx || ''),
         ].filter((x) => !/[:：]\s*$/.test(x));
         return (zh ? '【' : '[') + tag + (zh ? '】' : '] ') + '\n' + parts.join('\n');
@@ -11634,7 +11643,7 @@ function queueThumb(assetId) {
         // 提示词——分段生成时模型看不到别的段，因果只能靠写在提示词里。空字段不注入。
         const cct = combatCausalityText(s, zh);
         if (cct) parts.push(cct);
-        const dls = (s.dialogue || []).map((d) => String(d && d.role || '').trim() + '：' + String(d && d.line || '').trim()).filter((x) => x.replace('：', '').trim());
+        const dls = (s.dialogue || []).map((d) => String(d && d.role || '').trim() + (String(d && d.tone || '').trim() ? '（' + String(d.tone).trim() + '）' : '') + '：' + String(d && d.line || '').trim()).filter((x) => x.replace('：', '').trim());
         if (dls.length) {
           parts.push(zh
             ? '台词（由' + (s.dialogue || []).map((d) => String(d && d.role || '').trim()).filter(Boolean).join('、') + '在画面内开口说出，口型与台词同步）：' + dls.join('；')
@@ -11844,7 +11853,7 @@ function queueThumb(assetId) {
     /** 分镜节点的资产文本（自动入库与手动"存为资产"共用，避免两处格式漂移）。 */
     function storyboardAssetText(shots) {
       return (shots || []).map((x) => {
-        const dls = (x.dialogue || []).map((d) => `${d.role}：${d.line}`).join('\n');
+        const dls = (x.dialogue || []).map((d) => `${d.role}${String(d.tone || '').trim() ? '（' + String(d.tone).trim() + '）' : ''}：${d.line}`).join('\n');
         const sfx = String(x.sfx || '').trim();
         return `【${x.title}】${x.duration}s\n画面：${x.visual}\n动作：${x.motion}`
           + (dls ? `\n${dls}` : '')
@@ -15604,7 +15613,7 @@ function queueThumb(assetId) {
         props: listOf(src.props).slice(0, 6),
         duration: Math.max(0.3, Math.round((Number(src.duration) || 3) * 10) / 10),
         dialogue: (Array.isArray(src.dialogue) ? src.dialogue : []).slice(0, 6)
-          .map((d) => ({ role: String(d && d.role || '').trim().slice(0, 24), line: String(d && d.line || '').trim().slice(0, 200) }))
+          .map((d) => ({ role: String(d && d.role || '').trim().slice(0, 24), line: String(d && d.line || '').trim().slice(0, 200), tone: String(d && d.tone || '').trim().slice(0, 40) }))
           .filter((d) => d.role && d.line),
         sfx: String(src.sfx || '').trim().slice(0, 120),
       };
@@ -15713,7 +15722,15 @@ function queueThumb(assetId) {
           const filled = normalizeEditedShot({ ...out, ...(keepTitle ? { title: shot.title } : {}) }, idx);
           // 台词：用户已写就保留原文（AI 只允许沿用，不得新写）；用户没写则用 AI 补的
           const userDlg = (Array.isArray(shot.dialogue) ? shot.dialogue : []).filter((d) => d && String(d.role || '').trim() && String(d.line || '').trim());
-          if (userDlg.length) filled.dialogue = userDlg;
+          if (userDlg.length) {
+            // 台词原文绝不改；但语气（tone）允许 AI 补：用户已写就保留，用户没写就吸收 AI 的，按 role+line 对齐
+            const aiDlg = Array.isArray(filled.dialogue) ? filled.dialogue : [];
+            filled.dialogue = userDlg.map((d) => {
+              const hit = aiDlg.find((x) => String(x && x.role || '').trim() === String(d.role || '').trim()
+                && String(x && x.line || '').trim() === String(d.line || '').trim());
+              return { ...d, tone: String(d.tone || (hit && hit.tone) || '').trim().slice(0, 40) };
+            });
+          }
           setShots((prevAll) => prevAll.map((s2, i) => (i === idx ? { ...s2, ...filled } : s2)));
           setDirty(true);
           toast(T('aiFillDone'));
@@ -15831,6 +15848,11 @@ function queueThumb(assetId) {
                             className: 'dshic-input dshic-be-line', value: String(d.line || ''), placeholder: T('dialogueLine'),
                             style: { width: 'auto', minWidth: 80, flex: '1 1 120px' },
                             onChange: (e) => setDialogue(di, { line: e.target.value }),
+                          }),
+                          h('input', {
+                            className: 'dshic-input dshic-be-tone', value: String(d.tone || ''), placeholder: T('dialogueTone'),
+                            style: { width: 132, minWidth: 96, flex: '0 0 132px' },
+                            onChange: (e) => setDialogue(di, { tone: e.target.value }),
                           }),
                           h('button', { type: 'button', className: 'dshic-iconbtn', style: { flex: 'none' }, title: T('deleteShot'), onClick: () => removeDialogue(di) }, '×'),
                         )),

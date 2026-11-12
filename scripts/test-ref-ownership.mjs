@@ -207,7 +207,7 @@ function mkRpc(serverAssets) {
 {
   const shots = [
     { title: '开场', duration: 2, visual: '@陈拾@ 在 @褶皱巷@ 里停下', motion: '镜头缓推', sfx: '雨声' },
-    { title: '对话', duration: 2.5, visual: '近景，@陈拾@ 抬头', motion: '固定', dialogue: [{ role: '陈拾', line: '信到了。' }] },
+    { title: '对话', duration: 2.5, visual: '近景，@陈拾@ 抬头', motion: '固定', dialogue: [{ role: '陈拾', line: '信到了。', tone: '低声、尾音发虚' }] },
   ];
   const refs = [{ entity: '褶皱巷', name: '场景-褶皱巷', category: 'scene' }]; // 只连了 1 张场景图
   const mentioned = [pure.matchBibleEntity('陈拾', bible)]; // @陈拾@ 命中但没有连图
@@ -218,6 +218,8 @@ function mkRpc(serverAssets) {
   ok(p.includes('声音：低沉沙哑的男声'), '结构化视频提示词没注入 @陈拾@ 的声音设定');
   ok(/陈拾（S1） 用低沉沙哑的男声说/.test(p), '分镜台词没有带出该实体的声音要求（用…说）');
   ok(p.includes('<d>[Chinese] 信到了。</d>'), '台词仍必须用 <d>…</d> 包裹');
+  ok(/说（语气：低声、尾音发虚）：/.test(p), '结构化路径没有渲染 dialogue.tone（语气要进请求，否则模型听不到）');
+  ok(!/<d>[^<]*低声、尾音发虚/.test(p), '语气被写进了 <d> 里面（会被当台词念出来）');
   // 不虚构参考图：只有 1 张连线 → 只能出现 <Picture 1>，绝不能因为 @陈拾@ 冒出 <Picture 2>
   ok(!p.includes('<Picture 2>'), '@引用凭空造出了第 2 张参考图（参考图必须严格等于连线）');
   eq(p.match(/<Picture \d+>/g), ['<Picture 1>'], '结构化提示词的 <Picture N> 数量必须等于连线参考图数量');
