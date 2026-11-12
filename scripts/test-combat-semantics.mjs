@@ -154,6 +154,28 @@ const lex = SEG.COMBAT_ACTION_LEXICON;
   ok(geometry(bad[0], false).some((w) => /no statues/i.test(w)), '校验：英文告警存在');
 }
 
+// ---------------- ④b 结构化路径也要编译战斗因果（0.20.6-local.4） ----------------
+{
+  const SP = sandbox.window.__DSH_IC_STORYBOARD_PROMPT__;
+  ok(SP && typeof SP.buildStructuredVideoPrompt === 'function', '结构化路径：buildStructuredVideoPrompt 有测试缝隙');
+  const refs = [{ name: '角色-李寒 设定图', category: 'character' }, { name: '角色-沈铁 设定图', category: 'character' }];
+  const bible = { characters: [{ name: '李寒', desc: '青灰短打' }, { name: '沈铁', desc: '深蓝长衫' }] };
+  const shots = [
+    { title: '架挡', duration: 1.6, visual: '@沈铁@ 掌根外侧抵住枪杆', motion: '掌根压住枪杆向外推',
+      attack: '@李寒@→@沈铁@，锁定咽喉，直刺', reaction: '@沈铁@ 单臂斜上架卸力', impact: '枪杆被压出弧、荡开 15 厘米',
+      initiative: '攻势仍在李寒', nextCombat: '@李寒@ 拧腰横扫', tail: '枪尖被荡开｜战斗态：攻势在李寒' },
+    { title: '收束', duration: 1.2, visual: '@沈铁@ 站住', motion: '缓后拉' },
+  ];
+  const out = SP.buildStructuredVideoPrompt(shots, refs, bible, { zh: true, prompt: '', music: '', hasFrame: false, frameRole: 'first_frame', continuity: '', entities: [] });
+  ok(out.length > 0, '结构化路径：有主体时产出非空提示词');
+  ok(out.includes('subject_definitions'), '结构化路径：保留厂商协议结构（subject_definitions）');
+  ok(out.includes('【打斗因果】'), '结构化路径：打斗镜**编译**了【打斗因果】块（盲区已闭合）');
+  ok(out.includes('锁定咽喉'), '结构化路径：attack 原文进入请求');
+  ok(out.includes('单臂斜上架卸力'), '结构化路径：reaction 原文进入请求');
+  const cnt = (out.match(/【打斗因果】/g) || []).length;
+  ok(cnt === 1, '结构化路径：非打斗镜不注入战斗块（实际 ' + cnt + ' 处）');
+}
+
 // ---------------- ⑤ 漂移守卫：client.js ↔ combat-semantics.js 逐字一致 ----------------
 {
   const FIX = {

@@ -5464,6 +5464,12 @@ body[data-ds-dark-theme] .dshic-board-editor{border-color:var(--dsw-alias-border
         }
         const sfx = rewrite(String(s.sfx || '').trim());
         if (sfx) parts.push((zh ? '音效：' : 'SFX: ') + sfx);
+        // 打斗因果（0.20.6-local.4）：结构化路径此前只渲染 visual/motion/台词/音效——
+        // 只要这条路径接管（有参考图 + 主体可解析），attack/reaction/impact 就整块消失，
+        // 战斗链只在「分镜→提示词」组装路径里生效（0.20.5 的覆盖盲区，实机踩到）。
+        // combatCausalityText 对非打斗镜返回空串，所以不需要额外开关。
+        const cct = combatCausalityText(s, zh);
+        if (cct) parts.push(cct);
         // 镜头标题（s.title）刻意不写进这一行：它是编导检索标签，写进来会被音频模型当台词念。
         // 镜头定位靠 [Shot N] + 绝对时间码已经足够，不需要标题。
         outs.push('[Shot ' + (i + 1) + '] ' + fmtT(starts[i]) + (zh ? ' 起' : '') + '：' + parts.join(zh ? '；' : '; '));
@@ -17121,6 +17127,7 @@ function queueThumb(assetId) {
       notify();
     }
 
+    // <<<COMBAT_PURE_BEGIN>>>
     // ============================================================
     // 战斗语义（打斗分镜因果链）：嫁接自 _refs/LucianAIGC-打斗skill-V3.1。
     //
@@ -17279,6 +17286,7 @@ function queueThumb(assetId) {
       if (g('attack') && g('tail') && !/战斗态|combat state/i.test(g('tail'))) out.push(zh ? pre + 'tail 建议补「｜战斗态：…」（跨镜攻势靠它传递）' : pre + 'tail should append "| combat state: ..." (cross-shot momentum rides on it)');
       return out;
     }
+    // <<<COMBAT_PURE_END>>>
 
     /**
      * 组装某生成能力下的注入切片文本。返回 { text, bytes }；任一层缺失则跳过。
@@ -24191,7 +24199,7 @@ const DIRECTOR_KEY_HELP = [
           // 按镜头切段（分段生成本身就是最容易出错的地方）：规划器 + 强弱模型分流 + 节点段区间解析
           // 供 scripts/test-segment-plan.mjs 直接断言
           window.__DSH_IC_SEGMENT__ = { planShotSegments, planStoryboardBoards, splitStoryboardIntoBoards, isCutPoint, segmentNeedsHardFrame, videoSegmentOf, shotContinuityPlan, detectCombatScene, shotIsCombat, combatContractAddendum, combatCausalityText, validateCombatGeometry, COMBAT_ACTION_LEXICON };
-          window.__DSH_IC_STORYBOARD_PROMPT__ = { buildStoryboardVideoPrompt };
+          window.__DSH_IC_STORYBOARD_PROMPT__ = { buildStoryboardVideoPrompt, buildStructuredVideoPrompt };
           // 视频请求组装（0.20.2）：run 与「请求预览」的单一事实源——
           // assembleVideoRequest（组装+校验门）/ previewVideoInputs（预览轻量 inputs）/ videoRequestContext（决策基座）
           // 供 scripts/test-submission-log.mjs 断言 p 逐字一致与 warnings 三条逐一触发

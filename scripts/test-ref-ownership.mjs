@@ -51,7 +51,9 @@ const eq = (a, b, label) => {
 // ---------------------------------------------------------------
 const catLabel = (c) => ({ character: '角色', scene: '场景', prop: '道具', general: '通用' }[c] || '通用');
 const effLang = () => 'zh';
-const pure = new Function('catLabel', 'effLang', pureBody + `
+const cm = /\/\/ <<<COMBAT_PURE_BEGIN>>>([\s\S]*?)\/\/ <<<COMBAT_PURE_END>>>/.exec(src);
+const combatBody = cm ? cm[1] : '';
+const pure = new Function('catLabel', 'effLang', pureBody + combatBody + `
   return { parseMentions, matchBibleEntity, assetBelongsToEntity, entityLabelOf, entityCategoryOf,
     buildEffectivePrompt, buildStructuredVideoPrompt, subjectInfoFromRef, condenseDesc, voiceFromDesc,
     entityBibleBlock, assetNameFor, stripMentionMarks, bibleNames, repairUnclosedMentions };

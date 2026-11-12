@@ -21,7 +21,7 @@ GitHub Releases carry the same notes in English; maintainer-facing runbooks live
   （此前只有写面没有读面，对话侧读不回 = 参数不可发现）。
 
 ### Changed
-- **版本号升为 `0.20.6-local.3`**（本地构建后缀）：核心号高于上游 0.20.5，更新检查不再提示
+- **版本号升为 `0.20.6-local.4`**（本地构建后缀）：核心号高于上游 0.20.5，更新检查不再提示
   「覆盖本地改造」；正式发版仍须严格等于最新已发布版本号。
 
 ### Fixed
@@ -55,6 +55,15 @@ GitHub Releases carry the same notes in English; maintainer-facing runbooks live
 - **战斗契约补两条硬规则（同一轮）**：① `impact` 必须写接触几何（谁贴住什么、形变位移多少、
   接触点在画面哪），禁止「磕上了／打中了」这类结果词；② 有 `impact/initiative/nextCombat` 的镜
   必须同时有 `attack` 与 `reaction`——只写结果的镜，模型会自己发明动作。
+
+- **战斗块在「结构化提示词」路径上被整块丢弃（0.20.6-local.4，上游 0.20.5 覆盖盲区）**。
+  `buildStructuredVideoPrompt` 只渲染 visual / motion / 台词 / 音效，**从不读**
+  `attack` / `reaction` / `impact` / `initiative` / `nextCombat`；而 0.20.5 的战斗因果链只编译在
+  `buildStoryboardVideoPrompt`（分镜→提示词组装路径）里。所以只要结构化路径接管（有参考图且主体可解析），
+  `【打斗因果】`就整块消失——实机这次是**靠 `buildStructuredVideoPrompt` 返回空、回退到组装路径**才侥幸带上。
+  修法：结构化路径逐镜追加 `combatCausalityText(s, zh)`（非打斗镜返回空串，不需要额外开关）；
+  同时把 `buildStructuredVideoPrompt` 挂进测试缝隙，`test-combat-semantics` 新增 ④b 六条断言
+  （含「非打斗镜不注入」与 attack/reaction 原文进请求）。
 
 ### Internal
 - **CHANGELOG 门禁与本账对齐**：Unreleased 补齐四分组；`COVERAGE` 清单覆盖本次合入的四条上游

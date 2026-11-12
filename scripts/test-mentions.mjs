@@ -10,10 +10,14 @@ if (!m) {
   process.exit(1);
 }
 const body = m[1];
+// 战斗语义纯函数（0.20.6-local.4）：buildStructuredVideoPrompt 现在会调 combatCausalityText，
+// 所以切片求值也必须带上这段纯函数区块，否则 ReferenceError。
+const cm = /\/\/ <<<COMBAT_PURE_BEGIN>>>([\s\S]*?)\/\/ <<<COMBAT_PURE_END>>>/.exec(src);
+const combatBody = cm ? cm[1] : '';
 // 沙箱：只提供用到的环境（catLabel 由下方 stub 提供；纯函数本身不依赖 DOM）
 const catLabel = (c) => ({ character: '角色', scene: '场景', prop: '道具', general: '通用' }[c] || '通用');
 const effLang = () => 'zh';
-const factory = new Function('catLabel', 'effLang', body + `
+const factory = new Function('catLabel', 'effLang', body + combatBody + `
   return { parseMentions, highlightMentions, stripMentionMarks, matchBibleEntity, assetBelongsToEntity, entityLabelOf, entityCategoryOf, buildEffectivePrompt, assetNameFor, nowStamp, repairUnclosedMentions, bibleNames, subjectInfoFromRef, condenseDesc, voiceFromDesc, buildStructuredVideoPrompt, shotContinuityPlan, shotContinuityBlock, storyboardContinuityNote, frameAnchorText, tailFrameScore, frameSeamMetrics, seamVerdict, buildAssetSheetPrompt, assetSheetNodeSpec, categoryFromName };
 `);
 const api = factory(catLabel, effLang);
