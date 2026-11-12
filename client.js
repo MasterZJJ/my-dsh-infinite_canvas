@@ -11851,6 +11851,7 @@ function queueThumb(assetId) {
     async function genStoryboardNode(n) {
       const st = storyboardScriptText(n);
       if (!st) throw new Error(T('aiNeedScript'));
+      const zh = effLang() !== 'en'; // 打斗几何校验的告警文案语言（上游 0.20.5 漏声明，会抛 zh is not defined）
       // 拆表后的单表重生成：镜头数沿用本表现有镜头数，避免模型又按整场篇幅写出别的段。
       const boardScoped = String(n.data.boardScript || '').trim();
       const countArg = boardScoped && Array.isArray(n.data.shots) && n.data.shots.length

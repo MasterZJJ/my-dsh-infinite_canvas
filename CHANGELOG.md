@@ -21,7 +21,7 @@ GitHub Releases carry the same notes in English; maintainer-facing runbooks live
   （此前只有写面没有读面，对话侧读不回 = 参数不可发现）。
 
 ### Changed
-- **版本号升为 `0.20.6-local.1`**（本地构建后缀）：核心号高于上游 0.20.5，更新检查不再提示
+- **版本号升为 `0.20.6-local.2`**（本地构建后缀）：核心号高于上游 0.20.5，更新检查不再提示
   「覆盖本地改造」；正式发版仍须严格等于最新已发布版本号。
 
 ### Fixed
@@ -35,6 +35,15 @@ GitHub Releases carry the same notes in English; maintainer-facing runbooks live
   `metadata.url` 主字段 + `url`/`videoUrl`/`result_url` + 数组形状），轮询「成功但无地址」改 wait
   不判死（中转站异步转存），并加 `/content` 代理下载兜底；②media-studio 预设「加载失败」
   （删除 preset 里 `tool-subagent-list-agents` 子路径行 + 禁用与 bundle 层重复的 skills 挂载行）。
+
+- **分镜表生成必崩 `zh is not defined`（上游 0.20.5 缺陷，随本次合并带入）**。
+  `genStoryboardNode()` 在落盘前调用 `validateCombatGeometry(sh, zh)`，但 `zh`（语言开关）
+  在这个函数作用域里从未声明——只要分镜表生成走到那一步（`combatMode` 默认 `auto`），
+  就抛 `ReferenceError`，用户看到的是「分镜表直接失败、稿子一行没写」。修法：函数头补
+  `const zh = effLang() !== 'en';`（与文件内其它函数同写法）。
+  另新增 `scripts/test-client-language-scope.mjs` 作用域守卫：受检调用点的作用域必须能拿到 `zh`
+  （近期上游原版跑必定变红，已实测自证；这类 bug `node --check` 与单元测试都抓不到，
+  只有真实生成路径会走到）。已同步提给上游。
 
 ### Internal
 - **CHANGELOG 门禁与本账对齐**：Unreleased 补齐四分组；`COVERAGE` 清单覆盖本次合入的四条上游
