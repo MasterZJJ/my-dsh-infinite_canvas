@@ -50,6 +50,7 @@ const SUITE = [
   // --- 静态审计 ---
   { name: 'audit.mjs', desc: '机械化体检（i18n/CSS/节点类型/RPC 一致）' },
   { name: 'test-local-ai-helpers.mjs', desc: '本地构建：AI 完善提示词走画布技能 / 节点上传走资产管道 / 编辑器 AI 补全上下文' },
+  { name: 'test-bible-merge.mjs', desc: '设定集推送三方合并（旧副本不覆盖对话侧新版本 / 用户改动不丢）' },
   // --- 渲染与组件 ---
   { name: 'smoke-render.mjs', desc: '渲染冒烟（假 React 走真实组件树，抓黑屏级崩溃）' },
   { name: 'test-drag-alt.mjs', desc: '拖动推挤 / Alt 自由摆放 / 快捷键面板' },

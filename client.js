@@ -4280,18 +4280,52 @@ body[data-ds-dark-theme] .dshic-board-editor{border-color:var(--dsw-alias-border
     function saveBibleLocal(pid, b) { if (pid) lsSet(LS_BIBLE + pid, b); }
     // 上一次已同步给 Host 的设定集快照：避免每次画布保存都把（可能已被对话改过的）本地版本推回去覆盖
     const biblePushSnap = new Map();
+    // 上一次与 Host 对齐时的设定集内容 + 时间戳（乐观并发的基线）。
+    // 宿主用「基线时间戳 < 自己当前的 bibleUpdatedAt」判定这次推送基于旧副本，旧副本不许整份盖掉
+    // 对话侧刚写的新版本——有基线内容时走三方合并（只保留本地真改过的条目），没有则拒收。
+    const bibleBaseSnap = new Map();
     function bibleSnapshot(pid) { try { return JSON.stringify(loadBible(pid)); } catch { return ''; } }
+    /** 推送用的基线：内容（上次对齐时的那份）+ 时间戳（它对应的 bibleUpdatedAt）。 */
+    function bibleBaseFor(pid) {
+      let base = null;
+      try { base = JSON.parse(bibleBaseSnap.get(pid) || bibleSnapshot(pid)); } catch { base = null; }
+      return { base, baseAt: Number(lsGet(LS_BIBLE_SYNC + pid, 0)) || 0 };
+    }
     /** 需要时才推送设定集：本地内容与上次同步的一致 → 不带 bible 字段，Host 保留对话侧的新版本。 */
     function bibleFieldForPush(pid) {
       const snap = bibleSnapshot(pid);
       if (biblePushSnap.get(pid) === snap) return {};
-      return { bible: loadBible(pid), __bibleChanged: true };
+      const { base, baseAt } = bibleBaseFor(pid);
+      return { bible: loadBible(pid), __bibleChanged: true, base, baseAt };
+    }
+    /** 采用宿主版本的设定集（轮询拉回 / 三方合并结果落地）：写本地 + 推进同步戳 + 两条基线对齐到它。 */
+    function adoptHostBible(pid, hostBible, stamp) {
+      const merged = mergeBibleKeepDrafts(pid, hostBible);
+      saveBibleLocal(pid, merged);
+      if (stamp) lsSet(LS_BIBLE_SYNC + pid, stamp);
+      biblePushSnap.set(pid, JSON.stringify(merged));
+      bibleBaseSnap.set(pid, JSON.stringify(merged));
+      return merged;
+    }
+    /** 推送成功后把基线推进到「刚推上去的这份」；宿主回了合并结果时以宿主为准。 */
+    function commitBiblePush(pid, pushed, r) {
+      const stamp = (r && r.bibleUpdatedAt) || Date.now();
+      if (r && r.bible) {
+        // 宿主发现基线落后并做了三方合并：本地直接采用合并结果（否则本地缺宿主那份的新条目）
+        adoptHostBible(pid, r.bible, stamp);
+        if (pid === S.activeId) update((s) => { s.assetsTick++; });
+        return;
+      }
+      lsSet(LS_BIBLE_SYNC + pid, stamp);
+      biblePushSnap.set(pid, JSON.stringify(pushed));
+      bibleBaseSnap.set(pid, JSON.stringify(pushed));
     }
     /** 把设定集同步到 Host：对话侧才能读写设定集（设定集先行）。内容未变则不推送（避免覆盖对话侧的新版本）。 */
     function pushBible(pid, b) {
       if (!pid) return;
       const bible = b || loadBible(pid);
       if (biblePushSnap.get(pid) === JSON.stringify(bible)) return;
+      const { base, baseAt } = bibleBaseFor(pid);
       try {
         const proj = S.projects.find((p) => p.id === pid);
         const deleted = defaultCanvasDeleted(pid);
@@ -4302,18 +4336,16 @@ body[data-ds-dark-theme] .dshic-board-editor{border-color:var(--dsw-alias-border
           canvases: proj && Array.isArray(proj.canvases) ? proj.canvases : [],
           ...(proj && proj.defaultCanvasName ? { defaultCanvasName: proj.defaultCanvasName } : {}),
           ...(deleted ? { defaultCanvasDeleted: true } : {}),
+          // 乐观并发基线：宿主据此判断这份 bible 是不是基于旧副本（旧版宿主会忽略这两个字段，行为不变）
+          bibleBaseAt: baseAt,
+          ...(base ? { bibleBase: base } : {}),
           doc,
         })
           .then((r) => {
-            if (r && r.bibleUpdatedAt) {
-              lsSet(LS_BIBLE_SYNC + pid, r.bibleUpdatedAt);
-            } else {
-              // 宿主未回传设定集戳（旧版 projectsPut 只回 {ok,id,updatedAt}）：用本地时间兜底推进同步戳。
-              // 不推进的话，3s 轮询会误判「宿主更新过」，把刚添加的空白条目（宿主 normalizeBible 会丢弃空名行）
-              // 连同输入框一起拉掉——设定集点「添加」后输入框闪现即逝的根因。
-              lsSet(LS_BIBLE_SYNC + pid, Date.now());
-            }
-            biblePushSnap.set(pid, JSON.stringify(bible));
+            // 宿主未回传设定集戳（旧版 projectsPut 只回 {ok,id,updatedAt}）：用本地时间兜底推进同步戳。
+            // 不推进的话，3s 轮询会误判「宿主更新过」，把刚添加的空白条目（宿主 normalizeBible 会丢弃空名行）
+            // 连同输入框一起拉掉——设定集点「添加」后输入框闪现即逝的根因。
+            commitBiblePush(pid, bible, r);
           })
           .catch(() => { /* 静默 */ });
       } catch { /* 忽略 */ }
@@ -4322,6 +4354,9 @@ body[data-ds-dark-theme] .dshic-board-editor{border-color:var(--dsw-alias-border
     /** 设定集保存：本地立即写，推送防抖（输入过程中不逐字打网络）。 */
     function saveBible(pid, b) {
       if (!pid) return;
+      // 第一次改动前先把「改动前的那份」记成基线（initStore 只预热了当时已存在的项目；
+      // 本会话新建的项目走这里）。缺了基线，宿主会把这次推送当成"没改过"→ 用户的编辑被宿主版本盖掉。
+      if (!bibleBaseSnap.has(pid)) { try { bibleBaseSnap.set(pid, bibleSnapshot(pid)); } catch { /* 忽略 */ } }
       saveBibleLocal(pid, b);
       if (biblePushTimers.has(pid)) clearTimeout(biblePushTimers.get(pid));
       biblePushTimers.set(pid, setTimeout(() => { biblePushTimers.delete(pid); pushBible(pid, loadBible(pid)); }, 800));
@@ -5522,12 +5557,17 @@ body[data-ds-dark-theme] .dshic-board-editor{border-color:var(--dsw-alias-border
       const nm = String(name || '').trim() || (zh ? '未命名资产' : 'Unnamed asset');
       const raw = String(desc || '').trim();
       // 外观要点：优先「外观：…」片段（技能的写法约定），否则整段描述；去掉「声音：…」（画图用不到）
-      // 注意：分句只认句号——设定集里常用「；」分隔「发型；衣着；配饰」，按「；」截断会把衣服鞋子整段丢掉
+      // 注意①：分句只认句号——设定集里常用「；」分隔「发型；衣着；配饰」，按「；」截断会把衣服鞋子整段丢掉
       // （实测：摊主的布巾/短褐/蓝布围裙/草鞋全被截掉，设定图画成一个没有年代信息的裸上身胖子）。
+      // 注意②：**「外观：」之后必须整段取到底，绝不能截到第一个句号**。AI 完善提示词路径的 desc 恒为
+      // 「外观：<设定集描述>；<AI 细化>」，设定集的场景/角色描述几乎都是多句——截到第一个句号会把
+      // 用户刚补的材质/陈设/光线整段丢掉，只剩第一句概括（如「白色病房」），表现就是
+      // 「改了设定集，AI 完善提示词出来还是之前那句」。
       const look = (() => {
-        const ap = /外观[：:]\s*([^。\n]+)/.exec(raw);
-        const seg = ap ? ap[1].replace(/声音[：:][^。\n]*/g, '').trim() : raw.replace(/声音[：:][^。\n]*/g, '').trim();
-        return seg.replace(/\s+/g, ' ').trim();
+        const ap = /外观[：:]\s*([\s\S]+)$/.exec(raw);
+        const seg = (ap ? ap[1] : raw).replace(/声音[：:][^。\n]*/g, '').trim();
+        // 收尾句号交给各版式的模板统一补，避免出现「。。」
+        return seg.replace(/\s+/g, ' ').replace(/[。\s]+$/, '').trim();
       })();
       const style = bibleStyleAnchor(bible) || (zh ? '写实电影感' : 'realistic cinematic');
       const lookLine = look ? look : (zh ? '（设定集未提供外观描述：按名称与常识绘制，保持朴素克制）' : '(no appearance notes in the bible: keep it plain and coherent)');
@@ -9586,10 +9626,7 @@ function queueThumb(assetId) {
       const graph = { nodes: full.nodes || {}, edges: full.edges || [], view: full.view || { x: 60, y: 40, scale: 1 } };
       if (targetCanvas) saveGraphDoc(hp.id, graph, targetCanvas);
       else saveGraphDoc(hp.id, graph);
-      if (full.bible) {
-        saveBibleLocal(hp.id, mergeBibleKeepDrafts(hp.id, full.bible));
-        if (full.bibleUpdatedAt) lsSet(LS_BIBLE_SYNC + hp.id, full.bibleUpdatedAt);
-      }
+      if (full.bible) adoptHostBible(hp.id, full.bible, full.bibleUpdatedAt || 0);
       // 指定画布且正是当前画布：把内容并进内存（否则只落本地缓存，切换时读到）
       if (targetCanvas && S.activeId === hp.id && activeCanvasId() === targetCanvas) mergeHostDoc(hp.id, full, targetCanvas);
     }
@@ -9653,10 +9690,7 @@ function queueThumb(assetId) {
       const tombOut = [...new Set([...(local.tombstones || []), ...((live && live.tombstones) || [])])].slice(-200);
       saveGraphDoc(pid, { nodes, edges: keep, view: local.view, tombstones: tombOut, edgeTombstones: local.edgeTombstones || [] }, cid);
       // 设定集随全量文档一起合并：Agent 用 canvas_update_bible 补的设定集在这里落地（设定集是项目级）
-      if (full.bible) {
-        saveBibleLocal(pid, mergeBibleKeepDrafts(pid, full.bible));
-        if (full.bibleUpdatedAt) lsSet(LS_BIBLE_SYNC + pid, full.bibleUpdatedAt);
-      }
+      if (full.bible) adoptHostBible(pid, full.bible, full.bibleUpdatedAt || 0);
       // 技能配置随项目文档一起回写：对话侧用 canvas_skill_pack set:true 改的配置，
       // 面板要能看见（否则「两端同源」只成立一半）。比本地戳新才覆盖，防面板刚改的被旧副本冲掉。
       if (full.skillProfile && typeof full.skillProfile === 'object') {
@@ -9790,10 +9824,8 @@ function queueThumb(assetId) {
               try {
                 const full = await hostRpc('projectsGet', { id: hp.id });
                 if (full && full.bible) {
-                  const mergedPull = mergeBibleKeepDrafts(hp.id, full.bible); // 保留本地未命名草稿行
-                  saveBibleLocal(hp.id, mergedPull);
-                  lsSet(LS_BIBLE_SYNC + hp.id, hp.bibleUpdatedAt);
-                  biblePushSnap.set(hp.id, JSON.stringify(mergedPull)); // 已是最新：后续保存不必回推
+                  // adoptHostBible：保留本地未命名草稿行 + 同步戳与两条基线一起对齐（后续保存不必回推）
+                  adoptHostBible(hp.id, full.bible, hp.bibleUpdatedAt);
                   if (hp.id === S.activeId) update((s) => { s.assetsTick++; });
                 }
               } catch { /* 忽略 */ }
@@ -10906,24 +10938,32 @@ function queueThumb(assetId) {
     function flushSave() {
       if (!S.ready || !S.activeId) return;
       if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+      // 推送发起时的项目 id：响应回来时用户可能已经切了项目，
+      // 设定集快照/同步戳必须落回**发起时**的那个项目（否则会把 A 的戳写到 B 上）
+      const pid = S.activeId;
       // 多画布：写入当前画布 key（默认画布 = 项目 key，旧数据零迁移）
       const cid = activeCanvasId();
-      saveGraphDoc(S.activeId, S.graph, cid);
-      const proj = S.projects.find((p) => p.id === S.activeId);
+      saveGraphDoc(pid, S.graph, cid);
+      const proj = S.projects.find((p) => p.id === pid);
       if (proj) proj.updatedAt = Date.now();
       lsSet(LS_PROJECTS, S.projects);
-      lsSet(LS_ACTIVE, S.activeId);
+      lsSet(LS_ACTIVE, pid);
       try {
         // 设定集只在本地确实变化时才带上：否则会把对话侧刚改的版本覆盖回去
-        const bibleField = bibleFieldForPush(S.activeId);
+        const bibleField = bibleFieldForPush(pid);
         hostRpc('projectsPut', {
-          id: S.activeId, name: (proj && proj.name) || S.activeId,
+          id: pid, name: (proj && proj.name) || pid,
           // 画布 id 与画布清单：Host 据此把图写到对应画布文档并维护项目级画布登记
           canvasId: cid,
           canvases: (proj && Array.isArray(proj.canvases)) ? proj.canvases : [],
           // 默认画布的项目级字段（名字 / 已删除标记）：改名与删除默认画布后在这里同步给 Host
           ...(proj && proj.defaultCanvasName ? { defaultCanvasName: proj.defaultCanvasName } : {}),
           ...(proj && proj.defaultCanvasDeleted ? { defaultCanvasDeleted: true } : {}),
+          // 乐观并发基线（旧版宿主忽略这两个字段，行为不变）：基线落后于宿主当前戳时，
+          // 宿主不会让这份旧副本整份盖掉对话侧刚写的设定集（有三方合并就只保留本地真改过的条目）
+          ...(bibleField.__bibleChanged
+            ? { bibleBaseAt: bibleField.baseAt, ...(bibleField.base ? { bibleBase: bibleField.base } : {}) }
+            : {}),
           doc: {
             ts: Date.now(), // 推送发出时刻：Host 据此区分"撤销恢复"（清墓碑）与"陈旧推送"（墓碑继续生效）
             nodes: S.graph.nodes, edges: S.graph.edges, view: S.graph.view,
@@ -10932,9 +10972,8 @@ function queueThumb(assetId) {
           },
         }).then((r) => {
           if (bibleField.__bibleChanged) {
-            if (r && r.bibleUpdatedAt) lsSet(LS_BIBLE_SYNC + S.activeId, r.bibleUpdatedAt);
-            else lsSet(LS_BIBLE_SYNC + S.activeId, Date.now()); // 旧版宿主不回传戳：兜底推进，防轮询误拉覆盖
-            biblePushSnap.set(S.activeId, JSON.stringify(bibleField.bible));
+            // 旧版宿主不回传戳：commitBiblePush 用本地时间兜底推进，防轮询误拉覆盖
+            commitBiblePush(pid, bibleField.bible, r);
           }
         }).catch((err) => {
           // 同步失败必须让用户知道：否则对话侧看到的是旧内容，用户以为"刚写的对话里查不到"
@@ -10978,8 +11017,14 @@ function queueThumb(assetId) {
       if (stale) { try { saveGraphDoc(S.activeId, S.graph); } catch { /* 忽略 */ } }
       V.x = S.graph.view.x; V.y = S.graph.view.y; V.scale = S.graph.view.scale;
       S.ready = true;
-      // 预热设定集快照：页面加载时视本地版本为"已同步"，避免把旧版本推回覆盖对话侧的新设定
-      for (const p of S.projects) biblePushSnap.set(p.id, bibleSnapshot(p.id));
+      // 预热设定集快照：页面加载时视本地版本为"已同步"，避免把旧版本推回覆盖对话侧的新设定。
+      // 基线（bibleBaseSnap）同步预热成同一份：它表示"本地改动是从哪一份开始的"，
+      // 基线时间戳落后于宿主时，宿主只接受相对基线真改过的条目（三方合并），不再整份覆盖。
+      for (const p of S.projects) {
+        const snap = bibleSnapshot(p.id);
+        biblePushSnap.set(p.id, snap);
+        bibleBaseSnap.set(p.id, snap);
+      }
     }
     function switchProject(pid) {
       if (pid === S.activeId) return;

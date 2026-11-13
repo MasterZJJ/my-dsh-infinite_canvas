@@ -340,6 +340,15 @@ eq(api.bibleNames({ characters: [{ name: '林晚' }], scenes: [{ name: '楼道' 
   const orphan = api.assetSheetNodeSpec('prop', '未登记物件', b2, true);
   if (!orphan.prompt.includes('未登记物件')) errs.push('未登记资产的提示词应带上名称兜底');
   if (!orphan.prompt.includes('按名称与常识绘制')) errs.push('未登记资产应明确告知无外观描述');
+
+  // —— 「外观：」之后整段取（不得截到第一个句号）。AI 完善提示词路径的 desc 恒为
+  //    「外观：<设定集描述>；<AI 细化>」且设定集描述多为多句；截断会让用户改过的后半段消失，
+  //    表现是「改了设定集，AI 完善提示词出来还是之前那句」。——
+  const multi = api.buildAssetSheetPrompt('scene', '医院走廊', '外观：白色走廊。尽头一扇窗。地面是水磨石。', b2, true);
+  for (const part of ['白色走廊', '尽头一扇窗', '水磨石']) {
+    if (!multi.includes(part)) errs.push('多句外观被截断：缺少「' + part + '」（外观只取到第一个句号）');
+  }
+  if (multi.includes('。。')) errs.push('外观以句号结尾时不应输出连续两个句号');
 }
 
 if (errs.length) {
