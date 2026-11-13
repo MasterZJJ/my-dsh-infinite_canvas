@@ -18,6 +18,7 @@ import { initPackBase, packInventory, allowedIds } from './skill-pack-loader.js'
 import { buildSkillPack, SKILL_CATALOG, renderInventory, renderProfile } from './skill-pack.js';
 import { createProduction, PRODUCTION_STAGES, PRODUCTION_STAGE_ZH } from './production.js';
 import { planShotSegments } from './shot-segments.js';
+import { mergeBibleThreeWay } from './bible-merge.js';
 
 /** 制作阶段机与流程闸门（0.20.0）：deps 全是本模块的函数声明（已提升，运行时才调用）。 */
 const PROD = createProduction({
@@ -1743,16 +1744,46 @@ async function projectsPut(args) {
     if (ddRaw) out.defaultCanvasDeleted = true;
     else if (prev.defaultCanvasDeleted) out.defaultCanvasDeleted = true; // 客户端未带该字段时保留"已删除"（防旧推送把默认画布复活）
   }
-  // 设定集随文档一起同步（世界观/风格/角色/场景/道具）：对话侧可读写
+  // 设定集随文档一起同步（世界观/风格/角色/场景/道具）：对话侧可读写。
+  // 乐观并发：客户端推送带 bibleBaseAt（它上次对齐到的 bibleUpdatedAt）与 bibleBase（那一份内容）。
+  // 基线时间戳落后于宿主当前戳 ⇒ 这次推送基于旧副本（对话侧/另一端已写过更新版本）→ 走三方合并：
+  // 客户端没动过的条目保留宿主的新值，只有它真改过/新增/删除的才生效，旧副本绝不整份盖回去。
+  // 旧客户端不带这两个字段 ⇒ 维持原行为（直接采用）。
+  const bibleBaseAtRaw = args && args.bibleBaseAt;
+  const bibleBaseAt = (bibleBaseAtRaw === undefined || bibleBaseAtRaw === null || bibleBaseAtRaw === '') ? null : Number(bibleBaseAtRaw);
+  const bibleBase = (args && args.bibleBase && typeof args.bibleBase === 'object') ? normalizeBible(args.bibleBase) : null;
+  /** 这份推送是否基于旧副本（基线落后于宿主当前设定集戳）。
+   *  基线戳为 0（这个浏览器从未与宿主对齐过）不算落后：那种情况下无法判断哪边新，
+   *  维持原语义直接采用，免得「换机器/清过缓存」的首次写入被静默吞掉。 */
+  const bibleStale = (prevAt) => bibleBaseAt !== null && Number.isFinite(bibleBaseAt)
+    && bibleBaseAt > 0 && bibleBaseAt < (Number(prevAt) || 0);
+  let bibleMergedOut = null; // 发生过三方合并时回传合并结果，客户端据此直接对齐（否则本地缺宿主那份的新条目）
   let canvasBible = null;
   if (canvasId) {
     // 设定集是项目级：子画布推送里携带的 bible 落到项目文档（画布文档不存 bible）
     const projectDoc = readDocOrNull(id) || {};
-    if (doc.bible !== undefined) canvasBible = { bible: normalizeBible(doc.bible), bibleUpdatedAt: Date.now() };
-    else if (projectDoc.bible !== undefined) canvasBible = { bible: projectDoc.bible, bibleUpdatedAt: projectDoc.bibleUpdatedAt || 0 };
+    if (doc.bible !== undefined) {
+      if (projectDoc.bible !== undefined && bibleStale(projectDoc.bibleUpdatedAt)) {
+        // 有基线内容 → 三方合并；没有（旧客户端）→ 拒收这次 bible，保住宿主版本
+        const resolved = bibleBase ? normalizeBible(mergeBibleThreeWay(projectDoc.bible, bibleBase, doc.bible)) : projectDoc.bible;
+        canvasBible = { bible: resolved, bibleUpdatedAt: Date.now() };
+        bibleMergedOut = resolved;
+      } else {
+        canvasBible = { bible: normalizeBible(doc.bible), bibleUpdatedAt: Date.now() };
+      }
+    } else if (projectDoc.bible !== undefined) {
+      canvasBible = { bible: projectDoc.bible, bibleUpdatedAt: projectDoc.bibleUpdatedAt || 0 };
+    }
   } else if (doc.bible !== undefined) {
-    out.bible = normalizeBible(doc.bible);
-    out.bibleUpdatedAt = Date.now();
+    if (prev.bible !== undefined && bibleStale(prev.bibleUpdatedAt)) {
+      const resolved = bibleBase ? normalizeBible(mergeBibleThreeWay(prev.bible, bibleBase, doc.bible)) : prev.bible;
+      out.bible = resolved;
+      out.bibleUpdatedAt = Date.now();
+      bibleMergedOut = resolved;
+    } else {
+      out.bible = normalizeBible(doc.bible);
+      out.bibleUpdatedAt = Date.now();
+    }
   } else if (prev.bible !== undefined) {
     out.bible = prev.bible;
     out.bibleUpdatedAt = prev.bibleUpdatedAt || 0;
@@ -1812,7 +1843,13 @@ async function projectsPut(args) {
   const bibleStampOut = canvasId
     ? ((canvasBible && canvasBible.bibleUpdatedAt) || 0)
     : (out.bibleUpdatedAt || 0);
-  return { ok: true, id, ...(canvasId ? { canvasId } : {}), updatedAt: out.updatedAt, ...(bibleStampOut ? { bibleUpdatedAt: bibleStampOut } : {}) };
+  return {
+    ok: true, id, ...(canvasId ? { canvasId } : {}), updatedAt: out.updatedAt,
+    ...(bibleStampOut ? { bibleUpdatedAt: bibleStampOut } : {}),
+    // 只在「基线落后、宿主做了三方合并」时回传生效的设定集：客户端据此直接对齐，
+    // 否则它的本地副本会缺宿主那份里没被它改过的条目（下一次拉取才会补上）。
+    ...(bibleMergedOut ? { bible: bibleMergedOut } : {}),
+  };
 }
 async function projectsGet(args) {
   const id = String((args && args.id) || '');

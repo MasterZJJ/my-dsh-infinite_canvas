@@ -7,6 +7,17 @@ GitHub Releases carry the same notes in English; maintainer-facing runbooks live
 ## [Unreleased]
 
 ### Fixed
+- **改了设定集，图片节点「AI 完善提示词」出来的还是旧那句**（`0.20.5-local.6`）。两处根因：
+  ① `buildAssetSheetPrompt` 取「外观：…」片段的公式是 `/外观[：:]\s*([^。\n]+)/`——**遇到第一个句号就停**，
+  而 AI 完善提示词路径的 desc 恒为「外观：<设定集描述>；<AI 细化>」、设定集描述几乎都是多句，
+  于是提示词里只剩第一句概括（如「白色病房。」），用户刚补的材质/陈设/光线整段被丢掉；
+  改为「外观：之后整段取到底」（仍剔除「声音：…」、去掉收尾句号避免「。。」），补回归断言。
+  ② 设定集推送没有版本基线：页面拿一份旧副本保存时，宿主 `projectsPut` 无条件采用并盖上
+  `bibleUpdatedAt = Date.now()`，旧内容反而成了"最新"，把对话侧刚用 `canvas_update_bible` 写的新版本盖掉。
+  新增 `bible-merge.js`（三方合并纯函数）：客户端推送带 `bibleBaseAt`（上次对齐的时间戳）与
+  `bibleBase`（那一份内容），宿主发现基线落后时只接受**客户端真改过/新增/删除**的条目，
+  没动过的保留宿主新值，并把合并结果回传让客户端对齐；旧客户端不带字段时行为不变。
+  客户端 `bibleBaseSnap` 与 `biblePushSnap` 一起在拉取/推送/合并时推进（新增 `adoptHostBible`/`commitBiblePush`）。
 - **图片节点「桥接 dsh-image-gen」的参考图生图退化成文生图**（`0.20.5-local.5`）。
   `apiGenBridge` 把参考图元数据对象（`{blob, name, category, assetId}`）直接传给了
   `blobToDataUrl`，而它内部是 `FileReader.readAsDataURL(blob)`——只接受 `Blob`。
