@@ -7,6 +7,33 @@ GitHub Releases carry the same notes in English; maintainer-facing runbooks live
 ## [Unreleased]
 
 ### Added
+- **设置 / 角色库 / 工作流现在在宿主留一份权威副本**（`0.21.0-local.2`）。新增宿主模块级存储
+  `~/.dsh/infinite-canvas/ui-state.json`（权限 **0600**，含密钥）与两条 RPC：
+  `uiStateGet` / `uiStateSet`（最后写入者胜，**落后于宿主版本的推送一律拒收**并把宿主现状回传，
+  防旧副本盖新值）。客户端三个保存点（`saveSettings` / `saveSubjects` / `saveWorkflows`）
+  防抖 600ms 回写；启动时先把宿主那份回填进本地，**再**拉项目（生成/命名/资产自愈都读设置）。
+
+### Fixed
+- **换 IP（或换设备、换浏览器）后「无限画布的数据就没办法正常访问」**（`0.21.0-local.2`）。
+  根因不在数据：项目 / 资产 / 设定集都在宿主数据目录（`dataRoot` 是宿主配置，跟 IP 无关）；
+  真正丢的是**浏览器按来源隔离的 localStorage**（协议+主机+端口），换 IP = 新来源 = 空仓，于是
+  「图片/视频/TTS 供应商、**API Key**、星标模型、角色库、工作流」一次性归零——画布打开后
+  生成直接报「未配置模型」，用户看到的就是"画布不能用了"。修法：宿主侧持久化 + 启动回填 +
+  保存回写 + 一次性迁移（宿主没有而本地有 → 推上去）。
+  附带确认：项目列表本来就不会丢（换来源后一轮 `projectsSync` 即从宿主拉回），
+  回归用例 `test-origin-migration.mjs` 把这条也钉住（空 localStorage → 1.5s 内项目回来）。
+
+### Changed
+- **版本号升为 `0.21.0-local.2`**：换来源恢复（设置侧）为功能补强，按仓库规矩 patch +1。
+
+### Internal
+- 新增回归 `scripts/test-origin-migration.mjs`（进 `regress.mjs` 清单）：在**空 localStorage** 的假浏览器里
+  对「有数据」的假宿主跑真实代码，断言 ①设置/密钥/角色库/工作流回填、②项目列表从宿主拉回、
+  ③`saveSettings` 后回写（载荷含密钥）、④宿主 `uiStateSet` 拒收落后写入、⑤`ui-state.json` 权限 0600。
+- `hydrateUiState()` 改为**幂等且返回同一个 Promise**（启动链 `hydrate → hostSyncTick → pushAllProjectsToHost`
+  顺序化），避免"设置还没回来就先拉项目"的竞态；测试可直接 `await`。
+
+### Added
 - **合入上游 0.21.0（`0.21.0-local.1`）——一次买到十来个功能面**。上游这版跳了 0.20.5 → 0.21.0
   （`index.js` +766 行 / `client.js` +3616 行 / 工具 30→35 / 新增 6 条 RPC），带进来的能力：
   - **音频节点 + TTS**：文生语音节点（音色 / 情绪 / 强度 / 语速 / 格式），两套协议

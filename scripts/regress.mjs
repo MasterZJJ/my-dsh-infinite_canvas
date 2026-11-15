@@ -129,6 +129,7 @@ const SUITE = [
   { name: 'test-layout-node.mjs', desc: '精准布局：全图几何视图 / 批量精摆 + 比例校验 / pinned 保护 / relayout 分带不再一列' },
   { name: 'test-llm-stream.mjs', desc: 'LLM 流式与推理重试' },
   { name: 'test-sync-bible.mjs', desc: '设定集同步合并 / 边墓碑防复活' },
+  { name: 'test-origin-migration.mjs', desc: '换 IP/换设备（新来源）恢复：设置密钥/角色库/工作流回填 + 项目从宿主拉回 + 回写 + 落后写入拒收' },
   { name: 'test-user-scenarios.mjs', desc: '用户实测场景定向复验' },
   { name: 'test-host-hardening.mjs', desc: 'Host 加固（读流错误 / 项目合并 / 来源校验）' },
   // --- 存储与数据目录 ---

@@ -4730,6 +4730,7 @@ body[data-ds-dark-theme] .dshic-board-editor{border-color:var(--dsw-alias-border
     }
     function saveSettings(s) {
       lsSet(LS_SETTINGS, s);
+      pushUiStateSoon(); // 宿主留一份权威副本：换 IP / 换设备后设置与密钥还能读回
       notify(); // 设置即改即存（无保存按钮），但必须通知画布重渲染——否则节点上的模型下拉/星标一直是旧快照
     }
     /** 设置卡写回：以磁盘最新值为基底叠加本卡变更，杜绝跨卡丢失更新（issue #6）。
@@ -5126,6 +5127,7 @@ body[data-ds-dark-theme] .dshic-board-editor{border-color:var(--dsw-alias-border
     }
     function saveSubjects(list) {
       lsSet(LS_SUBJECTS, (list || []).map(normalizeSubject).filter((s) => s.id && s.name));
+      pushUiStateSoon();
       notify();
     }
     function upsertSubject(entry) {
@@ -5279,7 +5281,64 @@ body[data-ds-dark-theme] .dshic-board-editor{border-color:var(--dsw-alias-border
     }
     function saveWorkflows(list) {
       lsSet(LS_WORKFLOWS, (list || []).map(normalizeWorkflow).filter((w) => w.id && w.name));
+      pushUiStateSoon();
       notify();
+    }
+
+    // ============================================================
+    // UI 状态（设置 / 角色库 / 工作流）——宿主侧镜像
+    //   为什么要镜像：localStorage 按**来源**隔离（协议+主机+端口）。本机换 IP、换设备、
+    //   换浏览器 = 新来源 = 空仓，于是「供应商 / API Key / 星标模型 / 角色库 / 工作流」
+    //   一次性消失——画布数据明明还在宿主，用户看到的却是"设置没了、生成报未配置模型"。
+    //   口径：宿主是权威副本，本地是快路径；启动回填缺失的键，保存时防抖回写。
+    // ============================================================
+    function uiStateKeys() {
+      return [
+        ['settings', LS_SETTINGS],
+        ['subjects', LS_SUBJECTS],
+        ['workflows', LS_WORKFLOWS],
+      ];
+    }
+    let uiStatePushTimer = null;
+    let uiStateHydratePromise = null;
+    function uiStateLocalSnapshot() {
+      const out = {};
+      for (const [k, lsKey] of uiStateKeys()) {
+        const v = lsGet(lsKey, null);
+        if (v !== null) out[k] = v;
+      }
+      return out;
+    }
+    /** 防抖回写宿主（旧 Host 无 uiStateSet 时静默降级为纯本地，不打扰用户）。 */
+    function pushUiStateSoon() {
+      if (uiStatePushTimer) clearTimeout(uiStatePushTimer);
+      uiStatePushTimer = setTimeout(() => {
+        uiStatePushTimer = null;
+        const state = uiStateLocalSnapshot();
+        if (!Object.keys(state).length) return;
+        hostRpc('uiStateSet', { state, updatedAt: Date.now() }).catch(() => { /* 忽略 */ });
+      }, 600);
+    }
+    /** 启动回填：宿主有、本地没有的键 → 采用宿主副本；宿主没有、本地有 → 推上去做一次性迁移。
+     *  幂等：同一轮启动只跑一次，返回同一个 Promise（调用方 await 它即可拿到"是否回填"）。 */
+    function hydrateUiState() {
+      if (uiStateHydratePromise) return uiStateHydratePromise;
+      uiStateHydratePromise = (async () => {
+        let host = null;
+        try { host = await hostRpc('uiStateGet'); } catch { return false; }
+        if (!host || !host.ok) return false;
+        if (!host.found) { pushUiStateSoon(); return false; }
+        let restored = false;
+        for (const [k, lsKey] of uiStateKeys()) {
+          if (host.state && host.state[k] !== undefined && localStorage.getItem(lsKey) == null) {
+            lsSet(lsKey, host.state[k]);
+            restored = true;
+          }
+        }
+        if (restored) notify(); // 设置面板/角色库/工作流页立刻看到回填后的值
+        return restored;
+      })().catch(() => false);
+      return uiStateHydratePromise;
     }
     function upsertWorkflow(wf) {
       const now = Date.now();
@@ -28042,7 +28101,12 @@ const DIRECTOR_KEY_HELP = [
           setTimeout(() => scheduleRepair(), 2000);
           setTimeout(() => scheduleRepair(), 10000);
           // 对话 ↔ 画布同步（启动一次 + 3s 轮询；旧 Host 自动停轮询）
-          hostSyncTick().then(() => pushAllProjectsToHost());
+          // 先回填宿主侧 UI 状态（设置/密钥/角色库/工作流）：换 IP / 新来源打开时，
+          // localStorage 是空仓，必须先把宿主那份拿回来，否则设置面板与生成都会当作"未配置"。
+          // 顺序有意义：先把设置/密钥回填回来，再拉项目（生成/命名/资产自愈都读设置）
+          hydrateUiState().catch(() => { /* 旧 Host 无此 RPC 时静默降级 */ })
+            .then(() => hostSyncTick())
+            .then(() => pushAllProjectsToHost());
           const hostSyncTimer = setInterval(() => hostSyncTick(), 3000);
           // 后台路由探活：失败时在画布顶部给出可操作的提示
           hostRpc('ping').then(() => { S.hostOk = true; S.hostError = null; notify(); }).catch((e) => {
@@ -28259,6 +28323,9 @@ const DIRECTOR_KEY_HELP = [
           window.__DSH_IC_PULL__ = { pullPromptFor, normalizePullResult, extractVideoFramesAt };
           window.__DSH_IC_SYNC__ = {
             hostSyncTick, mergeHostDoc, loadBible, loadGraphDoc, flushSave, pushAllProjectsToHost,
+            // 宿主侧 UI 状态（换 IP / 换设备后设置与密钥回填）——供 test-origin-migration 驱动
+            hydrateUiState, pushUiStateNow: () => { if (uiStatePushTimer) { clearTimeout(uiStatePushTimer); uiStatePushTimer = null; } const st = uiStateLocalSnapshot(); if (Object.keys(st).length) return hostRpc('uiStateSet', { state: st, updatedAt: Date.now() }); return Promise.resolve(null); },
+            loadSettings, saveSettings, loadSubjects, loadWorkflows, saveWorkflows,
             removeNodes, ungroupNode, undo, redo, pushHistory,
             graph: () => JSON.parse(JSON.stringify(S.graph)),
             // 生成面板挂靠节点（纯 UI 状态）：供 test-node-layout 断言「只有点击内容区才打开面板」。

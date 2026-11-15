@@ -8,7 +8,7 @@
  */
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
-import { createReadStream, createWriteStream, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, createReadStream, createWriteStream, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -171,6 +171,35 @@ function writeIcConfig(cfg) {
 function dataRoot() {
   const r = readIcConfig().dataRoot;
   return (typeof r === 'string' && r.trim()) ? path.resolve(r.trim()) : null;
+}
+
+// ============================================================
+// UI 状态（设置 / 角色库 / 工作流）——宿主侧持久化
+//   为什么不能只放浏览器 localStorage：localStorage 按**来源**隔离（协议+主机+端口），
+//   本机换 IP / 换设备 / 换浏览器 = 新来源 = 空仓。于是画布"数据还在、但设置与密钥全丢"：
+//   供应商 / API Key / 星标模型 / 角色库 / 工作流 一次性消失，生成直接报"未配置模型"。
+//   放到宿主后：任意来源、任意设备打开都是同一份（与项目/资产/设定集同一事实源口径）。
+//   位置与 config.json 同目录（~/.dsh/infinite-canvas/ui-state.json），权限 0600（含密钥）。
+// ============================================================
+const UI_STATE_PATH = path.join(path.dirname(CONFIG_PATH), 'ui-state.json');
+const UI_STATE_KEYS = ['settings', 'subjects', 'workflows'];
+function readUiState() {
+  try {
+    const j = JSON.parse(readFileSync(UI_STATE_PATH, 'utf8')) || {};
+    const state = {};
+    for (const k of UI_STATE_KEYS) if (j.state && j.state[k] !== undefined) state[k] = j.state[k];
+    return { ok: true, found: true, updatedAt: Number(j.updatedAt) || 0, state };
+  } catch { return { ok: true, found: false, updatedAt: 0, state: {} }; }
+}
+function writeUiState(state, updatedAt) {
+  const dir = path.dirname(UI_STATE_PATH);
+  mkdirSync(dir, { recursive: true });
+  const tmp = UI_STATE_PATH + '.tmp';
+  const payload = { version: 1, updatedAt: Number(updatedAt) || Date.now(), state };
+  writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+  renameSync(tmp, UI_STATE_PATH);
+  try { chmodSync(UI_STATE_PATH, 0o600); } catch { /* 平台不支持则忽略 */ }
+  return payload;
 }
 
 // ============================================================
@@ -5671,6 +5700,20 @@ export function apply(ctx) {
           ...(patch.mergedInto !== undefined ? { mergedInto: patch.mergedInto ? String(patch.mergedInto) : undefined } : {}),
         };
         return writeAssetIndex(String(next.projectId), '', [next]);
+      },
+      // ===== UI 状态（设置/角色库/工作流）：宿主侧持久化，换 IP / 换设备 / 换浏览器都读得回 =====
+      async uiStateGet() { return readUiState(); },
+      async uiStateSet(args) {
+        const incoming = (args && args.state && typeof args.state === 'object') ? args.state : null;
+        if (!incoming) return { ok: false, error: '需要 state 对象' };
+        const cur = readUiState();
+        const incomingAt = Number(args && args.updatedAt) || Date.now();
+        // 最后写入者胜；但落后于宿主版本的推送一律拒收并把宿主现状回传（客户端据此对齐，不覆盖新值）
+        if (cur.found && incomingAt < cur.updatedAt) return { ok: true, stale: true, ...cur };
+        const merged = { ...(cur.state || {}) };
+        for (const k of UI_STATE_KEYS) if (incoming[k] !== undefined) merged[k] = incoming[k];
+        const payload = writeUiState(merged, incomingAt);
+        return { ok: true, savedAt: payload.updatedAt, state: merged };
       },
       // ===== 成片合成（宿主侧 ffmpeg）：能力探测 / 起任务 / 查任务 =====
       async finalcutProbe() { return finalcutProbeImpl(); },
