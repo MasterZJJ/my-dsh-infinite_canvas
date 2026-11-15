@@ -20,6 +20,7 @@ import { createProduction, PRODUCTION_STAGES, PRODUCTION_STAGE_ZH } from './prod
 import { planShotSegments } from './shot-segments.js';
 import { mergeBibleThreeWay } from './bible-merge.js';
 import { buildFillPrompt, mergeFilledShot, parseShotJson, bibleBlock, SHOT_PREFIX_ZH } from './shot-ai-fill.js';
+import { buildFfmpegArgs, pickSubtitleFont, findBinary, runFfmpeg, probeMedia } from './finalcut-compose.js';
 
 /** 制作阶段机与流程闸门（0.20.0）：deps 全是本模块的函数声明（已提升，运行时才调用）。 */
 const PROD = createProduction({
@@ -4723,6 +4724,151 @@ export function apply(ctx) {
     __autoApi.setRoomLlm = (fn) => { roomLlm = fn; };
     __autoApi.setCanvasRunner = (fn) => { canvasExec = fn; };
 
+    // ============================================================
+    // 成片合成（宿主侧 ffmpeg）
+    // 浏览器录制链路是**实时**的：页面切后台 rAF 停摆 → 合成卡死 → 只剩「成片合成超时」。
+    // 宿主侧 ffmpeg 不依赖浏览器/前台状态，且比实时快得多，故为首选路径；浏览器链路保留为兜底。
+    // ============================================================
+    const FINALCUT_JOBS = new Map(); // jobId → 任务状态
+    let FINALCUT_JOB_SEQ = 0;
+
+    /** 资产在磁盘上的绝对路径：rel（逻辑路径）→ 物理路径；sha（CAS 对象）→ objects/。找不到返回 null。 */
+    function assetAbsOnDisk(rec) {
+      const root = dataRoot();
+      if (!root || !rec) return null;
+      if (rec.rel) {
+        try {
+          const phys = physicalRel(rec.rel) || rec.rel;
+          const { abs } = safeJoin(root, phys);
+          const st = statSync(abs);
+          if (st.isFile()) return abs;
+        } catch { /* 忽略 */ }
+      }
+      if (rec.sha) {
+        try {
+          const abs = objectAbsFor(root, rec.sha);
+          const st = statSync(abs);
+          if (st.isFile()) return abs;
+        } catch { /* 忽略 */ }
+      }
+      return null;
+    }
+
+    /** 宿主侧合成能力探测（客户端据此决定走宿主还是浏览器兜底）。 */
+    function finalcutProbeImpl() {
+      const ffmpeg = findBinary('ffmpeg');
+      const ffprobe = findBinary('ffprobe');
+      const font = pickSubtitleFont();
+      let reason = null;
+      if (!ffmpeg) reason = '系统未安装 ffmpeg，无法在宿主侧合成（将退回浏览器录制）';
+      else if (!ffprobe) reason = '系统未安装 ffprobe，无法读取片段时长（将退回浏览器录制）';
+      else if (!font) reason = '系统缺中文字体，字幕无法烧录（画面仍可合成）';
+      return { ok: true, ffmpeg: !!ffmpeg, ffprobe: !!ffprobe, font, reason };
+    }
+
+    /** 合成任务主体：解析片段 → 探测时长 → 跑 ffmpeg → 成片入库。 */
+    async function runFinalcutJob(job, args) {
+      const root = dataRoot();
+      if (!root) throw new Error('未设置数据根目录');
+      const pid = String((args && args.projectId) || '');
+      if (!pid) throw new Error('缺少 projectId');
+      const segmentsIn = Array.isArray(args && args.segments) ? args.segments : [];
+      if (!segmentsIn.length) throw new Error('没有可合成的片段');
+      const ffmpeg = findBinary('ffmpeg');
+      const ffprobe = findBinary('ffprobe');
+      if (!ffmpeg || !ffprobe) throw new Error('宿主缺少 ffmpeg/ffprobe');
+
+      job.stage = '读取';
+      job.pct = 5;
+      const ids = [];
+      for (const s of segmentsIn) {
+        if (s && s.assetId) ids.push(String(s.assetId));
+        if (s && s.ttsAssetId) ids.push(String(s.ttsAssetId));
+      }
+      const got = await methods.assetsGet({ ids });
+      const byId = new Map(((got && got.items) || []).map((r) => [String(r.id), r]));
+
+      const segs = [];
+      const missing = [];
+      for (const s of segmentsIn) {
+        const label = String((s && s.label) || '片段');
+        const rec = byId.get(String((s && s.assetId) || ''));
+        const file = assetAbsOnDisk(rec);
+        if (!file) { missing.push(label + '（文件不在数据目录）'); continue; }
+        const probe = await probeMedia(ffprobe, file);
+        if (!probe || !(probe.duration > 0)) { missing.push(label + '（无法读取时长）'); continue; }
+        const editDur = Number(s && s.dur) > 0 ? Number(s.dur) : 0;
+        const dur = editDur > 0 ? Math.min(editDur, probe.duration) : probe.duration;
+        let ttsFile = null;
+        if (s && s.ttsAssetId) {
+          const trec = byId.get(String(s.ttsAssetId));
+          ttsFile = assetAbsOnDisk(trec);
+        }
+        segs.push({ file, dur, sub: String((s && s.sub) || ''), ttsFile, hasAudio: !!probe.hasAudio, label });
+      }
+      if (!segs.length) throw new Error('没有可合成的片段' + (missing.length ? '：' + missing.join('；') : ''));
+      if (missing.length) job.warnings.push('已跳过 ' + missing.length + ' 个片段：' + missing.join('；'));
+
+      const width = Math.max(2, Math.round(Number(args.width) || 1280));
+      const height = Math.max(2, Math.round(Number(args.height) || 720));
+      const font = pickSubtitleFont();
+      if (!font && segs.some((s) => s.sub)) job.warnings.push('系统缺中文字体：字幕未烧录（画面已合成）');
+
+      const meta = readDataRootMeta();
+      const entry = meta.projects.find((p) => p.id === pid);
+      // 物理文件夹一律取清单里的既有映射（与客户端上传时 physicalRel 的口径一致）。
+      // 绝不在这儿调 ensureProjectFolder：那是「按项目名改目录」的副作用入口，合成不该动目录。
+      const folder = entry ? entry.folder : sanitizeFolderName(pid);
+      const projDir = path.join(root, 'projects', folder);
+      const outDir = path.join(projDir, 'video');
+      mkdirSync(outDir, { recursive: true });
+      const tmpDir = path.join(projDir, 'craft', 'finalcut-' + job.id);
+      mkdirSync(tmpDir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+      const outName = 'finalcut-' + stamp + '-' + job.id.slice(-4) + '.mp4';
+      const outAbs = path.join(outDir, outName);
+      try {
+        job.stage = '合成';
+        job.pct = 20;
+        const plan = buildFfmpegArgs({
+          segments: segs,
+          width, height,
+          transition: String((args && args.transition) || 'none'),
+          keepAudio: !(args && args.keepAudio === false),
+          bitrate: Number(args && args.bitrate) > 0 ? Number(args.bitrate) : 0,
+          fontFile: font,
+          subDir: tmpDir,
+          outFile: outAbs,
+        });
+        for (const w of plan.warnings || []) job.warnings.push(w);
+        await runFfmpeg(ffmpeg, plan.args, { timeoutMs: 30 * 60 * 1000 });
+        job.pct = 85;
+        job.stage = '入库';
+        const st = statSync(outAbs);
+        if (!st.isFile() || st.size <= 0) throw new Error('合成产物为空');
+        const rel = `projects/${pid}/video/${outName}`;
+        const assetId = 'afc' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+        const rec = {
+          id: assetId, projectId: pid, kind: 'video', mime: 'video/mp4',
+          name: String((args && args.name) || '成片') + ' ' + stamp,
+          createdAt: Date.now(),
+          prompt: segs.length + ' 段（宿主 ffmpeg 合成）',
+          source: 'finalcut', category: 'finalcut',
+          rel, size: st.size, duration: Math.round(plan.totalDur * 1000) / 1000,
+          width, height,
+        };
+        await methods.assetCreate({ asset: rec, projectName: (entry && entry.name) || pid });
+        job.assetId = assetId;
+        job.rel = rel;
+        job.durationSec = plan.totalDur;
+        job.pct = 100;
+        job.stage = '完成';
+        job.status = 'done';
+      } finally {
+        try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* 忽略 */ }
+      }
+    }
+
     const methods = {
       async ping() { return { ok: true, version: VERSION }; },
       async llmOptions() { return listLlmOptions(); },
@@ -4944,6 +5090,44 @@ export function apply(ctx) {
         const patch = (args && args.patch) || {};
         const next = { ...cur, ...(patch.name !== undefined ? { name: String(patch.name).slice(0, 80) } : {}), ...(patch.category !== undefined ? { category: String(patch.category || 'general') } : {}) };
         return writeAssetIndex(String(next.projectId), '', [next]);
+      },
+      // ===== 成片合成（宿主侧 ffmpeg）：能力探测 / 起任务 / 查任务 =====
+      async finalcutProbe() { return finalcutProbeImpl(); },
+      async finalcutComposeStart(args) {
+        const probe = finalcutProbeImpl();
+        if (!probe.ffmpeg || !probe.ffprobe) {
+          return { ok: false, error: probe.reason || '宿主缺少 ffmpeg/ffprobe', probe };
+        }
+        const jobId = 'fcj' + Date.now().toString(36) + (++FINALCUT_JOB_SEQ).toString(36);
+        const job = {
+          id: jobId, status: 'running', pct: 0, stage: '准备', error: null,
+          assetId: null, rel: null, warnings: [], durationSec: 0,
+          startedAt: Date.now(), finishedAt: 0,
+        };
+        FINALCUT_JOBS.set(jobId, job);
+        // 任务表只留最近 20 个（防内存无限增长）
+        const ids = [...FINALCUT_JOBS.keys()];
+        while (ids.length > 20) { const k = ids.shift(); FINALCUT_JOBS.delete(k); }
+        runFinalcutJob(job, args || {}).catch((e) => {
+          job.status = 'error';
+          job.stage = '失败';
+          job.error = String((e && e.message) || e);
+          job.finishedAt = Date.now();
+        });
+        return { ok: true, jobId };
+      },
+      async finalcutJobGet(args) {
+        const job = FINALCUT_JOBS.get(String((args && args.jobId) || ''));
+        if (!job) return { ok: false, error: '任务不存在或已过期' };
+        return {
+          ok: true,
+          job: {
+            id: job.id, status: job.status, pct: job.pct, stage: job.stage,
+            error: job.error, assetId: job.assetId, rel: job.rel,
+            warnings: job.warnings, durationSec: job.durationSec,
+            startedAt: job.startedAt, finishedAt: job.finishedAt,
+          },
+        };
       },
       // CAS 对象库 GC 已随写路径退役（IC-08）：见 dbObjectsGc 位置的说明。
       // 一键迁移/对齐：旧 pid 文件夹 → 项目名文件夹 + 全部项目文档镜像（v1 JSON 模式专用）

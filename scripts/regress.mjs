@@ -69,6 +69,9 @@ const SUITE = [
   { name: 'test-empty-project.mjs', desc: 'OBS-UI-1 空态不建占位项目、不推送 Host、显式创建完好' },
   // --- 核心链路（历史事故区）---
   { name: 'test-compose.mjs', desc: '成片合成主循环（dur is not defined 事故的网兜）' },
+  { name: 'test-finalcut-compose.mjs', desc: '成片合成（宿主侧 ffmpeg）：参数组装/转场/TTS 混音/端到端产物/字幕烧录' },
+  { name: 'test-finalcut-host.mjs', desc: '成片合成（宿主端到端）：能力探测/任务轮询/产物落盘/资产入库/缺片段报错' },
+  { name: 'test-finalcut-client.mjs', desc: '成片合成（客户端宿主链路）：探测/起任务/轮询/退回浏览器兜底/失败抛错' },
   { name: 'test-tools.mjs', desc: '对话工具 schema 与返回值契约' },
   { name: 'test-skill-inject.mjs', desc: '内置专家人设硬规则 / 技能注入 Harness / 技能快捷键契约' },
   { name: 'test-mentions.mjs', desc: '@引用解析（设定集匹配 / [图N] 绑定 / 资产设定图提示词）' },

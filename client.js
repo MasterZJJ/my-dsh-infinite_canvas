@@ -9130,7 +9130,32 @@ function queueThumb(assetId) {
           if (done) return;
           done = true;
           failed = err || null;
+          try { if (rafId) cancelAnimationFrame(rafId); } catch { /* 忽略 */ }
+          try { if (timerId) clearTimeout(timerId); } catch { /* 忽略 */ }
           resolve();
+        }
+        // 推进器：rAF 为主 + 定时器兜底。
+        // 背景标签页里 requestAnimationFrame **完全停摆**（Chrome 规定），整条合成链就此卡死，
+        // 只能等看门狗判超时——这正是「合成导出一点时间就报导出超时」的根因。
+        // 定时器在后台会被限速（~1Hz），但至少不会彻底停摆：至少能推进、能收尾。
+        let rafId = 0;
+        let timerId = 0;
+        let lastRafAt = performance.now();
+        function schedule() {
+          if (done) return;
+          if (!rafId) {
+            try { rafId = requestAnimationFrame(() => { rafId = 0; lastRafAt = performance.now(); frame(); schedule(); }); }
+            catch { rafId = 0; }
+          }
+          if (!timerId) {
+            timerId = setTimeout(() => {
+              timerId = 0;
+              if (done) return;
+              // rAF 超过 400ms 没来过（页面被切后台/被遮挡）→ 用定时器补帧，别让合成停摆
+              if (performance.now() - lastRafAt > 400) { try { frame(); } catch (e) { finish(e); return; } }
+              schedule();
+            }, 120);
+          }
         }
         function frame() {
           if (done) return;
@@ -9149,7 +9174,7 @@ function queueThumb(assetId) {
             // 黑场过渡窗口
             if (blackUntil && now < blackUntil) {
               g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
-              requestAnimationFrame(frame);
+              schedule();
               return;
             }
             blackUntil = 0;
@@ -9193,7 +9218,7 @@ function queueThumb(assetId) {
               if (transition === 'black') blackUntil = now + 350;
             }
             lastTickAt = now;
-            requestAnimationFrame(frame);
+            schedule();
           } catch (e) {
             // 帧循环内异常必须转成 reject：静默卡住比报错更糟
             try { stopItem(vids[idx] || {}); } catch { /* 忽略 */ }
@@ -9201,11 +9226,16 @@ function queueThumb(assetId) {
             finish(e);
           }
         }
-        requestAnimationFrame(frame);
-        // 全局兜底：总时长 + 30s（含看门狗余量）后强制收尾，并明确报告超时而不是假装成功
+        schedule();
+        // 全局兜底：总时长 + 余量后强制收尾，并明确报告超时而不是假装成功。
+        // 余量随总时长放大（长片本来就慢）；后台限速时额外放宽，别把"慢"误判成"死"。
+        const slackMs = Math.max(30000, totalMs * 0.5);
         setTimeout(() => {
-          if (!done) finish(new Error('成片合成超时（已等待 ' + Math.round((performance.now() - startedAt) / 1000) + 's）：请检查所选片段是否都能正常播放'));
-        }, totalMs + 30000);
+          if (!done) {
+            finish(new Error('成片合成超时（已等待 ' + Math.round((performance.now() - startedAt) / 1000) + 's）：'
+              + '请确认画布页面保持在前台（切到后台会中断浏览器录制），或改用宿主侧 ffmpeg 合成'));
+          }
+        }, totalMs + slackMs);
       });
       vids.forEach(stopItem);
       rec.stop();
@@ -12182,7 +12212,70 @@ function queueThumb(assetId) {
       }
     }
 
-    /** 成片节点：片段（+配音） → MP4。 */
+    /** 成片合成（宿主侧 ffmpeg）：返回 { ok:true, assetId }。
+     *  宿主不可用（没装 ffmpeg / 连不上）时返回 { ok:false, skip:true } → 走浏览器录制兜底；
+     *  宿主任务**失败**一律当错误抛出并写清原因，绝不静默改走浏览器（否则用户只看到"莫名其妙变慢"）。 */
+    async function composeViaHost(n, items) {
+      let probe = null;
+      try { probe = await hostRpc('finalcutProbe'); }
+      catch (e) { return { ok: false, skip: true, reason: String((e && e.message) || e) }; }
+      if (!probe || !probe.ffmpeg) return { ok: false, skip: true, reason: (probe && probe.reason) || '宿主没有 ffmpeg' };
+      const dims = videoDimsFor({ resolution: n.data.resolution, ratio: n.data.ratio });
+      let started = null;
+      try {
+        started = await hostRpc('finalcutComposeStart', {
+          projectId: S.activeId,
+          name: String((n.data && n.data.label) || '').trim() || T('finalCutDone'),
+          segments: items.map((it) => ({
+            assetId: it.assetId, label: it.label, sub: it.sub,
+            ttsAssetId: it.ttsAssetId || null, dur: it.dur || 0,
+          })),
+          width: dims.w, height: dims.h,
+          transition: (n.data && n.data.transition) || 'none',
+          keepAudio: !(n.data && n.data.keepAudio === false),
+          bitrate: n.data && n.data.bitrate ? Number(n.data.bitrate) : 0,
+        });
+      } catch (e) { return { ok: false, skip: true, reason: String((e && e.message) || e) }; }
+      if (!started || !started.ok) return { ok: false, skip: true, reason: (started && started.error) || '宿主拒绝启动合成任务' };
+      const jobId = started.jobId;
+      let miss = 0;
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 700));
+        if (genAborted()) throw new Error(T('stoppedNote'));
+        let st = null;
+        try { st = await hostRpc('finalcutJobGet', { jobId }); } catch (e) { st = null; }
+        const job = st && st.job;
+        if (!job) {
+          // 一次读不到 = 网络抖动，不算失败；连续多次读不到才判失败（写清原因，别让节点永远转圈）
+          if (++miss >= 6) throw new Error('读取合成进度失败（宿主无响应），请重试');
+          continue;
+        }
+        miss = 0;
+        update((s) => {
+          const nd = s.graph.nodes[n.id];
+          if (nd) nd.data.progress = Math.round(Number(job.pct) || 0) + '% · ' + (job.stage || '合成');
+        });
+        if (job.status === 'done') {
+          update((s) => {
+            const nd = s.graph.nodes[n.id];
+            if (nd) {
+              nd.data.status = 'done';
+              nd.data.assetId = job.assetId;
+              nd.data.progress = null;
+              if (job.warnings && job.warnings.length) nd.data.genWarn = job.warnings.join('；');
+            }
+            s.assetsTick++;
+          });
+          flushSave();
+          return { ok: true, assetId: job.assetId };
+        }
+        if (job.status === 'error') throw new Error(job.error || '宿主合成失败');
+      }
+    }
+
+    /** 成片节点：片段（+配音） → MP4。
+     *  首选宿主侧 ffmpeg 合成（不受浏览器前台状态影响、比实时快）；
+     *  宿主没有 ffmpeg 时退回浏览器录制（canvas + MediaRecorder，实时）。 */
     async function genFinalCutNode(n) {
       const segEdges = S.graph.edges.filter((x) => x.toNode === n.id && x.toPort === 'in');
       const segs = segEdges
@@ -12195,26 +12288,18 @@ function queueThumb(assetId) {
         const v = n.data.subs && n.data.subs[x.e.id];
         return v != null ? v : defSub;
       };
-      const metas = [];
+      // 片段清单：宿主路径只要资产 id（不必把视频读进浏览器内存）
+      const items = [];
       const skipped = []; // 被跳过的片段必须让用户看见：静默少段 = 用户以为全片都合进去了
       for (const x of segs) {
         const segName = String((x.nd.data && x.nd.data.label) || TYPE_LABEL()[x.nd.type] || '片段');
         if (!x.nd.data.assetId) { skipped.push(segName + '（还没有生成结果）'); continue; }
-        try {
-          const rec = await idbGet(x.nd.data.assetId);
-          const blob = await assetBlob(x.nd.data.assetId);
-          if (!blob) { skipped.push(segName + '（资产读不到，可能是文件已被删除）'); continue; }
-          if (!blob.size) { skipped.push(segName + '（资产为空文件）'); continue; }
-          const ttsId = n.data.tts && n.data.tts[x.e.id] && n.data.tts[x.e.id].assetId;
-          const ttsUrl = ttsId ? await assetUrl(ttsId) : null;
-          // 分镜的编辑时长（1-3s 级）作为成片裁剪依据：API 生成的片段偏长，成片时裁到分镜时长
-          const editDur = Number(x.nd.data.editDuration) || null;
-          metas.push({ url: URL.createObjectURL(blob), name: (rec && rec.name) || 'seg', sub: getSub(x), ttsUrl, dur: editDur || undefined });
-        } catch (e) {
-          skipped.push(segName + '（读取失败：' + String((e && e.message) || e) + '）');
-        }
+        const ttsId = n.data.tts && n.data.tts[x.e.id] && n.data.tts[x.e.id].assetId;
+        // 分镜的编辑时长（1-3s 级）作为成片裁剪依据：API 生成的片段偏长，成片时裁到分镜时长
+        const editDur = Number(x.nd.data.editDuration) || null;
+        items.push({ assetId: x.nd.data.assetId, label: segName, sub: getSub(x), ttsAssetId: ttsId || null, dur: editDur || null });
       }
-      if (!metas.length) {
+      if (!items.length) {
         throw new Error(skipped.length
           ? ('没有可合成的片段——' + skipped.join('；'))
           : T('noSegments'));
@@ -12228,6 +12313,36 @@ function queueThumb(assetId) {
       }
       update((s) => { const nd = s.graph.nodes[n.id]; if (nd) { nd.data.status = 'running'; nd.data.error = null; nd.data.progress = '0%'; } });
       flushSave();
+      // —— 首选宿主侧 ffmpeg ——
+      const host = await composeViaHost(n, items);
+      if (host.ok) return host.assetId;
+      // —— 兜底：浏览器录制（实时，需要页面保持前台）——
+      if (typeof document !== 'undefined' && document.hidden) {
+        toast('浏览器录制需要画布页面保持在前台（切到后台会中断录制）');
+      }
+      const metas = [];
+      for (const it of items) {
+        try {
+          const rec = await idbGet(it.assetId);
+          const blob = await assetBlob(it.assetId);
+          if (!blob) { skipped.push(it.label + '（资产读不到，可能是文件已被删除）'); continue; }
+          if (!blob.size) { skipped.push(it.label + '（资产为空文件）'); continue; }
+          const ttsUrl = it.ttsAssetId ? await assetUrl(it.ttsAssetId) : null;
+          metas.push({ url: URL.createObjectURL(blob), name: (rec && rec.name) || it.label || 'seg', sub: it.sub, ttsUrl, dur: it.dur || undefined });
+        } catch (e) {
+          skipped.push(it.label + '（读取失败：' + String((e && e.message) || e) + '）');
+        }
+      }
+      if (!metas.length) {
+        update((s) => { const nd = s.graph.nodes[n.id]; if (nd) { nd.data.status = 'error'; nd.data.error = T('noSegments'); nd.data.progress = null; } });
+        throw new Error(skipped.length ? ('没有可合成的片段——' + skipped.join('；')) : T('noSegments'));
+      }
+      if (skipped.length) {
+        update((s) => {
+          const nd = s.graph.nodes[n.id];
+          if (nd) nd.data.genWarn = '已跳过 ' + skipped.length + ' 个片段：' + skipped.join('；');
+        });
+      }
       try {
         const dims = videoDimsFor({ resolution: n.data.resolution, ratio: n.data.ratio });
         const blob = await composeFinalCut(metas, {
@@ -24521,6 +24636,7 @@ const DIRECTOR_KEY_HELP = [
           // 这正是历史上一处 "dur is not defined" 在真机上才炸的漏洞所在。
           window.__DSH_IC_COMPOSE__ = {
             composeFinalCut,
+            composeViaHost,
             videoDimsFor,
             drawSubtitle,
             extractTailFrames,

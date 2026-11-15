@@ -7,6 +7,50 @@ GitHub Releases carry the same notes in English; maintainer-facing runbooks live
 ## [Unreleased]
 
 ### Added
+- **成片节点「合成导出」改走宿主侧 ffmpeg 合成**（`0.20.7-local.8`）。新增宿主模块
+  `finalcut-compose.js` + 三条 RPC（`finalcutProbe` 能力探测 / `finalcutComposeStart` 起任务 /
+  `finalcutJobGet` 查进度）：片段按「画布顺序 → 资产 id」交给宿主，宿主自己解析资产在磁盘上的
+  绝对路径（rel/sha 两种口径）、探测真实时长、裁剪到分镜时长、烧录字幕、混音 TTS、拼接转场，
+  产物直接落进项目目录并入库成资产。客户端轮询进度、完成后把 assetId 写回节点。
+  **为什么必须换宿主**：浏览器录制链路是**实时**的（成片多长就录多长），而且整条链的推进靠
+  `requestAnimationFrame`——页面切后台/被遮挡时 rAF 直接停摆（Chrome 硬规定），合成就此卡死，
+  最后只能被看门狗判成「成片合成超时」。宿主侧 ffmpeg 不依赖浏览器、不依赖前台状态，
+  而且比实时快得多（60s 成片通常十几秒内出）。
+  字幕烧录用 `drawtext` + 系统 CJK 字体（Android/Termux/桌面各有一份候选路径），字幕文本走
+  `textfile`（天然免疫 filtergraph 转义），断行口径与浏览器端 `drawSubtitle` 一致（CJK 逐字、
+  拉丁按词、最多 3 行、超出加省略号）。转场三种都支持：`none`（concat）/ `fade`（xfade +
+  acrossfade）/ `black`（段间插黑场）。
+- **「合成导出」失败原因现在说得清**（`0.20.7-local.8`）。宿主任务失败时直接抛宿主给的原始原因
+  （如「ffmpeg 退出码 1：…」），并把跳过的片段、缺中文字体等写成节点上的可见告警；
+  宿主连不上/没装 ffmpeg 时才退回浏览器录制，并在节点上提示原因。
+
+### Fixed
+- **成片节点点「合成导出」，过一会儿必报「成片合成超时」**（`0.20.7-local.8`）。根因有二：
+  ① 合成链的推进完全依赖 `requestAnimationFrame`，而**后台标签页里 rAF 会停摆**——用户点完
+  「合成导出」顺手切走（回消息页/切应用/锁屏），合成链就僵在那儿，直到看门狗
+  （总时长 + 30s）判超时；② 看门狗余量固定 30s，慢机器上录不完也会被判死。
+  修法：① 成片合成**首选宿主侧 ffmpeg**（新增，见上），彻底不依赖浏览器前台状态；
+  ② 浏览器录制链路降级为兜底，并加**定时器兜底驱动**（rAF 超过 400ms 没来就用定时器补帧，
+  合成不再僵死）、看门狗余量随总时长放大（长片本来就慢，不再把「慢」误判成「死」）、
+  页面处于后台时先提示「浏览器录制需要画布页面保持在前台」。
+- **打包清单漏了两个根模块**（`0.20.7-local.8`）。`bible-merge.js`（设定集三方合并）与
+  `shot-ai-fill.js`（分镜整表 AI 补全）都是 `index.js` 的运行时依赖，却没进 `package.json`
+  的 `files` 白名单——一旦按现有清单发布，装出来的插件会因 import 失败直接起不来。
+  已补进白名单与 `check-pack.mjs` 的必打包清单；本次新增的 `finalcut-compose.js` 同样入册。
+
+### Changed
+- **版本号升为 `0.20.7-local.8`**（本地构建后缀）：成片合成换宿主侧实现，按仓库「一律 patch +1」规矩递增。
+
+### Internal
+- **成片合成回归网补齐**：`scripts/test-finalcut-compose.mjs`（参数组装/三种转场/TTS 混音/
+  端到端真跑 ffmpeg 并校验画面顺序与字幕确实烧进画面）、`scripts/test-finalcut-host.mjs`
+  （沙盒数据根里真造项目与片段，走真 RPC 校验产物落盘与资产入库，缺片段必须报错）、
+  `scripts/test-finalcut-client.mjs`（假宿主跑客户端真实轮询链路：宿主不可用必须退回浏览器兜底，
+  宿主任务失败必须抛错不许静默改道）；三者都已进 `scripts/regress.mjs` 清单。
+- **`check-pack.mjs` 兼容 npm 11 的 `pack --json` 形状**：旧写法硬取第一个 `[` 起解析，
+  在 npm 11（输出以对象 `{"<pkg>": {...}}` 开头）下必炸——打包门禁在 Termux 上一直是红的、
+  等于没有。改成多形状候选逐个试，并把 `finalcut-compose.js` / `bible-merge.js` /
+  `shot-ai-fill.js` 补进必打包清单与白名单。
 - **「AI 补全全部分镜」现在也能从会话里触发**（`0.20.7-local.7`）。此前该能力只有前端按钮
   （浏览器点击 → 宿主 `/api/llm-stream`），对话侧没有任何工具能触发——Agent 拿到用户「把这场分镜
   补全」的要求时只能干瞪眼。现在新增宿主工具 **`canvas_ai_fill_board`**：逐镜调 LLM 补全

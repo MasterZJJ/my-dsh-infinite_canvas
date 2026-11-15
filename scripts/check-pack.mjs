@@ -29,6 +29,9 @@ const REQUIRED = [
   'skill-pack.js',
   'skill-pack-loader.js',
   'index-core-skill-profile.js',
+  'finalcut-compose.js',
+  'bible-merge.js',
+  'shot-ai-fill.js',
   'icon.svg',
   'cordis.patch.yml',
   'README.md',
@@ -51,7 +54,7 @@ const REQUIRED = [
 // 包内允许出现的路径形态（package.json 与 LICENSE 由 npm 恒定收入，无需列 files 白名单）
 // assets/support/*：帮助与反馈用的微信二维码等界面静态资源（必须随包分发，否则用户看不到）
 // docs/images/*：README/用户手册引用的截图（文档里的相对路径必须能解析，否则 npm/GitHub 上裂图）
-const ALLOWED = /^(package\.json|LICENSE|LICENCE|NOTICE|index\.js|client\.js|production\.js|shot-segments\.js|combat-semantics\.js|skill-pack\.js|skill-pack-loader\.js|index-core-skill-profile\.js|icon\.svg|cordis\.patch\.yml|README(\.zh-CN)?\.md|locale\/[a-zA-Z-]+\.json|assets\/[a-z0-9-]+\/SKILL\.md|assets\/canvas-director\/(?:pack\.js|manifest\.json)|assets\/canvas-director\/(?:lenses|genres|industries|forms|looks|moves)\/[a-z0-9_-]+\.md|assets\/support\/[A-Za-z0-9._-]+|assets\/director\/[a-zA-Z0-9._-]+\.js|assets\/director\/models\/[A-Za-z0-9._-]+\.json|assets\/director\/clips\/[A-Za-z0-9._-]+\.json|skills\.js|skills\/[a-z0-9-]+\/SKILL\.md|docs\/[a-zA-Z0-9._-]+\.md|docs\/images\/[a-zA-Z0-9._-]+\.(png|svg|jpe?g|webp))$/;
+const ALLOWED = /^(package\.json|LICENSE|LICENCE|NOTICE|index\.js|client\.js|production\.js|shot-segments\.js|combat-semantics\.js|skill-pack\.js|skill-pack-loader\.js|index-core-skill-profile\.js|finalcut-compose\.js|bible-merge\.js|shot-ai-fill\.js|icon\.svg|cordis\.patch\.yml|README(\.zh-CN)?\.md|locale\/[a-zA-Z-]+\.json|assets\/[a-z0-9-]+\/SKILL\.md|assets\/canvas-director\/(?:pack\.js|manifest\.json)|assets\/canvas-director\/(?:lenses|genres|industries|forms|looks|moves)\/[a-z0-9_-]+\.md|assets\/support\/[A-Za-z0-9._-]+|assets\/director\/[a-zA-Z0-9._-]+\.js|assets\/director\/models\/[A-Za-z0-9._-]+\.json|assets\/director\/clips\/[A-Za-z0-9._-]+\.json|skills\.js|skills\/[a-z0-9-]+\/SKILL\.md|docs\/[a-zA-Z0-9._-]+\.md|docs\/images\/[a-zA-Z0-9._-]+\.(png|svg|jpe?g|webp))$/;
 
 const errors = [];
 const ok = (msg) => console.log('  ✓ ' + msg);
@@ -122,10 +125,25 @@ try {
 }
 let data;
 try {
-  const j = out.slice(out.indexOf('['));
-  data = JSON.parse(j)[0];
+  // npm 各版本 --json 形状不同：npm 10 输出数组 [{...}]，npm 11+ 输出对象 {"<pkg>": {...}}；
+  // 且前面可能夹着 notice 文本。逐个候选形状试，别写死某一种。
+  const text = String(out || '');
+  const candidates = [];
+  const firstObj = text.indexOf('{');
+  const firstArr = text.indexOf('[');
+  candidates.push(text);
+  if (firstObj >= 0) candidates.push(text.slice(firstObj));
+  if (firstArr >= 0) candidates.push(text.slice(firstArr));
+  let parsed = null;
+  let lastErr = null;
+  for (const c of candidates) {
+    try { parsed = JSON.parse(c); break; } catch (e) { lastErr = e; }
+  }
+  if (!parsed) throw lastErr || new Error('无法解析');
+  data = Array.isArray(parsed) ? parsed[0] : (parsed[Object.keys(parsed)[0]] || parsed);
+  if (!data || typeof data !== 'object') throw new Error('形状异常');
 } catch (e) {
-  console.error('npm pack --json 输出解析失败：' + e.message + '\n原始输出：\n' + out.slice(0, 2000));
+  console.error('npm pack --json 输出解析失败：' + e.message + '\n原始输出：\n' + String(out || '').slice(0, 2000));
   process.exit(1);
 }
 const files = (data.files ?? []).map((f) => String(f.path).replace(/\\/g, '/'));
