@@ -73,14 +73,25 @@ function fnBlock(sig) {
 }
 
 // ---------- 3b) 表情 / 语气（0.20.6-local.5） ----------
+// 0.20.7-local.7 起，AI 补全的**提示词本体**搬进了 shot-ai-fill.js（前端按钮与对话侧工具共用的
+// 单一事实源；client.js 里是逐字副本，由 scripts/sync-shot-ai-fill.mjs 注入）。
+// 所以这里查「提示词源」而不是查某个函数体——规则不许消失，搬家不算消失。
+// 前端副本与源是否逐字一致，由 test-shot-ai-fill.mjs 的漂移守卫负责。
 {
+  const fillSrc = readFileSync(path.join(ROOT, 'shot-ai-fill.js'), 'utf8');
   const sys = fnBlock('async function aiCompleteShot');
   ok(!!sys, '找不到 aiCompleteShot');
-  ok(/表情（必须）/.test(sys), 'AI 补全缺少「表情（必须）」硬规则（要求肌肉级可拍表情）');
-  ok(/语气（必须）/.test(sys), 'AI 补全缺少「语气（必须）」硬规则（要求可执行发声指令）');
-  ok(/Expression \(required\)/.test(sys) && /Tone \(required\)/.test(sys), 'AI 补全缺少英文版表情/语气规则');
-  ok(/"dialogue":\[\{"role":"…","line":"…","tone":"…"\}\]/.test(sys), 'AI 补全的 JSON 结构没有 dialogue.tone 字段');
-  ok(/禁止形容词/.test(sys), '表情规则没有禁止形容词（会写出「愤怒/悲伤」这种不可拍描述）');
+  ok(/buildFillPrompt\(/.test(sys), 'AI 补全没有调用 buildFillPrompt（提示词口径应走单一事实源）');
+  ok(/表情（必须）/.test(fillSrc), 'AI 补全缺少「表情（必须）」硬规则（要求肌肉级可拍表情）');
+  ok(/语气（必须）/.test(fillSrc), 'AI 补全缺少「语气（必须）」硬规则（要求可执行发声指令）');
+  ok(/Expression \(required\)/.test(fillSrc) && /Tone \(required\)/.test(fillSrc), 'AI 补全缺少英文版表情/语气规则');
+  ok(/"dialogue":\[\{"role":"…","line":"…","tone":"…"\}\]/.test(fillSrc), 'AI 补全的 JSON 结构没有 dialogue.tone 字段');
+  ok(/禁止形容词/.test(fillSrc), '表情规则没有禁止形容词（会写出「愤怒/悲伤」这种不可拍描述）');
+  // 0.20.7-local.7 新增的五项口径同样不许消失
+  ok(/人数（必须）/.test(fillSrc), 'AI 补全缺少「人数（必须）」硬规则');
+  ok(/占位（必须）/.test(fillSrc), 'AI 补全缺少「占位（必须）」硬规则');
+  ok(/画面细节（必须）/.test(fillSrc), 'AI 补全缺少「画面细节（必须）」硬规则');
+  ok(/音效（硬性）/.test(fillSrc), 'AI 补全缺少「音效（硬性）」硬规则（禁背景音乐/无台词禁人声）');
 
   const norm = fnBlock('function normalizeEditedShot');
   ok(/tone: String\(d && d\.tone \|\| ''\)/.test(norm), '字段归一丢掉了 dialogue.tone（保存后语气会消失）');

@@ -104,6 +104,11 @@ brief → bible → assets → script → storyboard → shots_ready → generat
 19. **记忆先行 + 会话=画布**：开工先 `canvas_my_canvas` 自证「我是哪一集」；绑定会话**代码级禁止**
     跨画布/跨项目（确需切换请用户先解绑）；写本集前 `canvas_read_memory`（先调度索引后本集正文；
     设定集存静态、记忆存动态）；收尾必 `canvas_write_memory`（title/summary≤120 字/keywords/body/status）。
+20. **补全分镜提示词用 `canvas_ai_fill_board`**（不是手写 `shots`）：用户说「把这场分镜补全/
+    润色/写细」「人物太多/站位乱/画面太糙/背景有音乐」时，先 `canvas_node_status` 确认节点 id
+    与镜头数，再调它整表补全——它逐镜补**人物人数 / 人物占位 / 台词说话情绪 / 画面细节 / 环境音效**
+    （无台词镜禁一切人声，任何镜头禁背景音乐），并保护台词原文、时长与段类型。
+    【禁止】用 `canvas_update_node` 手写镜头去"补全"（那是改内容，不是补全）。
 
 ## 三、标准工作流
 
@@ -121,6 +126,8 @@ brief → bible → assets → script → storyboard → shots_ready → generat
    connectFrom: 分镜表, duration: 各镜之和 })` → `canvas_generate_node({ waitSeconds })`。
    多镜头一次生成，**禁止逐镜建节点**（G4）；最多为开场首帧/关键镜头补 1–2 张定帧图；
    参考图连视频 `ref` 口，`@资产名@` 命中自动挂载。跨段首帧画布自动接力（连好 `tail→prev` 即可用）。
+   **镜头提示词不够细**（人物人数/站位/情绪/画面细节/环境音效缺项）→ `canvas_ai_fill_board` 整表补全，
+   补完再进视频生成（别拿粗分镜烧视频）。
 5. **参考图**：为设定集每条目建 image 节点（命名规范见下节），prompt 按 canvas-craft「资产设定图版式」
    写足（角色六段式/场景主图+环绕/道具 45° 主图+色卡），不留空壳节点。
 6. `canvas_open({ projectId })` 让用户看到结果。**布局**：要精准摆放（对齐/指定坐标/分列）先 `canvas_layout_get` 读全图坐标，再 `canvas_layout_node` 批量精摆（可 `pinned:true` 钉住）；只是想"整体理一下"才用 `canvas_relayout`（粗排兜底，钉住的节点不动）。

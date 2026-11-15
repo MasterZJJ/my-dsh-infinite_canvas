@@ -1180,6 +1180,16 @@ function revealCanvasInRight() {
       'aiPolishFail': 'AI 完善失败',
       'aiFillShot': 'AI 补全本镜',
       'aiFillShotHint': '参考上一镜的尾态/运镜与下一镜的画面，补全这一镜（用当前表单内容当输入）',
+      'aiFillBoard': 'AI 补全全部分镜',
+      'aiFillBoardHint': '对本表所有镜头逐镜补全：人物人数、人物占位、台词说话情绪、画面细节、环境音效（无台词镜不许出现任何人声，一律不要背景音乐）',
+      'aiFillingBoard': '补全中 {i}/{n}',
+      'aiFillBoardDone': '全部分镜已补全（{ok} 镜）',
+      'aiFillBoardPartial': '补全完成：{ok} 镜成功，{fail} 镜失败',
+      'aiFillBoardFail': '全部分镜补全失败',
+      'shotPeople': '画面人数',
+      'shotBlocking': '人物占位',
+      'shotPeopleHint': '这一镜画面里实际出现的人数（含只露背影/半身/手部的人；空镜写 0）',
+      'shotBlockingHint': '每个出场人物在画幅里的位置与朝向，如「@林晚@ 右侧前景半身正面；@王勃@ 左侧中景侧身」',
       'dialogueTone': '语气（低声/气声/语速/尾音）',
       'aiFilling': '补全中…',
       'aiFillDone': '本镜已补全',
@@ -2260,6 +2270,16 @@ function revealCanvasInRight() {
       'aiPolishFail': 'AI polish failed',
       'aiFillShot': 'AI fill this shot',
       'aiFillShotHint': 'Fill this shot from the previous shot\'s tail/camera and the next shot (uses the current form as input)',
+      'aiFillBoard': 'AI fill all shots',
+      'aiFillBoardHint': 'Fill every shot of this board: people count, blocking, delivery tone, picture detail, ambience (no-dialogue shots must carry no voices at all; never any background music)',
+      'aiFillingBoard': 'Filling {i}/{n}',
+      'aiFillBoardDone': 'All shots filled ({ok})',
+      'aiFillBoardPartial': 'Done: {ok} filled, {fail} failed',
+      'aiFillBoardFail': 'AI fill failed',
+      'shotPeople': 'People in frame',
+      'shotBlocking': 'Blocking',
+      'shotPeopleHint': 'How many people are actually visible (back/silhouette/hands count; 0 for an empty frame)',
+      'shotBlockingHint': 'Where each visible character stands in frame and which way they face',
       'dialogueTone': 'Tone (whisper / breathy / pace / tail)',
       'aiFilling': 'Filling…',
       'aiFillDone': 'Shot filled',
@@ -10192,9 +10212,48 @@ function queueThumb(assetId) {
       if (extraTxt) built += (zh ? '\n【额外要求（优先级高于上述版式描写，但不得破坏版式与文字规则）】' : '\n[Extra requirements (above the layout wording, never breaking the layout or text rules)] ') + extraTxt;
       return built;
     }
-    /** 单镜「AI 补全」：当前表单 + 上一镜 tail/cam + 下一镜画面 → 一个完整镜头（JSON）。 */
+    /** 单镜「AI 补全」：当前表单 + 上一镜 tail/cam + 下一镜画面 → 一个完整镜头（JSON）。
+     *  提示词口径见 shot-ai-fill.js（单一事实源）——本文件里的 buildFillPrompt 是它的逐字副本，
+     *  由 scripts/sync-shot-ai-fill.mjs 注入，scripts/test-shot-ai-fill.mjs 断言两端一致。 */
     async function aiCompleteShot({ cur, prev, next, bible, requirement, nodeLabel, zh }) {
-      const jsonShape = '{"title":"…","visual":"…","motion":"…","timeBeats":["0s …","中段 …","结尾 …"],"camera":"…","vfx":"…","negative":"…","tail":"…","cam":"…","start":"…","seg":"continuation","characters":["…"],"scene":"…","props":["…"],"duration":3,"dialogue":[{"role":"…","line":"…","tone":"…"}],"sfx":"…"}';
+      const { system, user } = buildFillPrompt({
+        cur, prev, next,
+        bibleText: bibleBlock(bible),
+        requirement, nodeLabel, zh,
+      });
+      const out = await aiCompleteStream({ system, user });
+      return parseJsonBalanced(out);
+    }
+
+    // <<<SHOT_AI_FILL_BEGIN>>>
+
+    /** 自动标题前缀（前端 T('shotPrefix') 的同源常量）：中文「镜 N」，英文「Shot N」。 */
+    const SHOT_PREFIX_ZH = '镜';
+    const SHOT_PREFIX_EN = 'Shot ';
+
+    /** 自动标题判定：形如「镜3」/「Shot 3」= 没写过标题（AI 可替换）；其余 = 用户写过，必须保留。 */
+    function isAutoTitle(title, shotPrefix) {
+      const raw = String(title || '').trim();
+      if (!raw) return true;
+      const prefix = String(shotPrefix || SHOT_PREFIX_ZH);
+      try {
+        return new RegExp('^(' + prefix + '|Shot)\\s*\\d+$', 'i').test(raw);
+      } catch {
+        return false;
+      }
+    }
+
+    /**
+     * 分镜单镜补全的提示词构建（唯一口径）。
+     * 输入：当前镜头（用户已填，作为意图）、上一镜、下一镜、项目设定集文本、本表额外要求、表名。
+     * 输出：{ system, user } —— 直接喂 LLM。
+     *
+     * 五项硬要求（用户口径）：
+     *   ① 人物人数 people  ② 人物占位 blocking  ③ 台词语气 tone
+     *   ④ 画面细节 visual  ⑤ 环境音效 sfx（无台词镜禁人声、任何镜头禁背景音乐）
+     */
+    function buildFillPrompt({ cur, prev, next, bibleText, requirement, nodeLabel, zh }) {
+      const jsonShape = '{"title":"…","visual":"…","motion":"…","timeBeats":["0s …","中段 …","结尾 …"],"camera":"…","vfx":"…","negative":"…","tail":"…","cam":"…","start":"…","seg":"continuation","characters":["…"],"people":2,"blocking":"…","scene":"…","props":["…"],"duration":3,"dialogue":[{"role":"…","line":"…","tone":"…"}],"sfx":"…"}';
       const system = [
         zh ? '你是短剧分镜师。只输出一个 JSON 对象，不要解释、不要 Markdown 围栏。' : 'You are a short-drama storyboard artist. Output ONE JSON object only, no prose, no fences.',
         (zh ? 'JSON 结构：' : 'JSON shape: ') + jsonShape,
@@ -10206,6 +10265,15 @@ function queueThumb(assetId) {
           : 'Continue the previous shot tail/cam (or establish the space when first), and leave a tail/cam the next shot can pick up.',
         zh ? 'dialogue 只填用户已给的台词原文，不得新写；sfx 只写环境声/拟音，绝不写音乐/配乐/BGM。'
           : 'dialogue only carries lines the user already gave; sfx is ambience/foley only — never music/score/BGM.',
+        // ——【人数 / 占位 / 声音硬规则】这一组是「人物多出来、站位乱、背景冒人声」的直接解药 ——
+        zh ? '人数（必须）：people 写这一镜画面里**实际出现的人数**（整数；只露背影/半身/手部的也算；空镜写 0）；people 必须与 visual 里出现的人物数量一致——多写一个人模型就会多生一张脸。'
+          : 'People (required): people is the integer count of people ACTUALLY visible (a back, a silhouette or just hands still count; 0 for an empty frame); it must match the people described in visual — one extra count makes the model grow an extra face.',
+        zh ? '占位（必须）：blocking 写每个出场人物在画幅里的位置与朝向，用「@名称@ 位置+景别+朝向」的写法，如「@林晚@ 右侧前景半身正面；@王勃@ 左侧中景侧身背对镜头」；同一轴线，跨镜不得左右互换（上一镜在左的人本镜仍在左，除非画面明确调度）。'
+          : 'Blocking (required): blocking states where each visible character stands in frame and which way they face, as "@Name@ position+framing+orientation" (e.g. "@Lin Wan@ right foreground, half body, facing camera; @Wang Bo@ left midground, side-on, back to camera"); stay on one screen axis — a character on the left stays on the left unless the staging says otherwise.',
+        zh ? '音效（硬性）：sfx 只写环境声与拟音（如「雨打车顶」「远处车流」「布料摩擦」）；**任何镜头都不许出现背景音乐/配乐/BGM/旋律/鼓点**；本镜没有台词时，**绝不允许出现任何人的说话声、人声、旁白、画外音、对白**——只留环境声与拟音。'
+          : 'Sound (hard): sfx is ambience and foley ONLY (e.g. "rain on the roof", "distant traffic", "fabric rustle"); NEVER background music/score/BGM/melody/drum groove in any shot; and when the shot has NO dialogue, absolutely NO human voice may appear (no speaking, no voice-over, no off-screen speech) — ambience and foley only.',
+        zh ? '画面细节（必须）：visual 除了景别/人物/场景/光线/色调，还要写可拍的环境细节（前景遮挡物、材质质感、光斑/反射、空气中的尘埃雨雾、背景层次与虚实），不要只写「他在房间里」。'
+          : 'Picture detail (required): besides framing, people, location, light and palette, visual must carry filmable environment detail (foreground occluders, material texture, highlights/reflections, dust/rain/haze in the air, background layers and depth of field) — not just "he is in a room".',
         zh ? '表情（必须）：每个有角色的镜，visual 必须写可拍的肌肉级表情——眉/眼睑/鼻翼/下颌/吞咽/屏息/呼吸起伏的具体状态（如「眉心压出竖纹、眼睑半垂、下颌线绷紧」），并承接上一镜尾态的表情余势；禁止形容词（愤怒/悲伤/紧张/凶狠）和「表情复杂/意味深长」这类空话；motion 可写一次微表情变化（眼珠移向、喉结滚动、嘴角向下压）。'
           : 'Expression (required): every shot with a character must give filmable muscular-level expression in visual - specific states of brow / eyelids / nostrils / jaw / swallowing / held breath / breathing (e.g. "vertical crease between brows, eyelids half lowered, jaw line tight"), carrying the previous shot\'s tail expression forward; no adjectives (angry/sad/tense) and no vague filler; motion may carry one micro-change (eyes flick, throat bobs, mouth corner pulls down).',
         zh ? '语气（必须）：dialogue 每条除原文 line 外必须给 tone——可执行的发声指令：音量、气声/实声、语速、尾音、情绪落点（如「低声压着气、尾音发虚、几乎气声」）；line 原文一字不改，不得新增或改写台词；用户没写语气时你负责补。'
@@ -10230,15 +10298,114 @@ function queueThumb(assetId) {
       };
       const user = [
         (zh ? '分镜表：' : 'Storyboard: ') + String(nodeLabel || ''),
-        bibleBlock(bible) ? (zh ? '项目设定集：\n' : 'Series bible:\n') + bibleBlock(bible) : '',
+        String(bibleText || '').trim() ? (zh ? '项目设定集：\n' : 'Series bible:\n') + String(bibleText).trim() : '',
         String(requirement || '').trim() ? (zh ? '本表额外要求：\n' : 'Board requirements:\n') + String(requirement).trim() : '',
         brief(prev, zh ? '上一镜' : 'previous shot'),
         brief(cur, zh ? '本镜（用户已填，作为意图输入，可补全/改写）' : 'this shot (user input — complete or rewrite)'),
         brief(next, zh ? '下一镜' : 'next shot'),
         zh ? '请输出补全后的本镜 JSON。' : 'Output the completed shot JSON now.',
       ].filter(Boolean).join('\n\n');
-      const out = await aiCompleteStream({ system, user });
-      return parseJsonBalanced(out);
+      return { system, user };
+    }
+
+    /**
+     * 音效硬清洗（用户口径）：任何镜头都不得出现背景音乐/配乐；没有台词的镜头连人声都不许有。
+     * 分镜音效只允许环境声与拟音——模型默认爱给"电影感"铺配乐，也爱在空镜里塞旁白。
+     */
+    function sanitizeSfx(text, hasDialogue) {
+      const segs = String(text || '').split(/[、，,;；]/).map((x) => x.trim()).filter(Boolean);
+      const musicRe = /(背景音乐|配乐|音乐|BGM|bgm|乐章|旋律|片头曲|片尾曲|插曲|ost|soundtrack|\bscore\b|\bmusic\b)/i;
+      // 道具本身发出的声音（音乐盒、钢琴、钟铃……）是**画内**声音，不是配乐，必须留下。
+      const diegeticRe = /(音乐盒|八音盒|钢琴|琴声|吉他|古筝|二胡|箫|笛|锣|铃|钟|唱机|收音机|电视|闹钟|扩音器)/i;
+      const voiceRe = /(人声|说话声|对白|旁白|画外音|交谈|聊天|议论|喊|呼|笑声|说话|voice|speaking|dialogue|narration|chatter|off-screen)/i;
+      const keep = segs.filter((s) => {
+        if (musicRe.test(s) && !diegeticRe.test(s)) return false;
+        if (!hasDialogue && voiceRe.test(s)) return false;
+        return true;
+      });
+      return keep.join('、').slice(0, 120);
+    }
+
+    /**
+     * 整表补全的合并口径：台词原文一字不改（只补语气）、时长与段类型不动、用户写过的标题保留；
+     * AI 没填的字段回落到原值（不拿空白覆盖用户已写的内容）。
+     */
+    function mergeFilledShot(orig, ai, i, shotPrefix) {
+      const o = orig || {};
+      const a = ai || {};
+      const keepTitle = !isAutoTitle(o.title, shotPrefix);
+      const pick = (k) => {
+        const v = a[k];
+        if (Array.isArray(v)) return v.length ? v : (Array.isArray(o[k]) ? o[k] : []);
+        // 数组字段（characters/props/timeBeats）：AI 没给就整段回落，绝不降级成字符串。
+        if (Array.isArray(o[k]) && !(v && String(v).trim())) return o[k];
+        const s = String(v == null ? '' : v).trim();
+        return s ? s : String(o[k] == null ? '' : o[k]).trim();
+      };
+      // 台词：只认用户已经写好的原文；AI 只能补语气（没语气就补），绝不新增台词。
+      const userDlg = (Array.isArray(o.dialogue) ? o.dialogue : []).filter((d) => d && String(d.role || '').trim() && String(d.line || '').trim());
+      const aiDlg = Array.isArray(a.dialogue) ? a.dialogue : [];
+      const dialogue = userDlg.map((d) => {
+        const hit = aiDlg.find((x) => String(x && x.role || '').trim() === String(d.role || '').trim()
+          && String(x && x.line || '').trim() === String(d.line || '').trim());
+        return {
+          role: String(d.role || '').trim().slice(0, 24),
+          line: String(d.line || '').trim().slice(0, 200),
+          tone: String(d.tone || (hit && hit.tone) || '').trim().slice(0, 40),
+        };
+      });
+      const peopleRaw = Number(a.people);
+      const people = Number.isFinite(peopleRaw) && String(a.people).trim() !== ''
+        ? Math.max(0, Math.round(peopleRaw))
+        : (Number(o.people) || 0);
+      const prefix = String(shotPrefix || SHOT_PREFIX_ZH);
+      return {
+        title: keepTitle ? o.title : (pick('title') || (prefix + (i + 1))),
+        visual: pick('visual'),
+        motion: pick('motion'),
+        timeBeats: (Array.isArray(a.timeBeats) && a.timeBeats.length ? a.timeBeats : (Array.isArray(o.timeBeats) ? o.timeBeats : [])),
+        camera: pick('camera'),
+        vfx: pick('vfx'),
+        negative: pick('negative'),
+        tail: pick('tail'),
+        cam: pick('cam'),
+        start: pick('start'),
+        // 时长与段类型不动：改了就打乱 4–10s 拆表与切段计划。
+        duration: Math.max(0.3, Math.round((Number(o.duration) || Number(a.duration) || 3) * 10) / 10),
+        seg: String(o.seg || a.seg || 'continuation'),
+        characters: pick('characters'),
+        people,
+        blocking: pick('blocking').slice(0, 200),
+        scene: pick('scene'),
+        props: pick('props'),
+        dialogue,
+        sfx: sanitizeSfx(pick('sfx'), dialogue.length > 0),
+      };
+    }
+    // <<<SHOT_AI_FILL_END>>>
+
+    /** 整表 AI 补全：逐镜调用（带上一镜/下一镜上下文），逐镜合并；单镜失败不影响其余镜头。 */
+    async function aiCompleteBoard({ shots, bible, requirement, nodeLabel, zh, onProgress }) {
+      const list = Array.isArray(shots) ? shots : [];
+      const out = [];
+      const errors = [];
+      for (let i = 0; i < list.length; i++) {
+        if (typeof onProgress === 'function') { try { onProgress(i, list.length); } catch { /* 进度回调失败不阻断 */ } }
+        try {
+          const ai = await aiCompleteShot({
+            cur: list[i],
+            prev: i > 0 ? out[i - 1] : null,   // 上一镜用**已补全**的版本：人数/占位要一路接得住
+            next: i < list.length - 1 ? list[i + 1] : null,
+            bible, requirement, nodeLabel, zh,
+          });
+          if (!ai || typeof ai !== 'object') throw new Error('empty output');
+          out.push(mergeFilledShot(list[i], ai, i, T('shotPrefix')));
+        } catch (e) {
+          out.push(list[i]);
+          errors.push((i + 1) + ': ' + String((e && e.message) || e));
+        }
+      }
+      return { shots: out, ok: out.length - errors.length, fail: errors.length, errors };
     }
 
     function aiStreamAppend(nodeId, kind, d) {
@@ -10707,6 +10874,9 @@ function queueThumb(assetId) {
         initiative: String(s.initiative || '').trim().slice(0, 80),
         nextCombat: String(s.nextCombat || '').trim().slice(0, 80),
         characters: Array.isArray(s.characters) ? s.characters.map(String).slice(0, 6) : [],
+        // 人数 / 占位：与客户端手改同一口径（宿主 index.js 两处映射同步放行）
+        people: Math.max(0, Math.min(6, Math.round(Number(s.people) || 0))),
+        blocking: String(s.blocking || '').trim().slice(0, 200),
         scene: String(s.scene || ''),
         props: Array.isArray(s.props) ? s.props.map(String).slice(0, 6) : [],
         duration: Number.isFinite(Number(s.duration)) ? Math.max(0.3, Math.round(Number(s.duration) * 10) / 10) : 3,
@@ -11684,6 +11854,11 @@ function queueThumb(assetId) {
         if (cam) parts.push((zh ? '机位/焦段/运镜' : 'Camera/lens/move') + '：' + cam);
         const vfx = String(s.vfx || '').trim();
         if (vfx) parts.push((zh ? '特效（必须可见）' : 'VFX (must be visible)') + '：' + vfx);
+        // 人数与占位：模型默认会自行加人、把人放乱——写死人数才不会多生一张脸。
+        const people = Number(s.people) || 0;
+        if (people > 0) parts.push(zh ? ('画面人数：共 ' + people + ' 人（不得多生、不得少生）') : ('People in frame: exactly ' + people + ' (no more, no fewer)'));
+        const blocking = String(s.blocking || '').trim();
+        if (blocking) parts.push((zh ? '人物占位：' : 'Blocking: ') + blocking);
         // 打斗因果块（V3.1 嫁接）：打斗镜把「攻击指向/对手回应/受力破坏/攻守归属」编进视频
         // 提示词——分段生成时模型看不到别的段，因果只能靠写在提示词里。空字段不注入。
         const cct = combatCausalityText(s, zh);
@@ -11695,6 +11870,12 @@ function queueThumb(assetId) {
             : 'Dialogue (spoken on screen by ' + (s.dialogue || []).map((d) => String(d && d.role || '').trim()).filter(Boolean).join(', ') + ', lip-synced): ' + dls.join('; '));
         }
         if (String(s.sfx || '').trim()) parts.push((zh ? '音效：' : 'SFX: ') + String(s.sfx).trim());
+        // 无台词镜：只允许环境声与拟音——模型爱在空镜里塞旁白/画外人声，必须逐镜点名禁掉。
+        if (!dls.length) {
+          parts.push(zh
+            ? '本镜无台词：只保留环境声与拟音，不得出现任何人声、说话声、旁白、画外音或对白'
+            : 'No dialogue in this shot: ambience and foley only; no human voice, no speech, no narration, no off-screen voice');
+        }
         lines.push((zh ? `镜头${i + 1}（${dur}s）：` : `Shot ${i + 1} (${dur}s): `) + parts.join(zh ? '；' : '; '));
       });
       // 段级负向要求：模型默认会漂移、穿模、闪烁，不点名就一定会出现。
@@ -15654,6 +15835,9 @@ function queueThumb(assetId) {
         vfx: String(src.vfx || '').trim().slice(0, 160),
         negative: String(src.negative || '').trim().slice(0, 200),
         characters: listOf(src.characters).slice(0, 6),
+        // 人数与占位：整表补全后必须原样落库，否则视频提示词拿不到（模型就会多生人脸/站位乱）。
+        people: Math.max(0, Math.min(6, Math.round(Number(src.people) || 0))),
+        blocking: String(src.blocking || '').trim().slice(0, 200),
         scene: String(src.scene || '').trim(),
         props: listOf(src.props).slice(0, 6),
         duration: Math.max(0.3, Math.round((Number(src.duration) || 3) * 10) / 10),
@@ -15671,6 +15855,7 @@ function queueThumb(assetId) {
       const [idx, setIdx] = useState(0);
       const [dirty, setDirty] = useState(false);
       const [aiFilling, setAiFilling] = useState(false);
+      const [boardFilling, setBoardFilling] = useState(null); // 整表补全进度 {i, n}
       const [saving, setSaving] = useState(false);
       // 打开/切换节点时把节点里的 shots 拷成草稿：编辑期间不污染画布数据，保存才整体写回。
       useEffect(() => {
@@ -15783,6 +15968,30 @@ function queueThumb(assetId) {
           toast(T('aiFillFail') + '：' + String((e && e.message) || e));
         } finally {
           setAiFilling(false);
+        }
+      };
+      /** 整表 AI 补全（编辑器内）：对草稿里的所有镜头逐镜补全，结果写回草稿（保存才落库）。 */
+      const aiFillAllInEditor = async () => {
+        if (boardFilling || aiFilling || !shots.length) return;
+        setBoardFilling({ i: 0, n: shots.length });
+        try {
+          const res = await aiCompleteBoard({
+            shots,
+            bible: loadBible(S.activeId),
+            requirement: String((node && node.data && node.data.requirement) || ''),
+            nodeLabel: String((node && node.data && node.data.label) || ''),
+            zh: effLang() !== 'en',
+            onProgress: (i, total) => setBoardFilling({ i: i + 1, n: total }),
+          });
+          setShots(res.shots.map((sh, i) => normalizeEditedShot(sh, i)));
+          setDirty(true);
+          toast(res.fail
+            ? T('aiFillBoardPartial').replace('{ok}', String(res.ok)).replace('{fail}', String(res.fail))
+            : T('aiFillBoardDone').replace('{ok}', String(res.ok)));
+        } catch (e) {
+          toast(T('aiFillBoardFail') + '：' + String((e && e.message) || e));
+        } finally {
+          setBoardFilling(null);
         }
       };
       const save = async () => {
@@ -15909,6 +16118,16 @@ function queueThumb(assetId) {
                       field(T('shotScene'), input(shot.scene, (v) => patch({ scene: v }), T('shotScene'))),
                       field(T('shotProps'), input((shot.props || []).join('、'), (v) => patch({ props: v.split(/[,，、]/).map((x) => x.trim()).filter(Boolean) }), T('shotProps'))),
                     ),
+                    // 人数 / 占位：模型最容易出错的两个维度——写清楚，画面里就不会多生人、不会站位乱跳。
+                    h('div', { key: 'row5', className: 'dshic-be-grid2' },
+                      field(T('shotPeople'), h('input', {
+                        type: 'text', inputMode: 'numeric', className: 'dshic-input',
+                        title: T('shotPeopleHint'),
+                        value: shot.people == null ? '' : String(shot.people),
+                        onChange: (e) => patch({ people: e.target.value === '' ? 0 : Number(e.target.value) }),
+                      })),
+                      field(T('shotBlocking'), input(shot.blocking, (v) => patch({ blocking: v }), T('shotBlockingHint'))),
+                    ),
                     h('details', { key: 'adv', className: 'dshic-be-advanced' },
                       h('summary', {}, T('shotAdvanced')),
                       field(T('shotTail'), input(shot.tail, (v) => patch({ tail: v }), T('shotTail'))),
@@ -15927,6 +16146,15 @@ function queueThumb(assetId) {
                 onClick: aiFillThisShot,
               }, aiFilling ? h('span', { className: 'dshic-spin' }) : Ic('spark', 11),
               aiFilling ? T('aiFilling') : T('aiFillShot')),
+              // 整表补全：本表所有镜头一次补完（人数/占位/语气/画面细节/环境音效）
+              h('button', {
+                type: 'button', className: 'dshic-mini', disabled: !!boardFilling || aiFilling || !shots.length,
+                title: T('aiFillBoardHint'), 'data-role': 'ai-fill-board',
+                onClick: aiFillAllInEditor,
+              }, boardFilling ? h('span', { className: 'dshic-spin' }) : Ic('spark', 11),
+              boardFilling
+                ? T('aiFillingBoard').replace('{i}', String(boardFilling.i)).replace('{n}', String(boardFilling.n))
+                : T('aiFillBoard')),
               h('button', { type: 'button', className: 'dshic-mini', disabled: !shots.length || idx <= 0, onClick: () => moveShot(-1) }, '↑ ' + T('moveShotUp')),
               h('button', { type: 'button', className: 'dshic-mini', disabled: !shots.length || idx >= shots.length - 1, onClick: () => moveShot(1) }, '↓ ' + T('moveShotDown')),
               h('button', { type: 'button', className: 'dshic-mini is-ghost', disabled: !shots.length, onClick: delShot }, Ic('trash', 11), T('deleteShot')),
@@ -15976,10 +16204,71 @@ function queueThumb(assetId) {
         lastBibleTickRef.current = S.bibleTick;
         revalidate();
       }, [S.bibleTick]);
+      // —— 整表 AI 补全：逐镜补「人物人数 / 人物占位 / 台词语气 / 画面细节 / 环境音效」——
+      // 节点级入口：用户不想逐镜点，就在这张分镜表上按一下，全表一次补完。
+      const [boardFill, setBoardFill] = useState(null); // {i, n} 进度
+      const aiFillAllShots = async () => {
+        if (boardFill || running || !shots.length) return;
+        setBoardFill({ i: 0, n: shots.length });
+        try {
+          const res = await aiCompleteBoard({
+            shots,
+            bible: loadBible(S.activeId),
+            requirement: String((n.data && n.data.requirement) || ''),
+            nodeLabel: String((n.data && n.data.label) || ''),
+            zh: effLang() !== 'en',
+            onProgress: (i, total) => setBoardFill({ i: i + 1, n: total }),
+          });
+          const clean = res.shots.map((sh, i) => normalizeEditedShot(sh, i));
+          const zh = effLang() !== 'en';
+          const totalSec = Math.round(clean.reduce((a, sh) => a + (Number(sh.duration) || 0), 0) * 10) / 10;
+          update((s) => {
+            const nd = s.graph.nodes[n.id];
+            if (!nd) return;
+            nd.data.shots = clean;
+            nd.data.aiStatus = 'idle';
+            nd.data.aiError = null;
+            // 拆出来的表：范围说明书要跟着手改后的镜头走，否则单表重生成又拿旧镜头清单去写。
+            if (Number(nd.data.boardCount) > 1) {
+              const from = Number(nd.data.boardFrom) || 0;
+              const segLike = { shots: clean, startIndex: from, endIndex: from + Math.max(0, clean.length - 1), duration: totalSec };
+              nd.data.boardTo = segLike.endIndex;
+              nd.data.boardScript = storyboardBoardScript(
+                String(nd.data.boardSource || ''), storyboardBoardBaseLabel(nd.data.label) || T('nStoryboard'),
+                segLike, Number(nd.data.boardIndex) || 0, Number(nd.data.boardCount) || 1, zh
+              );
+            }
+          });
+          try {
+            const warnings = await checkShotConsistency(clean);
+            update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.warnings = warnings; });
+          } catch { /* 校验失败保留旧告警，不阻断 */ }
+          pushHistory();
+          flushSave();
+          toast(res.fail
+            ? T('aiFillBoardPartial').replace('{ok}', String(res.ok)).replace('{fail}', String(res.fail))
+            : T('aiFillBoardDone').replace('{ok}', String(res.ok)));
+        } catch (e) {
+          toast(T('aiFillBoardFail') + '：' + String((e && e.message) || e));
+        } finally {
+          setBoardFill(null);
+        }
+      };
       return [
         h('div', { key: 'sum', className: 'dshic-shot-summary' },
           h('b', {}, shots.length ? (shots.length + ' ' + T('shotsUnit')) : T('noShotsYet')),
           shots.length ? h('span', {}, ' · ' + totalDur + 's · ' + T('multiShotOnce')) : null),
+        // 整表 AI 补全入口（节点上直接按）
+        h('div', { key: 'fillall', className: 'dshic-node-row', 'data-role': 'ai-fill-board' },
+          h('button', {
+            type: 'button', className: 'dshic-mini', disabled: !!boardFill || running || !shots.length,
+            title: T('aiFillBoardHint'),
+            onPointerDown: (e) => e.stopPropagation(),
+            onClick: aiFillAllShots,
+          }, boardFill ? h('span', { className: 'dshic-spin' }) : Ic('spark', 11),
+          boardFill
+            ? T('aiFillingBoard').replace('{i}', String(boardFill.i)).replace('{n}', String(boardFill.n))
+            : T('aiFillBoard'))),
         // 切段摘要：M 段 / 共 N 镜 / 最长 S 秒；forced 时用告警色如实标出
         segPlan && segPlan.segments.length > 1
           ? h('div', { key: 'segsum', className: 'dshic-hint', 'data-role': 'seg-summary', title: T('segPlanHint') },
@@ -24267,6 +24556,9 @@ const DIRECTOR_KEY_HELP = [
           // 供 scripts/test-segment-plan.mjs 直接断言
           window.__DSH_IC_SEGMENT__ = { planShotSegments, planStoryboardBoards, splitStoryboardIntoBoards, isCutPoint, segmentNeedsHardFrame, videoSegmentOf, shotContinuityPlan, detectCombatScene, shotIsCombat, combatContractAddendum, combatCausalityText, validateCombatGeometry, COMBAT_ACTION_LEXICON };
           window.__DSH_IC_STORYBOARD_PROMPT__ = { buildStoryboardVideoPrompt, buildStructuredVideoPrompt };
+          // 分镜整表 AI 补全（0.20.7-local.7）：音效硬清洗 + 合并保护 + 镜头归一化
+          // 供 scripts/test-shot-ai-fill.mjs 直接断言
+          window.__DSH_IC_SHOTFILL__ = { sanitizeSfx, mergeFilledShot, normalizeEditedShot, buildFillPrompt, isAutoTitle };
           // 视频请求组装（0.20.2）：run 与「请求预览」的单一事实源——
           // assembleVideoRequest（组装+校验门）/ previewVideoInputs（预览轻量 inputs）/ videoRequestContext（决策基座）
           // 供 scripts/test-submission-log.mjs 断言 p 逐字一致与 warnings 三条逐一触发

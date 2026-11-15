@@ -19,6 +19,7 @@ import { buildSkillPack, SKILL_CATALOG, renderInventory, renderProfile } from '.
 import { createProduction, PRODUCTION_STAGES, PRODUCTION_STAGE_ZH } from './production.js';
 import { planShotSegments } from './shot-segments.js';
 import { mergeBibleThreeWay } from './bible-merge.js';
+import { buildFillPrompt, mergeFilledShot, parseShotJson, bibleBlock, SHOT_PREFIX_ZH } from './shot-ai-fill.js';
 
 /** 制作阶段机与流程闸门（0.20.0）：deps 全是本模块的函数声明（已提升，运行时才调用）。 */
 const PROD = createProduction({
@@ -2267,6 +2268,9 @@ function canvasWriteNode(args) {
           start: String((s && s.start) || '').trim().slice(0, 160),
           seg: String((s && s.seg) || '').trim().toLowerCase().slice(0, 24),
           characters: Array.isArray(s && s.characters) ? s.characters.map(String) : [],
+          // 画面人数 / 人物占位：对话侧整表改 shots 时必须原样带回，否则人数与站位会被清空。
+          people: Math.max(0, Math.min(6, Math.round(Number(s && s.people) || 0))),
+          blocking: String((s && s.blocking) || '').trim().slice(0, 200),
           scene: String((s && s.scene) || ''),
           props: Array.isArray(s && s.props) ? s.props.map(String) : [],
           duration: Number(s && s.duration) || 5,
@@ -3107,6 +3111,9 @@ async function canvasNodeStatus(args) {
       visual: String((s && s.visual) || '').slice(0, 400),
       motion: String((s && s.motion) || '').slice(0, 300),
       characters: Array.isArray(s && s.characters) ? s.characters.map(String) : [],
+      // 画面人数 / 人物占位：node_status 必须透出，否则对话侧读回再写回时会丢失
+      people: Math.max(0, Math.min(6, Math.round(Number(s && s.people) || 0))),
+      blocking: String((s && s.blocking) || '').slice(0, 200),
       scene: String((s && s.scene) || '').slice(0, 100),
       props: Array.isArray(s && s.props) ? s.props.map(String) : [],
       // 台词标注：声音参考提取/对话侧对白定位的数据源
@@ -3246,6 +3253,89 @@ function boardBriefText(node, shots) {
     '本表镜头（重新生成/润色时只改这些镜头，不得扩展到其它时间段，不得重复其它表的剧情）：',
     body,
   ].filter(Boolean).join('\n\n');
+}
+/**
+ * 对话侧：分镜表**整表 AI 补全**（与前端节点上的「AI 补全全部分镜」按钮同一口径）。
+ *
+ * 口径的单一事实源是 shot-ai-fill.js：前端按钮用它、这里也用它——所以用户点按钮和让 Agent
+ * 补全，得到的是同一份稿子（提示词逐字相同；合并保护、音效硬清洗也共用）。
+ *
+ * 逐镜调用 LLM（带上一镜/下一镜上下文，上一镜用**已补全**的版本，保证人数与站位一路接得住），
+ * 单镜失败不影响其余镜头；合并后写回节点并重算一致性告警。
+ * 画布侧每 3 秒 projectsSync 一次，宿主改完几秒内会在画布上出现。
+ */
+async function canvasAiFillBoard(args, llmComplete) {
+  const pid = String((args && args.projectId) || '');
+  const nodeId = String((args && args.nodeId) || '');
+  const doc = readToolDoc(args);
+  const node = doc.nodes[nodeId];
+  if (!node) throw new Error('节点不存在: ' + nodeId + '（先用 canvas_list_projects 查看节点 id）');
+  if (node.type !== 'storyboard') throw new Error('只有分镜表节点支持整表 AI 补全（当前节点类型：' + node.type + '）');
+  const shots = Array.isArray(node.data && node.data.shots) ? node.data.shots : [];
+  if (!shots.length) throw new Error('该分镜表还没有镜头——先生成分镜（canvas_generate_node）再补全');
+  const bible = doc.bible || {};
+  const bibleText = bibleBlock(bible);
+  const requirement = String((node.data && node.data.requirement) || '');
+  const nodeLabel = String((node.data && node.data.label) || '');
+  const zh = true; // 对话侧统一中文口径（与前端默认语言一致）
+  // 模型：可传 "provider|model"；不传则用 Harness 里配置的默认模型
+  const want = {};
+  const rawModel = String((args && args.model) || '').trim();
+  if (rawModel.includes('|')) {
+    const [provider, model] = rawModel.split('|');
+    if (provider) want.provider = provider;
+    if (model) want.model = model;
+  } else if (rawModel) {
+    want.model = rawModel;
+  }
+  const out = [];
+  const errors = [];
+  for (let i = 0; i < shots.length; i++) {
+    try {
+      const { system, user } = buildFillPrompt({
+        cur: shots[i],
+        prev: i > 0 ? out[i - 1] : null,      // 上一镜用**已补全**的版本：人数/占位要一路接得住
+        next: i < shots.length - 1 ? shots[i + 1] : null,
+        bibleText, requirement, nodeLabel, zh,
+      });
+      const raw = await llmComplete({ ...want, system, user });
+      // complete() 返回的是 {text, provider, model, variant} 对象，不是裸字符串——取 .text。
+      const rawText = raw && typeof raw === 'object' ? (raw.text ?? '') : raw;
+      const ai = parseShotJson(rawText);
+      out.push(mergeFilledShot(shots[i], ai, i, SHOT_PREFIX_ZH));
+    } catch (e) {
+      out.push(shots[i]); // 单镜失败保留原样，不影响其余镜头
+      errors.push('第' + (i + 1) + '镜：' + String((e && e.message) || e));
+    }
+  }
+  node.data.shots = out;
+  node.data.aiStatus = 'idle';
+  node.data.aiError = errors.length ? errors.join('；') : null;
+  // 拆出来的表：范围说明书要跟着手改后的镜头走，否则单表重生成又拿旧镜头清单去写。
+  if (Number(node.data.boardCount) > 1) node.data.boardScript = boardBriefText(node, out);
+  try {
+    node.data.warnings = storyboardConsistencyWarnings(bible, out, readAssetIndexNames(pid));
+  } catch { node.data.warnings = []; }
+  doc.updatedAt = Date.now();
+  writeToolDoc(args, doc);
+  const okCount = out.length - errors.length;
+  return {
+    ok: true,
+    projectId: pid,
+    nodeId,
+    filled: okCount,
+    failed: errors.length,
+    errors,
+    shots: out.map((s, i) => ({
+      index: i + 1,
+      title: String(s.title || ''),
+      duration: Number(s.duration) || 0,
+      people: Number(s.people) || 0,
+      blocking: String(s.blocking || ''),
+      dialogueTones: (Array.isArray(s.dialogue) ? s.dialogue : []).map((d) => ({ role: d.role, tone: d.tone || '' })),
+      sfx: String(s.sfx || ''),
+    })),
+  };
 }
 /** 更新已有节点的字段：对话侧"改提示词 / 改参数"的唯一入口（此前只能删节点重建）。 */
 function canvasUpdateNode(args) {
@@ -5475,7 +5565,7 @@ export function apply(ctx) {
             additionalProperties: false,
           },
           output: {
-            schema: { type: 'object', properties: { ok: { type: 'boolean' }, text: { type: 'string' }, type: { type: 'string' }, status: { type: 'string' }, x: { type: 'number' }, y: { type: 'number' }, w: { type: 'number' }, h: { type: 'number' }, assetId: { type: 'string' }, prompt: { type: 'string' }, ratio: { type: 'string' }, size: { type: 'string' }, duration: { type: 'number' }, resolution: { type: 'string' }, frameMode: { type: 'string' }, imageModel: { type: 'string' }, videoModel: { type: 'string' }, count: { type: 'number' }, targetDuration: { type: 'number', description: '分镜总时长硬约束（秒；缺省 = 自动档）' }, combatMode: { type: 'string', enum: ['auto', 'on', 'off'], description: '打斗判定：auto=按场检测 / on=强制打斗 / off=强制非打斗' }, cont: { type: 'boolean', description: '分镜衔接开关（默认 true）' }, genWarn: { type: 'string' }, chainFrom: { type: 'string' }, seam: { type: 'object', properties: { ok: { type: 'boolean' }, sim: { type: 'number' }, thr: { type: 'number' }, note: { type: 'string' } } }, tailPickAssetId: { type: 'string' }, historyAssetIds: { type: 'array', items: { type: 'string' } }, warnings: { type: 'array', items: { type: 'string' } }, shots: { type: 'array', items: { type: 'object', properties: { index: { type: 'number' }, title: { type: 'string' }, duration: { type: 'number' }, visual: { type: 'string' }, motion: { type: 'string' }, tail: { type: 'string' }, cam: { type: 'string' }, start: { type: 'string' }, seg: { type: 'string' }, characters: { type: 'array', items: { type: 'string' } }, scene: { type: 'string' }, props: { type: 'array', items: { type: 'string' } }, timeBeats: { type: 'array', items: { type: 'string' } }, camera: { type: 'string' }, vfx: { type: 'string' }, negative: { type: 'string' }, attack: { type: 'string' }, reaction: { type: 'string' }, impact: { type: 'string' }, initiative: { type: 'string' }, nextCombat: { type: 'string' } } } } }, required: ['ok', 'text'] },
+            schema: { type: 'object', properties: { ok: { type: 'boolean' }, text: { type: 'string' }, type: { type: 'string' }, status: { type: 'string' }, x: { type: 'number' }, y: { type: 'number' }, w: { type: 'number' }, h: { type: 'number' }, assetId: { type: 'string' }, prompt: { type: 'string' }, ratio: { type: 'string' }, size: { type: 'string' }, duration: { type: 'number' }, resolution: { type: 'string' }, frameMode: { type: 'string' }, imageModel: { type: 'string' }, videoModel: { type: 'string' }, count: { type: 'number' }, targetDuration: { type: 'number', description: '分镜总时长硬约束（秒；缺省 = 自动档）' }, combatMode: { type: 'string', enum: ['auto', 'on', 'off'], description: '打斗判定：auto=按场检测 / on=强制打斗 / off=强制非打斗' }, cont: { type: 'boolean', description: '分镜衔接开关（默认 true）' }, genWarn: { type: 'string' }, chainFrom: { type: 'string' }, seam: { type: 'object', properties: { ok: { type: 'boolean' }, sim: { type: 'number' }, thr: { type: 'number' }, note: { type: 'string' } } }, tailPickAssetId: { type: 'string' }, historyAssetIds: { type: 'array', items: { type: 'string' } }, warnings: { type: 'array', items: { type: 'string' } }, shots: { type: 'array', items: { type: 'object', properties: { index: { type: 'number' }, title: { type: 'string' }, duration: { type: 'number' }, visual: { type: 'string' }, motion: { type: 'string' }, tail: { type: 'string' }, cam: { type: 'string' }, start: { type: 'string' }, seg: { type: 'string' }, characters: { type: 'array', items: { type: 'string' } }, people: { type: 'number', description: '画面人数（实际出场人数；空镜 0）' }, blocking: { type: 'string', description: '人物占位：每人位置/景别/朝向' }, scene: { type: 'string' }, props: { type: 'array', items: { type: 'string' } }, timeBeats: { type: 'array', items: { type: 'string' } }, camera: { type: 'string' }, vfx: { type: 'string' }, negative: { type: 'string' }, attack: { type: 'string' }, reaction: { type: 'string' }, impact: { type: 'string' }, initiative: { type: 'string' }, nextCombat: { type: 'string' } } } } }, required: ['ok', 'text'] },
             render: (args, value) => [{ type: 'text', text: String(value.text || '') }],
           },
           timeoutMs: 30000,
@@ -5596,6 +5686,33 @@ export function apply(ctx) {
             const r = canvasUpdateNode(args);
             const skipped = Array.isArray(r.skipped) && r.skipped.length ? '（已忽略不可改字段：' + r.skipped.join('、') + '）' : '';
             return { ok: true, projectId: r.projectId, nodeId: r.nodeId, label: r.label || undefined, text: '✅ 已更新节点[' + r.type + ']「' + (r.label || r.nodeId) + '」字段：' + r.applied.join('、') + skipped + '。需要重新生成请调用 canvas_generate_node。' };
+          },
+        });
+        reg({
+          name: 'canvas_ai_fill_board',
+          description: '对**一张分镜表的所有镜头**做 AI 提示词补全（与画布节点上的「AI 补全全部分镜」按钮同一口径、同一份提示词——前端按钮和这里出来的稿子一致）。逐镜补全五项：**人物人数**（画面里实际出现几个人）、**人物占位**（每人位置/景别/朝向）、**人物台词说话情绪**（可执行发声指令：音量/气声实声/语速/尾音/情绪落点）、**画面细节**（可拍的环境细节：前景遮挡/材质/光斑/空气感/层次虚实）、**环境音效**（只写环境声与拟音；**任何镜头禁背景音乐**，**没有台词的镜头禁一切人声**）。合并保护：台词原文一字不改（只补语气，绝不新增台词）、镜头时长与段类型不动（保住 4–10s 拆表与切段计划）、用户写过的标题保留。补全后写回节点并重算一致性告警，画布几秒内可见。**什么时候用**：用户说"把这场分镜的提示词补全/润色/写细一点"、"人物太多/站位乱/画面太糙/背景有音乐"时，先用 canvas_node_status 确认节点 id 与镜头数，再调本工具；不要用 canvas_update_node 手写镜头（那是改内容，不是补全）。',
+          parameters: {
+            type: 'object',
+            properties: {
+              projectId: { type: 'string', description: '项目 id' },
+              canvasId: { type: 'string', description: '可选：画布 id（项目下的子画布；缺省 = 项目默认画布）' },
+              nodeId: { type: 'string', description: '分镜表节点 id（来自 canvas_list_projects / canvas_node_status）' },
+              model: { type: 'string', description: '可选：文本模型，格式 "provider|model"；不传用默认模型' },
+            },
+            required: ['projectId', 'nodeId'],
+            additionalProperties: false,
+          },
+          output: textOutput,
+          timeoutMs: 900000,
+          async execute(args) {
+            const r = await canvasAiFillBoard(args, complete);
+            const detail = (r.shots || []).map((s) => '· ' + s.index + '. ' + s.title + '（' + s.duration + 's，人数 ' + s.people
+              + (s.blocking ? '，占位：' + s.blocking : '') + (s.dialogueTones && s.dialogueTones.length ? '，语气：' + s.dialogueTones.map((d) => d.role + '「' + (d.tone || '未补') + '」').join('、') : '')
+              + (s.sfx ? '，音效：' + s.sfx : '') + '）').join('\n');
+            const head = r.failed
+              ? '⚠️ 已补全 ' + r.filled + ' 镜，' + r.failed + ' 镜失败（保留原样）：' + r.errors.join('；')
+              : '✅ 已补全该分镜表全部 ' + r.filled + ' 镜的提示词（人物人数 / 人物占位 / 台词语气 / 画面细节 / 环境音效）';
+            return { ok: true, projectId: r.projectId, nodeId: r.nodeId, filled: r.filled, failed: r.failed, text: head + '\n' + detail + '\n画布几秒内可见；要重新出片用 canvas_generate_node。' };
           },
         });
         reg({
