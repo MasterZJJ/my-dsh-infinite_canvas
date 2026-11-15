@@ -1,8 +1,8 @@
 # 与上游的差异（fork 说明）
 
 - 上游：[NINKCH/dsh-infinite_canvas](https://github.com/NINKCH/dsh-infinite_canvas)
-- 本仓库基线：上游 **0.20.4**（`v0.20.4` 标签之后的提交都是本地改动）
-- 本仓库版本：**0.20.5-local.4**（`package.json` 的 `-local.N` 后缀让插件自带的更新检查不再提示覆盖本地改造）
+- 本仓库基线：上游 **0.21.0**（2026-11 合入；`0.20.5 → 0.21.0` 的三路合并记录见 CHANGELOG 的 `[Unreleased]`）
+- 本仓库版本：**0.21.0-local.1**（`package.json` 的 `-local.N` 后缀让插件自带的更新检查不再提示覆盖本地改造）
 - 许可：Apache-2.0，与上游一致；`LICENSE` 保持上游原文，`NOTICE` 追加了本 fork 的修改声明
 
 逐条明细见 [`CHANGELOG.md`](../CHANGELOG.md) 的 `[0.20.5-local.*]` 段落，这里是速览。
@@ -72,7 +72,7 @@
 
 ## 8. 与上游的分歧点（有意为之）
 
-| 项 | 上游 0.20.4 | 本 fork |
+| 项 | 上游 0.21.0 | 本 fork |
 |---|---|---|
 | 分镜粒度 | 表内切段，一张表多次生成 | 拆成多张 4–10s 表，一张表一次生成 |
 | 单段上限控件 | `targetDuration`（总时长硬约束） | 同上游；`segMaxSeconds` 已退役，由拆表 4–10s + 视频切段 15s 保证 |
@@ -86,7 +86,7 @@
 ```bash
 # 方式一：从 GitHub 装进 profile（走 pnpm）
 cd ~/.dsh-v021/profiles/web
-pnpm add github:MasterZJJ/my-dsh-infinite_canvas#v0.20.5-local.4
+pnpm add github:MasterZJJ/my-dsh-infinite_canvas#v0.21.0-local.1
 
 # 方式二：手动覆盖（与开发调试一致）
 git clone git@github.com:MasterZJJ/my-dsh-infinite_canvas.git
@@ -97,12 +97,50 @@ cp -a my-dsh-infinite_canvas/. <profile>/node_modules/@ninkch/dsh-infinite-canva
 
 ## 10. 跟进上游
 
+**上游 GitHub 仓库从本机不可达**（`git clone` 报 SSL/HTTP 000），所以合并走 **npm 发布包三路合并**：
+下载目标版本的 tarball 作为 `theirs`、上一版 tarball 作为 `base`、本仓库作为 `ours`，逐文件
+`git merge-file` 后解冲突。tarball 不含 `scripts/`、`CHANGELOG.md` 等开发文件——那些是本仓库单边新增，
+天然不会冲突。
+
 ```bash
-git remote add upstream https://github.com/NINKCH/dsh-infinite_canvas.git
-git fetch upstream --tags
-git merge upstream/main        # 冲突集中在：client.js 分镜节点/生成面板、index.js 工具面、shot-segments.js 规划器
-node scripts/regress.mjs       # 89 项（含本 fork 的接线守卫）
+# 1) 取上游两版
+npm pack @ninkch/dsh-infinite-canvas@<目标版本>   # theirs
+npm pack @ninkch/dsh-infinite-canvas@<基线版本>   # base
+# 2) 三路合并（示例）
+git merge-file -p ours/client.js base/client.js theirs/client.js > merged/client.js
+# 3) 解冲突 → 跑回归 → 提交
+node scripts/regress.mjs       # 96 项（含本 fork 的接线守卫）
 ```
+
+**0.21.0 这次合并的冲突面（实测 9 处，全部已解）**：
+
+| 文件 | 冲突 | 处理 |
+|---|---|---|
+| `index.js` | 3 | `NODE_PATCH_FIELDS` 取并集（+`assetId`）；`boardScript` 同步与 `assetId` 置 done 并存；收流保留本 fork 的 Buffer 修法 + 采用上游 16MB 上限 |
+| `client.js` | 6 | 5 处「两边各加各的」取并集；**成片节点 = 唯一真语义冲突**（见下） |
+| `package.json` | 1 | 版本号 |
+
+**成片节点（唯一需要设计决策的冲突）**：上游 0.21.0 给成片加了 `audio` 输入口与 BGM/SFX 混音
+（浏览器链路里解码成 AudioBuffer 播放），而本 fork 把成片合成搬到了宿主 ffmpeg。合并时**必须把
+音频轨一起送进宿主**，否则宿主路径会静默丢掉 BGM——现有实现：客户端采集 `audioTracks`
+（`assetId/start/offset/duration/gain/loop`）→ 宿主解析成磁盘文件 → ffmpeg 用
+`-stream_loop -1`（循环）+ `atrim`（偏移/时长）+ `volume`（增益）+ `adelay`（起点）+
+`amix normalize=0` 混入总音轨。回归用例：`test-finalcut-compose.mjs` 的 BGM 单元 + 端到端
+（静音时间线 + BGM → 成片必须有声音，且不得把成片拉长）。
 
 `scripts/test-local-ai-helpers.mjs` 是本 fork 的接线守卫：上游合并若把「AI 完善提示词走资产设定图」
 「媒体节点上传走资产管道」「编辑器 AI 补全带上下镜上下文」弄丢，它会直接红。
+
+## 11. 已跟上的上游 0.21.0 功能
+
+合入后本 fork 与上游功能面一致，差异只剩 §1–§8 列的那些本地改造。0.21.0 带进来的：
+
+- **音频节点 + TTS**（音色/情绪/语速/格式；OpenAI 同步与 lk888 异步两套协议）
+- **成片音频轨**（BGM/SFX：静音/循环/增益/起点/偏移/时长）
+- **批量执行**（选中/分组批量生成、并发、可停止、费用估算、批量下载）
+- **创作台**（自动创作 + 批量执行统一面板；设置页只剩开关）
+- **3D-BOX**（一句话搭预演：场景/风格/运镜预设；导演台入口并入 3D-BOX 库首页，支持多舞台）
+- **角色库 / 素材库 DAM / 工作流 / 运镜预设 / 图片工具（放大·抠图·扩图·多角度·重打光）/ 视觉拉片**
+- **视频前置体检 + 按秒单价**（`canvas_production_set_price`）
+- **资产工具**（`canvas_import_asset` / `canvas_list_assets` / 节点 `assetId` 直挂）
+- **宿主无关化**（核心只强依赖 3 个 ctx 成员；见 `docs/host-agnostic.md`）

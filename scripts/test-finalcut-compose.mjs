@@ -78,6 +78,31 @@ function unitTests() {
   let threw = false;
   try { buildFfmpegArgs({ segments: [] }); } catch { threw = true; }
   ok(threw, '空片段列表应抛错');
+
+  // 成片音频轨（BGM/SFX）：loop → -stream_loop；起点 → adelay；增益 → volume；与总音轨 amix normalize=0
+  const withBgm = buildFfmpegArgs({
+    segments: segs, width: 640, height: 360, transition: 'none', fontFile: font,
+    subDir: '/tmp', outFile: '/tmp/o.mp4', writeSubs: false,
+    audioTracks: [
+      { file: '/tmp/bgm.mp3', name: 'BGM', start: 0.5, offset: 0, duration: 1.5, gain: 0.5, loop: true },
+    ],
+  });
+  const bargs = withBgm.args.join(' ');
+  const bfc2 = withBgm.args[withBgm.args.indexOf('-filter_complex') + 1];
+  ok(/-stream_loop -1/.test(bargs), '循环音频轨必须用 -stream_loop -1（输入级循环）');
+  ok(/adelay=500\|500/.test(bfc2), '音频轨起点 0.5s 应转成 adelay=500|500，实际：\n' + bfc2);
+  ok(/volume=0\.500/.test(bfc2), '音频轨增益 0.5 应转成 volume=0.500，实际：\n' + bfc2);
+  ok(/amix=inputs=2:duration=first:normalize=0/.test(bfc2), '总音轨与 BGM 必须 amix 且 normalize=0（归一化会把 BGM 压没），实际：\n' + bfc2);
+  ok(/-map \[vout\] -map \[amixout\]/.test(bargs), '混音后必须映射 [amixout]，实际：\n' + bargs);
+
+  // 起点超过成片时长：跳过并告警（不许静默丢轨）
+  const lateBgm = buildFfmpegArgs({
+    segments: segs, width: 640, height: 360, transition: 'none', fontFile: font,
+    subDir: '/tmp', outFile: '/tmp/o.mp4', writeSubs: false,
+    audioTracks: [{ file: '/tmp/bgm.mp3', name: '迟到BGM', start: 99, duration: 1, gain: 1, loop: false }],
+  });
+  ok(lateBgm.warnings.some((w) => /迟到BGM/.test(w)), '起点晚于成片时长的音频轨必须有可见告警');
+  ok(!/amixout/.test(lateBgm.args.join(' ')), '被跳过的音频轨不应出现在混音链里');
 }
 
 // ---------------------------------------------------------------- ② 端到端
@@ -160,6 +185,35 @@ async function e2e() {
       const sideBg = regionMean(f1, Math.floor(640 * 0.02), Math.floor(640 * 0.14), Math.floor(360 * 0.88), Math.floor(360 * 0.97));
       ok(subBox < sideBg - 8, '字幕未烧进画面（底部中央应被字幕黑框压暗）：sub=' + subBox.toFixed(1) + ' side=' + sideBg.toFixed(1));
     }
+    // 成片音频轨：时间线本身是静音（片段无音轨 + keepAudio:false），只有 BGM → 成片必须有声音
+    {
+      const silent = path.join(dir, 'silent.mp4');
+      const r0 = run(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y',
+        '-f', 'lavfi', '-i', 'color=c=gray:s=320x180:r=25:d=2',
+        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', silent]);
+      if (r0.status !== 0) throw new Error('造静音素材失败：' + r0.stderrText);
+      const bgmFile = path.join(dir, 'bgm.wav');
+      run(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'sine=frequency=880:duration=3', bgmFile]);
+      const outBgm = path.join(dir, 'out_bgm.mp4');
+      const planB = buildFfmpegArgs({
+        segments: [{ file: silent, dur: 2, sub: '', hasAudio: false }],
+        width: 320, height: 180, transition: 'none', fontFile: font, subDir: dir, outFile: outBgm,
+        keepAudio: false,
+        audioTracks: [{ file: bgmFile, name: 'BGM', start: 0.3, offset: 0, duration: 1.2, gain: 0.8, loop: false }],
+      });
+      try { await runFfmpeg(ffmpeg, planB.args, { timeoutMs: 120000 }); }
+      catch (e) { errs.push('BGM 合成失败：' + (e && e.message)); }
+      if (existsSync(outBgm)) {
+        const vol = run(ffmpeg, ['-hide_banner', '-nostats', '-i', outBgm, '-af', 'volumedetect', '-f', 'null', '-']);
+        const txt = vol.stderrText || '';
+        const mean = /mean_volume:\s*(-?[0-9.]+) dB/.exec(txt);
+        ok(!!mean, 'BGM 成片读不到音量统计');
+        ok(mean && Number(mean[1]) > -50, '静音时间线 + BGM 的成片应有声音（BGM 未混入？mean_volume=' + (mean && mean[1]) + ' dB）');
+        const pr = await probeMedia(ffprobe, outBgm);
+        ok(pr && Math.abs(pr.duration - 2) < 0.35, 'BGM 成片时长应≈2s（BGM 不得把成片拉长），实际 ' + (pr && pr.duration));
+      }
+    }
+
     const f2 = grayFrame(ffmpeg, out, 4, 640, 360);
     ok(!!f2, '取第 4 秒画面失败');
     if (f2) {
@@ -187,7 +241,7 @@ function wiringTests() {
   ok(/finalcutJobGet/.test(client), '客户端未轮询 finalcutJobGet');
   ok(/finalcutProbe/.test(client), '客户端未探测宿主合成能力');
   // 客户端必须「先宿主、后浏览器」：宿主调用点在 composeFinalCut 之前
-  const iHost = client.indexOf('composeViaHost(n, items)');
+  const iHost = client.indexOf('composeViaHost(n, items');
   const iBrowser = client.indexOf('await composeFinalCut(metas');
   ok(iHost > 0 && iBrowser > 0 && iHost < iBrowser, '客户端必须先走宿主合成、再退回浏览器录制');
 }

@@ -336,9 +336,12 @@ const v3 = E.v3;
     }
   }
   ok(/h\(DirectorStage\)/.test(src), 'DirectorStage 未挂进画布主区域');
+  // 0.21.0：导演台不再单独占图标列，入口并入 3D-BOX 库首页（IconRail → open-3dbox-home → BoxHome → 导演台）
   const railIdx = src.indexOf('function IconRail()');
-  const gateIdx = src.indexOf("'open-director'");
-  ok(railIdx > 0 && gateIdx > railIdx, '导演台入口不在 IconRail 里');
+  const gateIdx = src.indexOf("'data-action': 'open-3dbox-home'");
+  ok(railIdx > 0 && gateIdx > railIdx, '3D-BOX/导演台入口不在 IconRail 里');
+  ok(/h\(BoxHome\)/.test(src), '3D-BOX 库首页（BoxHome）未挂进画布主区域');
+  ok(/s\.boxHomeOpen = true; s\.directorOpen = false;/.test(src), '3D-BOX 图标未打开库首页（应先进库，不直接进舞台）');
   // gizmo 交互契约：点对象只选中，轴拖拽才移动
   ok(/directorPickGizmo/.test(src), '面板没有接 gizmo 拾取');
   ok(/mode: isRot \? 'rotate' :/.test(src) && /mode: 'select'/.test(src), '面板没有区分「选中」与「轴/环拖拽」三种模式');

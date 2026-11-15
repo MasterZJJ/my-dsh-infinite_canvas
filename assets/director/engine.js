@@ -1446,6 +1446,254 @@ export function parseGlb(buf) {
   };
 }
 
+/**
+ * 面片 → GLB 2.0 静态网格（本地导出，不接第三方）。
+ * 同一个对象的部件颜色拆成多个 primitive/material；坐标以包围盒中心为原点、底面落地。
+ */
+export function encodeDirectorGlb(faces, opts) {
+  const o = opts || {};
+  const src = Array.isArray(faces) ? faces : [];
+  const tris = [];
+  for (const f of src) {
+    const v = (f && f.v) || [];
+    for (let i = 1; i + 1 < v.length; i++) tris.push({ v: [v[0], v[i], v[i + 1]], color: f.color });
+  }
+  if (!tris.length) throw new Error('没有可导出的三角面');
+  let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (const tr of tris) for (const p of tr.v) {
+    minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+    minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+    minZ = Math.min(minZ, p.z); maxZ = Math.max(maxZ, p.z);
+  }
+  const cx = (minX + maxX) / 2, cy = minY, cz = (minZ + maxZ) / 2;
+  const positions = [], normals = [];
+  const groupMap = new Map();
+  for (const tr of tris) {
+    const n = directorFaceNormal(tr.v);
+    const color = String(tr.color || o.color || '#b3b8bf');
+    let g = groupMap.get(color);
+    if (!g) { g = { color, start: positions.length / 3, count: 0 }; groupMap.set(color, g); }
+    for (const p of tr.v) {
+      positions.push(p.x - cx, p.y - cy, p.z - cz);
+      normals.push(n.x, n.y, n.z);
+      g.count++;
+    }
+  }
+  const groups = [...groupMap.values()];
+  const posF = new Float32Array(positions);
+  const nrmF = new Float32Array(normals);
+  const idx = groups.map((g) => {
+    const a = new Uint32Array(g.count);
+    for (let i = 0; i < g.count; i++) a[i] = g.start + i;
+    return a;
+  });
+  // 二进制缓冲：POSITION / NORMAL / 每组索引（全部 4 字节对齐）
+  const views = [];
+  let byteOffset = 0;
+  const addView = (len, target) => { views.push({ buffer: 0, byteOffset, byteLength: len, ...(target ? { target } : {}) }); byteOffset += len; };
+  addView(posF.byteLength, 34962);
+  addView(nrmF.byteLength, 34962);
+  for (const a of idx) addView(a.byteLength, 34963);
+  const bin = new Uint8Array(byteOffset);
+  let at = 0;
+  const put = (a) => { bin.set(new Uint8Array(a.buffer, a.byteOffset, a.byteLength), at); at += a.byteLength; };
+  put(posF); put(nrmF); for (const a of idx) put(a);
+  const pmin = [Infinity, Infinity, Infinity], pmax = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < posF.length; i += 3) for (let c = 0; c < 3; c++) {
+    pmin[c] = Math.min(pmin[c], posF[i + c]);
+    pmax[c] = Math.max(pmax[c], posF[i + c]);
+  }
+  const accessors = [
+    { bufferView: 0, componentType: 5126, count: posF.length / 3, type: 'VEC3', min: pmin, max: pmax },
+    { bufferView: 1, componentType: 5126, count: nrmF.length / 3, type: 'VEC3' },
+  ];
+  groups.forEach((g, i) => accessors.push({ bufferView: 2 + i, componentType: 5125, count: g.count, type: 'SCALAR' }));
+  const gltf = {
+    asset: { version: '2.0', generator: 'dsh-infinite-canvas' },
+    scene: 0,
+    scenes: [{ name: String(o.name || 'director-export'), nodes: [0] }],
+    nodes: [{ name: String(o.name || 'director-export'), mesh: 0 }],
+    meshes: [{
+      name: String(o.name || 'director-export'),
+      primitives: groups.map((g, i) => ({ attributes: { POSITION: 0, NORMAL: 1 }, indices: 2 + i, material: i })),
+    }],
+    materials: groups.map((g) => ({
+      name: g.color,
+      pbrMetallicRoughness: { baseColorFactor: [...directorHexToRgb(g.color), 1], metallicFactor: 0, roughnessFactor: 0.9 },
+    })),
+    buffers: [{ byteLength: bin.length }],
+    bufferViews: views,
+    accessors,
+  };
+  const jsonBytes = new TextEncoder().encode(JSON.stringify(gltf));
+  const jsonPad = (4 - (jsonBytes.length % 4)) % 4;
+  const binPad = (4 - (bin.length % 4)) % 4;
+  const total = 12 + 8 + jsonBytes.length + jsonPad + 8 + bin.length + binPad;
+  const out = new ArrayBuffer(total);
+  const dv = new DataView(out);
+  const u8 = new Uint8Array(out);
+  dv.setUint32(0, GLB_MAGIC, true);
+  dv.setUint32(4, 2, true);
+  dv.setUint32(8, total, true);
+  let off = 12;
+  dv.setUint32(off, jsonBytes.length + jsonPad, true);
+  dv.setUint32(off + 4, 0x4e4f534a, true);
+  u8.set(jsonBytes, off + 8);
+  for (let i = 0; i < jsonPad; i++) u8[off + 8 + jsonBytes.length + i] = 0x20;
+  off += 8 + jsonBytes.length + jsonPad;
+  dv.setUint32(off, bin.length + binPad, true);
+  dv.setUint32(off + 4, 0x004e4942, true);
+  u8.set(bin, off + 8);
+  return out;
+}
+
+/**
+ * 已解析的 glTF 资产 → GLB 2.0（完整导出：网格 + 骨架 + 全部动画）。
+ * 与 encodeDirectorGlb（静态面片）互补：角色/导入 GLB 走这里，导出的文件
+ * 在 Blender/引擎里带骨骼与动画，而不是一尊静态雕像。不接第三方转换服务。
+ */
+export function encodeGltfAssetGlb(asset, opts) {
+  const o = opts || {};
+  if (!asset || !asset.positions || !asset.positions.length || !asset.indices || !asset.indices.length) throw new Error('没有可导出的网格');
+  const views = [];
+  let byteOffset = 0;
+  const chunks = [];
+  const addView = (typed, target) => {
+    if (byteOffset % 4) { const pad = 4 - (byteOffset % 4); chunks.push(new Uint8Array(pad)); byteOffset += pad; }
+    views.push({ buffer: 0, byteOffset, byteLength: typed.byteLength, ...(target ? { target } : {}) });
+    byteOffset += typed.byteLength;
+    chunks.push(new Uint8Array(typed.buffer, typed.byteOffset, typed.byteLength));
+    return views.length - 1;
+  };
+  const addAccessor = (viewIdx, componentType, count, type, extra) => {
+    accessors.push(Object.assign({ bufferView: viewIdx, componentType, count, type }, extra || {}));
+    return accessors.length - 1;
+  };
+  const accessors = [];
+  // 顶点/法线
+  const posAcc = addAccessor(addView(asset.positions, 34962), 5126, asset.positions.length / 3, 'VEC3', { min: positionsBounds(asset.positions).min, max: positionsBounds(asset.positions).max });
+  const nrmAcc = addAccessor(addView(asset.normals && asset.normals.length === asset.positions.length ? asset.normals : new Float32Array(asset.positions.length), 34962), 5126, asset.positions.length / 3, 'VEC3');
+  const attributes = { POSITION: posAcc, NORMAL: nrmAcc };
+  // 蒙皮：JOINTS 必须是 ubyte/ushort（glTF 规范不允许 float）
+  const hasSkin = !!(asset.bones && asset.bones.length && asset.joints && asset.weights);
+  if (hasSkin) {
+    const nb = asset.bones.length;
+    const joints = new Uint16Array(asset.joints.length);
+    for (let i = 0; i < asset.joints.length; i++) joints[i] = Math.max(0, Math.min(nb - 1, Math.round(Number(asset.joints[i]) || 0)));
+    const wgt = asset.weights instanceof Float32Array ? asset.weights : Float32Array.from(asset.weights);
+    attributes.JOINTS_0 = addAccessor(addView(joints, 34962), 5123, joints.length / 4, 'VEC4');
+    attributes.WEIGHTS_0 = addAccessor(addView(wgt, 34962), 5126, wgt.length / 4, 'VEC4');
+  }
+  const idxView = addView(asset.indices, 34963);
+  const indicesAcc = addAccessor(idxView, asset.indices instanceof Uint32Array ? 5125 : 5123, asset.indices.length, 'SCALAR');
+  const primitive = { attributes, indices: indicesAcc, material: 0 };
+  // 骨架 + 逆绑定矩阵
+  let skinIdx = null;
+  if (hasSkin) {
+    const ibm = new Float32Array(asset.bones.length * 16);
+    asset.bones.forEach((b, bi) => {
+      const src = (b && b.ibm) || [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+      for (let i = 0; i < 16; i++) ibm[bi * 16 + i] = Number(src[i]) || 0;
+    });
+    const ibmAcc = addAccessor(addView(ibm, 0), 5126, asset.bones.length, 'MAT4');
+    skinIdx = { inverseBindMatrices: ibmAcc, joints: asset.bones.map((b) => Number(b.nodeIdx) || 0), name: (o.name || 'armature') + '-skin' };
+  }
+  // 动画：times(SCALAR) + vals(VEC3/VEC4)，节点索引沿用资产原序
+  const samplers = [];
+  const channels = [];
+  const animations = (asset.animations || []).map((an, ai) => {
+    const s0 = samplers.length;
+    const c0 = channels.length;
+    (an.tracks || []).forEach((tr) => {
+      if (!tr || (!Array.isArray(tr.times) && !(tr.times instanceof Float32Array))) return;
+      const input = addAccessor(addView(Float32Array.from(tr.times), 0), 5126, tr.times.length, 'SCALAR');
+      const vecType = tr.path === 'rotation' ? 'VEC4' : 'VEC3';
+      const output = addAccessor(addView(Float32Array.from(tr.vals), 0), 5126, tr.vals.length / (vecType === 'VEC4' ? 4 : 3), vecType);
+      samplers.push({ input, output, interpolation: 'LINEAR' });
+      channels.push({ sampler: samplers.length - 1 - s0, target: { node: Number(tr.node) || 0, path: String(tr.path || 'translation') } });
+    });
+    return { name: String(an.name || ('clip' + ai)), samplers: samplers.slice(s0), channels: channels.slice(c0) };
+  });
+  // 重建节点层级（原序保留，动画目标索引不变）；网格节点单独挂在根上
+  const nodes = (asset.nodes || []).map((n, i) => {
+    void i;
+    return {
+      name: String((n && n.name) || ''),
+      translation: (n && n.t) || [0, 0, 0],
+      rotation: (n && n.r) || [0, 0, 0, 1],
+      scale: (n && n.s) || [1, 1, 1],
+    };
+  });
+  const childrenOf = new Map();
+  (asset.parentOfAll || []).forEach((p, i) => {
+    if (p >= 0 && p !== i) {
+      if (!childrenOf.has(p)) childrenOf.set(p, []);
+      childrenOf.get(p).push(i);
+    }
+  });
+  nodes.forEach((n, i) => { const ch = childrenOf.get(i); if (ch && ch.length) n.children = ch; });
+  const meshNode = {
+    name: String(o.name || 'export'),
+    mesh: 0,
+    ...(skinIdx ? { skin: 0 } : {}),
+  };
+  const meshNodeIdx = nodes.length;
+  nodes.push(meshNode);
+  const roots = (asset.parentOfAll || []).map((p, i) => (p < 0 || p === i ? i : -1)).filter((i) => i >= 0);
+  roots.push(meshNodeIdx);
+  const gltf = {
+    asset: { version: '2.0', generator: 'dsh-infinite-canvas' },
+    scene: 0,
+    scenes: [{ name: String(o.name || 'export'), nodes: roots }],
+    nodes,
+    meshes: [{ name: String(o.name || 'export'), primitives: [primitive] }],
+    materials: [{ name: 'clay', pbrMetallicRoughness: { baseColorFactor: [...directorHexToRgb('#c9ced6'), 1], metallicFactor: 0, roughnessFactor: 0.9 } }],
+    ...(skinIdx ? { skins: [skinIdx] } : {}),
+    animations,
+    buffers: [{ byteLength: 0 }],
+    bufferViews: views,
+    accessors,
+  };
+  // 拼装二进制与 JSON 块
+  const bin = new Uint8Array(byteOffset);
+  let at = 0;
+  for (const c of chunks) { bin.set(c, at); at += c.length; }
+  gltf.buffers[0].byteLength = bin.length;
+  return assembleGlb(gltf, bin);
+}
+/** 顶点包围盒（导出 accessor 的 min/max 用；与 assetBounds（资产级）不同）。 */
+function positionsBounds(positions) {
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < positions.length; i += 3) for (let c = 0; c < 3; c++) {
+    min[c] = Math.min(min[c], positions[i + c]);
+    max[c] = Math.max(max[c], positions[i + c]);
+  }
+  return { min, max };
+}
+/** glTF JSON + BIN → GLB 容器（encodeDirectorGlb / encodeGltfAssetGlb 共用）。 */
+function assembleGlb(gltf, bin) {
+  const jsonBytes = new TextEncoder().encode(JSON.stringify(gltf));
+  const jsonPad = (4 - (jsonBytes.length % 4)) % 4;
+  const binPad = (4 - (bin.length % 4)) % 4;
+  const total = 12 + 8 + jsonBytes.length + jsonPad + 8 + bin.length + binPad;
+  const out = new ArrayBuffer(total);
+  const dv = new DataView(out);
+  const u8 = new Uint8Array(out);
+  dv.setUint32(0, GLB_MAGIC, true);
+  dv.setUint32(4, 2, true);
+  dv.setUint32(8, total, true);
+  let off = 12;
+  dv.setUint32(off, jsonBytes.length + jsonPad, true);
+  dv.setUint32(off + 4, 0x4e4f534a, true);
+  u8.set(jsonBytes, off + 8);
+  for (let i = 0; i < jsonPad; i++) u8[off + 8 + jsonBytes.length + i] = 0x20;
+  off += 8 + jsonBytes.length + jsonPad;
+  dv.setUint32(off, bin.length + binPad, true);
+  dv.setUint32(off + 4, 0x004e4942, true);
+  u8.set(bin, off + 8);
+  return out;
+}
+
 /** 采样动画轨道（线性插值；四元数用最短弧 nlerp）。 */
 /**
  * 动画时间 → 循环时间。idle/run/walk 等骨骼动画片段都是循环动画：
@@ -1519,7 +1767,7 @@ export function boneMatrices(asset, time) {
     const skin = directorMat4Multiply(w, new Float32Array(b.ibm));
     out.set(skin, bi * 16);
   });
-  return { mats: out, count: asset.bones.length };
+  return { mats: out, count: asset.bones.length, world: worldM };
 }
 
 /** TRS → 4x4（列主序）。 */
@@ -2266,7 +2514,7 @@ export function boneMatricesWithPose(asset, time, poseMap, dirs, baseEuler, root
       out.set(jw, o);
     }
   });
-  return { mats: out };
+  return { mats: out, world: worldM };
 }
 
 /**
@@ -2401,7 +2649,7 @@ export function boneMatricesWithPoseMix(asset, time, list) {
       }
     } else out.set(jw, o);
   });
-  return { mats: out };
+  return { mats: out, world: worldM };
 }
 
 /* ============================================================
@@ -2966,6 +3214,18 @@ export function objectPathPos(ob, time, duration) {
 // ============================================================
 const SPEC_PRESET_IDS = ['box', 'sphere', 'cylinder', 'cone', 'plane', 'capsule', 'torus', 'pyramid', 'disc', 'arc', 'half_cylinder', 'ancient_house', 'ancient_stall', 'stone_step'];
 
+/** 确定性撒点：同一 seed + index 永远得到同一位置，避免每次播放/导出树的位置乱跳。 */
+function directorScatterOffset(i, seed, radius) {
+  let h = (Math.round(Number(seed) || 1) * 374761393 + i * 668265263) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  const a = ((h >>> 0) % 10000) / 10000;
+  let h2 = (h ^ 0x9e3779b9) | 0;
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822519);
+  const b = ((h2 >>> 0) % 10000) / 10000;
+  const r = Math.sqrt(a) * Math.max(0, Number(radius) || 0);
+  return { x: Math.cos(b * Math.PI * 2) * r, z: Math.sin(b * Math.PI * 2) * r, rotY: b * Math.PI * 2 };
+}
+
 /**
  * 规格 → 场景。数组坐标一律简写 [x,y,z] 或 [x,z]（两维视为地面 x/z，y=0）。
  */
@@ -3043,16 +3303,119 @@ export function buildStageFromSpec(spec) {
     }
     objects.push(ob);
   }
+  // 本地资产目录（bld_* / furn_* / tree_* / 人形等）：真实 GLB，按 assetId 预加载与渲染。
+  let modelInstances = 0;
+  for (const m of Array.isArray(sp.models) ? sp.models : []) {
+    if (!m || typeof m !== 'object') continue;
+    const id = String((m && m.assetId) || '');
+    if (!id) continue;
+    const basePos = v3of(m.pos, 0);
+    const arr = m.array && typeof m.array === 'object' ? m.array : null;
+    const scat = m.scatter && typeof m.scatter === 'object' ? m.scatter : null;
+    const count = Math.max(1, Math.min(40, Math.round(num((arr || scat || {}).count, 1))));
+    const off = arr ? v3of(arr.offset, 0) : v3(0, 0, 0);
+    const stepRot = arr ? num(arr.rotY, 0) : 0;
+    const radius = scat ? Math.max(0, num(scat.radius, 0)) : 0;
+    const seed = scat ? num(scat.seed, 1) : 1;
+    const mirror = String(m.mirror || '').toLowerCase();
+    const mirrorAxes = [''];
+    if (mirror.includes('x')) mirrorAxes.push('x');
+    if (mirror.includes('z')) mirrorAxes.push('z');
+    if (mirror.includes('x') && mirror.includes('z')) mirrorAxes.push('xz');
+    for (let i = 0; i < count; i++) {
+      if (modelInstances >= 160) break;   // 防 AI 一次生成上千棵树
+      const scattered = scat ? directorScatterOffset(i, seed, radius) : { x: 0, z: 0, rotY: 0 };
+      const px = basePos.x + off.x * i + scattered.x;
+      const py = basePos.y + off.y * i;
+      const pz = basePos.z + off.z * i + scattered.z;
+      const prot = num(m.rotY, 0) + stepRot * i + scattered.rotY;
+      for (const ax of mirrorAxes) {
+        if (modelInstances >= 160) break;
+        seq += 1;
+        modelInstances += 1;
+        const suffix = (count > 1 ? '_' + (i + 1) : '') + (ax ? '_m' + ax : '');
+        const mob = {
+          id: String(m.id || 'model' + seq) + suffix,
+          name: String(m.name || m.label || id) + (count > 1 ? ' ' + (i + 1) : '') + (ax ? ' M' + ax.toUpperCase() : ''),
+          kind: 'gltf', assetId: id, catalog: true,
+          pos: v3(ax.includes('x') ? -px : px, py, ax.includes('z') ? -pz : pz),
+          rotY: ax ? -prot : prot, rx: num(m.rx, 0), rz: ax ? -num(m.rz, 0) : num(m.rz, 0),
+          scale: m.scale ? v3of(m.scale, 1) : v3(1, 1, 1),
+          h: num(m.h, 1.7), visible: m.visible !== false, color: String(m.color || ''),
+          clip: String(m.clip || ''), animTime: 0,
+        };
+        if (m.material && typeof m.material === 'object') mob.material = { ...m.material };
+        if (m.attach && typeof m.attach === 'object') mob.attach = JSON.parse(JSON.stringify(m.attach));
+        if (Array.isArray(m.keys)) {
+          mob.keys = m.keys.map((k) => ({ t: num(k.t, 0), pos: v3of(k.pos, 0), rotY: num(k.rotY, 0), ease: String(k.ease || 'auto') })).sort((a, b) => a.t - b.t);
+        }
+        objects.push(mob);
+      }
+    }
+  }
   for (const p of Array.isArray(sp.props) ? sp.props : []) {
     seq += 1;
     const preset = SPEC_PRESET_IDS.includes(p.preset) ? p.preset : 'box';
     const pob = {
       id: String(p.id || 'prop' + seq), name: String(p.name || p.label || ('布景' + seq)),
-      kind: 'geom', preset, pos: v3of(p.pos, 0), rotY: num(p.rotY, 0), rx: num(p.rx, 0), rz: num(p.rz, 0),
+      kind: p.assetId ? 'gltf' : 'geom', preset, pos: v3of(p.pos, 0), rotY: num(p.rotY, 0), rx: num(p.rx, 0), rz: num(p.rz, 0),
       scale: p.scale ? v3of(p.scale, 1) : v3(1, 1, 1), visible: p.visible !== false,
       color: String(p.color || '#b3b8bf'),
     };
+    if (p.assetId) {
+      pob.assetId = String(p.assetId); pob.clip = String(p.clip || ''); pob.animTime = 0;
+    } else if (Array.isArray(p.parts) && p.parts.length) {
+      // 参数化组合道具（警车/武器/桌椅等）：一个对象由多个基础几何体组成，跟随父对象移动/旋转。
+      // array 复制成排（栅栏/窗格），mirror 沿父对象原点镜像（左右车轮）；展开后统一归一化。
+      pob.kind = 'compound';
+      const rawParts = [];
+      for (const pt of p.parts) {
+        if (!pt || typeof pt !== 'object') continue;
+        const arr = pt.array && typeof pt.array === 'object' ? pt.array : null;
+        const scat = pt.scatter && typeof pt.scatter === 'object' ? pt.scatter : null;
+        const count = Math.max(1, Math.min(24, Math.round(num((arr || scat || {}).count, 1))));
+        const basePos = v3of(pt.pos, 0);
+        const off = arr ? v3of(arr.offset, 0) : v3(0, 0, 0);
+        const stepRot = arr ? num(arr.rotY, 0) : 0;
+        const radius = scat ? Math.max(0, num(scat.radius, 0)) : 0;
+        const seed = scat ? num(scat.seed, 1) : 1;
+        const mirror = String(pt.mirror || '').toLowerCase();
+        const axes = [''];
+        if (mirror.includes('x')) axes.push('x');
+        if (mirror.includes('z')) axes.push('z');
+        if (mirror.includes('x') && mirror.includes('z')) axes.push('xz');
+        for (let i = 0; i < count; i++) {
+          const sc = scat ? directorScatterOffset(i, seed, radius) : { x: 0, z: 0, rotY: 0 };
+          const x = basePos.x + off.x * i + sc.x, y = basePos.y + off.y * i, z2 = basePos.z + off.z * i + sc.z;
+          const rotY = num(pt.rotY, 0) + stepRot * i + sc.rotY;
+          for (const ax of axes) {
+            rawParts.push({
+              ...pt,
+              pos: [ax.includes('x') ? -x : x, y, ax.includes('z') ? -z2 : z2],
+              rotY: ax ? -rotY : rotY,
+              rz: ax ? -num(pt.rz, 0) : num(pt.rz, 0),
+            });
+          }
+        }
+      }
+      pob.parts = rawParts.slice(0, 64).map((pt) => {
+        const preset2 = SPEC_PRESET_IDS.includes(pt && pt.preset) ? pt.preset : 'box';
+        const part = {
+          preset: preset2,
+          pos: v3of(pt && pt.pos, 0),
+          rotY: num(pt && pt.rotY, 0), rx: num(pt && pt.rx, 0), rz: num(pt && pt.rz, 0),
+          scale: (pt && pt.scale) ? v3of(pt.scale, 1) : v3(1, 1, 1),
+          color: String((pt && pt.color) || p.color || '#b3b8bf'),
+        };
+        if (pt && pt.material && typeof pt.material === 'object') part.material = { ...pt.material };
+        return part;
+      });
+      // 组合道具的默认高度取最高部件（车顶/灯罩），供高度参考线与 gizmo 使用。
+      const partTop = pob.parts.reduce((m, pt) => Math.max(m, (Number(pt.pos && pt.pos.y) || 0) + directorPrimitiveUnitHeight(pt.preset) * (Number(pt.scale && pt.scale.y) || 1)), 0);
+      pob.h = num(p.h, partTop || 1);
+    }
     if (p.material && typeof p.material === 'object') pob.material = { ...p.material };
+    if (p.attach && typeof p.attach === 'object') pob.attach = JSON.parse(JSON.stringify(p.attach));
     // 道具关键帧：与角色同构（t/pos/rotY/rx/rz/ease），供长枪等跟手（applyPlayhead 对所有对象统一应用）
     if (Array.isArray(p.keys)) {
       pob.keys = p.keys.map((k) => ({
@@ -3065,6 +3428,9 @@ export function buildStageFromSpec(spec) {
         ...(k.interp ? { interp: String(k.interp) } : {}),
       })).sort((x, y) => x.t - y.t);
     }
+    // 道具路径：与角色同构（画路径线即可让警车/道具沿线运动）
+    addPath(pob, p.path, p.pathMode);
+    if (pob.path && p.pathFace === false) pob.pathFace = false;
     objects.push(pob);
   }
   const cameras = (Array.isArray(sp.cameras) ? sp.cameras : []).map((c, i) => {
@@ -3159,6 +3525,7 @@ export function compileStageSpec(scene) {
   const arr = (p) => [round3(p.x), round3(p.y), round3(p.z)];
   const characters = [];
   const props = [];
+  const models = [];
   for (const ob of sc.objects || []) {
     if (ob.kind === 'model') {
       const c = {
@@ -3188,17 +3555,47 @@ export function compileStageSpec(scene) {
       if (Array.isArray(ob.poseKeys) && ob.poseKeys.length) c.poseKeys = ob.poseKeys.map((k) => ({ t: round3(k.t), bonePose: JSON.parse(JSON.stringify(k.bonePose || {})), ease: k.ease || 'auto' }));
       if (Array.isArray(ob.keys) && ob.keys.length) c.keys = ob.keys.map((k) => ({ t: round3(k.t), pos: arr(k.pos), rotY: round3(k.rotY || 0), rx: round3(k.rx || 0), rz: round3(k.rz || 0), ease: k.ease || 'auto' }));
       characters.push(c);
+    } else if (ob.kind === 'gltf' && ob.catalog) {
+      // 来自本地资产目录的 models[]：往返时仍归入 models，避免退化成“带 assetId 的道具”
+      const m = {
+        id: ob.id, name: ob.name || ob.id, assetId: ob.assetId,
+        pos: arr(ob.pos || v3(0, 0, 0)), rotY: round3(ob.rotY || 0), rx: round3(ob.rx || 0), rz: round3(ob.rz || 0),
+        h: round3(ob.h || 1.7),
+      };
+      if (ob.scale && (Number(ob.scale.x) !== 1 || Number(ob.scale.y) !== 1 || Number(ob.scale.z) !== 1)) m.scale = arr(ob.scale);
+      if (ob.visible === false) m.visible = false;
+      if (ob.color) m.color = ob.color;
+      if (ob.clip) m.clip = ob.clip;
+      if (ob.material) m.material = { ...ob.material };
+      if (ob.attach) m.attach = JSON.parse(JSON.stringify(ob.attach));
+      if (Array.isArray(ob.keys) && ob.keys.length) m.keys = ob.keys.map((k) => ({ t: round3(k.t), pos: arr(k.pos), rotY: round3(k.rotY || 0), ease: k.ease || 'auto' }));
+      models.push(m);
     } else {
-      props.push({
+      const rec = {
         id: ob.id, name: ob.name || ob.id, preset: ob.preset || 'box',
+        ...(ob.kind === 'gltf' && ob.assetId ? { assetId: ob.assetId, clip: ob.clip || undefined } : {}),
         pos: arr(ob.pos || v3(0, 0, 0)), rotY: round3(ob.rotY || 0), rx: round3(ob.rx || 0), rz: round3(ob.rz || 0),
         scale: arr(ob.scale || v3(1, 1, 1)), color: ob.color,
         visible: ob.visible === false ? false : undefined,
         material: ob.material ? { ...ob.material } : undefined,
+        ...(ob.attach ? { attach: JSON.parse(JSON.stringify(ob.attach)) } : {}),
         ...(Array.isArray(ob.keys) && ob.keys.length
           ? { keys: ob.keys.map((k) => ({ t: round3(k.t), pos: arr(k.pos), rotY: round3(k.rotY || 0), rx: round3(k.rx || 0), rz: round3(k.rz || 0), ease: k.ease || 'auto' })) }
           : {}),
-      });
+        ...(Array.isArray(ob.path) && ob.path.length
+          ? { path: ob.path.map(arr), pathMode: ob.pathMode || 'curve', ...(ob.pathFace === false ? { pathFace: false } : {}) }
+          : {}),
+      };
+      // 参数化组合道具：parts 必须原样往返，否则二次编辑会退化成单个方块
+      if (ob.kind === 'compound' && Array.isArray(ob.parts) && ob.parts.length) {
+        rec.parts = ob.parts.map((pt) => ({
+          preset: pt.preset || 'box', pos: arr(pt.pos || v3(0, 0, 0)),
+          rotY: round3(pt.rotY || 0), rx: round3(pt.rx || 0), rz: round3(pt.rz || 0),
+          scale: arr(pt.scale || v3(1, 1, 1)), color: pt.color,
+          ...(pt.material ? { material: { ...pt.material } } : {}),
+        }));
+      }
+      props.push(rec);
     }
   }
   return {
@@ -3212,7 +3609,7 @@ export function compileStageSpec(scene) {
       note: (sc.shot && sc.shot.note) || undefined,
     },
     env: Object.assign({}, sc.env || {}),
-    characters, props,
+    characters, models, props,
     cameras: (sc.cameras || []).map((c) => ({
       id: c.id, name: c.name || c.id, pos: arr(c.pos), target: arr(c.target),
       fov: round3(c.fov || 42), roll: round3(c.roll || 0), sensorFit: c.sensorFit || 'AUTO',
@@ -3241,6 +3638,479 @@ export const BRIEF_TEMPLATES = [
   { id: 'dialogue', zh: '对话', en: 'Dialogue', keywords: ['对话', '说话', '交谈', '对峙', '谈判', 'dialogue', 'talk', 'conversation', '聊'] },
 ];
 
+// ============================================================
+// 3D-BOX 预设库（场景 / 导演风格 / 运镜）
+//   产品原则：用户只说一句，Agent 选场景 + 风格 + 运镜先搭第一版；
+//   这些清单同时给 Host 工具、客户端下拉和 Agent 技能引用，避免三处漂移。
+// ============================================================
+export const SCENE_PRESETS = [
+  { id: 'blank', zh: '空白场景', en: 'Blank scene', descZh: '纯网格 + 默认机位', descEn: 'Grid + default camera' },
+  { id: 'dialogue2', zh: '对话双人', en: 'Two-person dialogue', descZh: '2 人面对面 + 中景机位', descEn: '2 people, eye line, medium shot' },
+  { id: 'dialogue3', zh: '三人对话', en: 'Three-person dialogue', descZh: '3 人三角站位 + 全景机位', descEn: '3 people, triangle blocking, wide shot' },
+  { id: 'interview', zh: '采访场景', en: 'Interview', descZh: '1 主持 + 1 嘉宾 + 桌子 + 双机位', descEn: 'Host + guest + table + two cameras' },
+  { id: 'monologue', zh: '独白特写', en: 'Monologue close-up', descZh: '1 人 + 特写正面机位', descEn: '1 person + frontal close-up' },
+  { id: 'lecture', zh: '课堂/演讲', en: 'Lecture', descZh: '1 讲者 + 3 听众', descEn: 'Speaker + 3 listeners' },
+  { id: 'chase', zh: '追逐场景', en: 'Chase', descZh: '2 人前后 + 侧面跟拍 + 低角度', descEn: '2 runners, side tracking + low angle' },
+  { id: 'outdoor_walk', zh: '户外行走', en: 'Outdoor walk', descZh: '2 人并排 + 侧面跟拍', descEn: '2 people side by side, tracking' },
+  { id: 'meeting', zh: '会议室', en: 'Meeting room', descZh: '4 人围桌 + 俯拍机位', descEn: '4 people around a table + top-down' },
+];
+
+export const DIRECTOR_STYLES = [
+  { id: 'animation', zh: '动画剧情', en: 'Animation', promptZh: '中近景叙事 · 慢速推进 · 高饱和光影 · 配乐主导', promptEn: 'Medium-close storytelling, slow push, saturated light, score-led' },
+  { id: 'tvc', zh: 'TVC 广告', en: 'TVC', promptZh: '特写堆叠 · 微距环绕 · 高对比布光 · 音效突出', promptEn: 'Close-up stacking, macro orbit, high-contrast lighting, sound-led' },
+  { id: 'mv', zh: '卡点 MV', en: 'Music video', promptZh: '景别跳跃 · 快切环绕 · 强反差调色 · 音频驱动', promptEn: 'Jump cuts, fast orbit, high-contrast grade, beat-driven' },
+  { id: 'documentary', zh: '纪录片', en: 'Documentary', promptZh: '中远景观察 · 手持横移 · 自然光低饱和 · 环境音优先', promptEn: 'Wide observation, handheld lateral, natural low-sat light, ambience-led' },
+  { id: 'commerce', zh: '口播带货', en: 'Commerce', promptZh: '近中景固定 · 缓慢推进 · 明亮布光 · 人声优先', promptEn: 'Medium-close static, slow push, bright lighting, voice-led' },
+  { id: 'suspense', zh: '悬疑短剧', en: 'Suspense', promptZh: '远近交替 · 手持降镜头 · 冷色低调 · 静音对比', promptEn: 'Alternating wide/close, handheld descent, cool low-key, silence contrast' },
+];
+
+/**
+ * 运镜预设：id 同时用于 3D 机位关键帧生成与视频提示词标签。
+ * path 是生成策略名（applyCameraMove 里 switch），不是文件路径。
+ */
+export const CAMERA_MOVES = [
+  { id: 'static', zh: '固定机位', en: 'Static', category: 'basic', promptZh: '固定机位', promptEn: 'static camera' },
+  { id: 'push_in', zh: '推近', en: 'Push in', category: 'basic', promptZh: '缓慢推近主体', promptEn: 'slow push in' },
+  { id: 'pull_out', zh: '拉远', en: 'Pull out', category: 'basic', promptZh: '缓慢拉远，交代环境', promptEn: 'slow pull out' },
+  { id: 'pan_left', zh: '向左摇', en: 'Pan left', category: 'basic', promptZh: '机位向左横摇', promptEn: 'pan left' },
+  { id: 'pan_right', zh: '向右摇', en: 'Pan right', category: 'basic', promptZh: '机位向右横摇', promptEn: 'pan right' },
+  { id: 'orbit_left', zh: '左环绕', en: 'Orbit left', category: 'orbit', promptZh: '机位绕主体左环绕', promptEn: 'orbit left around subject' },
+  { id: 'orbit_right', zh: '右环绕', en: 'Orbit right', category: 'orbit', promptZh: '机位绕主体右环绕', promptEn: 'orbit right around subject' },
+  { id: 'handheld', zh: '手持微晃', en: 'Handheld', category: 'basic', promptZh: '手持跟拍，轻微自然晃动', promptEn: 'handheld with natural micro-shake' },
+  { id: 'arc_left', zh: '左弧滑行', en: 'Arc left', category: 'orbit', promptZh: '左弧滑行，边环绕边靠近', promptEn: 'arc left while closing in' },
+  { id: 'arc_right', zh: '右弧滑行', en: 'Arc right', category: 'orbit', promptZh: '右弧滑行，边环绕边靠近', promptEn: 'arc right while closing in' },
+  { id: 'crane_up', zh: '升镜', en: 'Crane up', category: 'crane', promptZh: '机位垂直升起，揭示空间', promptEn: 'crane up to reveal the space' },
+  { id: 'crane_down', zh: '降镜', en: 'Crane down', category: 'crane', promptZh: '机位垂直下降，压近主体', promptEn: 'crane down toward subject' },
+  { id: 'dolly_zoom', zh: '滑动变焦', en: 'Dolly zoom', category: 'special', promptZh: '滑动变焦：推进同时拉宽视角，背景压缩', promptEn: 'dolly zoom: push in while widening FOV' },
+  { id: 'crash_zoom', zh: '急速推镜', en: 'Crash zoom', category: 'special', promptZh: '急速推镜，制造冲击', promptEn: 'crash zoom for impact' },
+  { id: 'follow', zh: '跟随', en: 'Follow', category: 'tracking', promptZh: '机位跟随主体同向移动', promptEn: 'follow the subject' },
+  { id: 'reveal', zh: '拉远揭示', en: 'Reveal', category: 'special', promptZh: '从近景拉远，揭示完整场景', promptEn: 'pull back to reveal the full scene' },
+  { id: 'whip_pan', zh: '甩镜', en: 'Whip pan', category: 'special', promptZh: '快速甩镜，带运动模糊', promptEn: 'whip pan with motion blur' },
+  { id: 'orbit_high', zh: '高位环绕', en: 'High orbit', category: 'orbit', promptZh: '高位环绕，俯拍主体', promptEn: 'high orbit looking down' },
+  { id: 'tracking', zh: '横向跟拍', en: 'Lateral tracking', category: 'tracking', promptZh: '横向跟拍，保持主体在画面中心', promptEn: 'lateral tracking, subject centered' },
+  { id: 'vertigo', zh: '眩晕变焦', en: 'Vertigo', category: 'special', promptZh: '眩晕变焦，空间拉伸', promptEn: 'vertigo zoom, spatial stretch' },
+];
+
+/**
+ * 运镜/转场预设库：视频节点“尝试”区、3D-BOX 预设页与 Agent 共用一份。
+ * kind: camera（机位运动）/ transition（转场，映射到基础机位运动）/ template（分镜/版式模板）。
+ */
+export const MOTION_PRESETS = [
+  ...CAMERA_MOVES.map((m) => ({
+    id: m.id, zh: m.zh, en: m.en, kind: 'camera', category: m.category,
+    promptZh: m.promptZh, promptEn: m.promptEn, cameraMove: m.id,
+  })),
+  { id: 'travel_zoom_in', zh: '旅拍转场 zoom in', en: 'Travel zoom in', kind: 'transition', category: 'travel', promptZh: '旅拍转场：快速推近并轻微右旋，接下一场', promptEn: 'Travel transition: quick zoom in with a slight right rotation', cameraMove: 'push_in' },
+  { id: 'travel_zoom_out', zh: '旅拍转场 zoom out', en: 'Travel zoom out', kind: 'transition', category: 'travel', promptZh: '旅拍转场：快速拉远并轻微左旋，交代新环境', promptEn: 'Travel transition: quick zoom out with a slight left rotation', cameraMove: 'pull_out' },
+  { id: 'travel_rotate', zh: '旅拍转场 旋转', en: 'Travel rotate', kind: 'transition', category: 'travel', promptZh: '旅拍转场：旋转镜头带出下一场', promptEn: 'Travel transition: rotate into the next scene', cameraMove: 'orbit_right' },
+  { id: 'travel_grow', zh: '旅拍转场 生长', en: 'Travel grow', kind: 'transition', category: 'travel', promptZh: '旅拍转场：从局部生长拉出全貌', promptEn: 'Travel transition: grow from detail to full scene', cameraMove: 'reveal' },
+  { id: 'spin_360', zh: '360 旋转展示', en: '360 spin', kind: 'transition', category: 'product', promptZh: '360 度旋转展示主体，背景干净', promptEn: '360-degree product spin on a clean background', cameraMove: 'orbit_right' },
+  { id: 'robot_arm', zh: '机械臂视角', en: 'Robot arm', kind: 'transition', category: 'product', promptZh: '机械臂视角：低角度弧线滑入，精密感', promptEn: 'Robot-arm move: low arc slide-in, precise feel', cameraMove: 'arc_left' },
+  { id: 'pupil_zoom', zh: '瞳孔拉近', en: 'Pupil zoom', kind: 'transition', category: 'dramatic', promptZh: '瞳孔/细节急速拉近，制造压迫感', promptEn: 'Pupil/detail crash zoom for pressure', cameraMove: 'crash_zoom' },
+  { id: 'bird_disintegrate', zh: '飞鸟解体', en: 'Bird dissolve', kind: 'transition', category: 'dramatic', promptZh: '主体解体为粒子/飞鸟散开，转场到下一场', promptEn: 'Subject dissolves into particles/birds into the next scene', cameraMove: 'dolly_zoom' },
+  { id: 'box_break', zh: '破盒而出', en: 'Box break', kind: 'transition', category: 'dramatic', promptZh: '从盒内破出，镜头快速拉远揭示全貌', promptEn: 'Break out of the box, pull back to reveal', cameraMove: 'reveal' },
+  { id: 'anti_gravity', zh: '反重力漂浮', en: 'Anti-gravity', kind: 'transition', category: 'dramatic', promptZh: '人物/物体反重力漂浮，机位升起环绕', promptEn: 'Anti-gravity float, camera rises and orbits', cameraMove: 'crane_up' },
+  { id: 'particle_dissolve', zh: '粒子融解', en: 'Particle dissolve', kind: 'transition', category: 'dramatic', promptZh: '画面粒子化融解，平滑转场', promptEn: 'Image dissolves into particles, smooth transition', cameraMove: 'dolly_zoom' },
+  { id: 'hero_shot', zh: '英雄视角', en: 'Hero shot', kind: 'transition', category: 'dramatic', promptZh: '英雄视角：低机位仰拍，高位环绕收尾', promptEn: 'Hero shot: low angle, high orbit finish', cameraMove: 'orbit_high' },
+  { id: 'storyboard_grid', zh: '大师分镜九宫格-经典暗调', en: 'Master storyboard 9-grid', kind: 'template', category: 'storyboard', promptZh: '九宫格分镜：经典暗调、统一光影、每格一个镜头', promptEn: 'Nine-panel storyboard: classic low-key, consistent light, one shot per panel', cameraMove: null },
+];
+
+const cloneSpec = (s) => JSON.parse(JSON.stringify(s || {}));
+const asVec3 = (v, d) => {
+  const q = d || [0, 0, 0];
+  if (Array.isArray(v)) return [Number(v[0]) || 0, Number(v[1]) || 0, Number(v[2]) || 0];
+  if (v && typeof v === 'object') return [Number(v.x) || 0, Number(v.y) || 0, Number(v.z) || 0];
+  return q.slice();
+};
+const lerpVec = (a, b, k) => [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
+const orbitVec = (pos, target, deg, radiusScale) => {
+  const dx = pos[0] - target[0];
+  const dz = pos[2] - target[2];
+  const r = Math.sqrt(dx * dx + dz * dz) * (radiusScale === undefined ? 1 : radiusScale);
+  const a0 = Math.atan2(dz, dx);
+  const a = a0 + (deg * Math.PI) / 180;
+  return [target[0] + Math.cos(a) * r, pos[1], target[2] + Math.sin(a) * r];
+};
+const clampFov = (v) => Math.max(8, Math.min(140, Number(v) || 42));
+
+/** 把导演风格写进规格：只改光影/雾/景深与备注，不改角色与分镜结构。 */
+export function applyDirectorStyle(spec, styleId) {
+  const st = DIRECTOR_STYLES.find((x) => x.id === String(styleId || ''));
+  if (!st) return spec;
+  const out = cloneSpec(spec);
+  out.style = st.id;
+  out.shot = out.shot || {};
+  out.shot.note = [out.shot.note, st.promptZh].filter(Boolean).join(' · ');
+  out.env = Object.assign({ preset: 'studio', grid: true, tonemap: 'agx' }, out.env || {});
+  const setKey = (dir, color, intensity) => {
+    const list = Array.isArray(out.lights) ? out.lights : [];
+    if (list.length) list[0] = Object.assign({}, list[0], { dir, color, intensity });
+    else list.push({ dir, color, intensity });
+    out.lights = list;
+  };
+  if (st.id === 'suspense') {
+    out.env.preset = 'night'; out.env.bg = '#0a0d12';
+    out.env.fog = { color: '#0d141d', near: 2, far: 14, density: 1.5 };
+    setKey([0.3, -0.7, 0.4], '#9fb6d4', 0.75);
+    out.dof = Object.assign({ focus: 4, range: 2, maxBlur: 7 }, out.dof || {});
+  } else if (st.id === 'mv') {
+    out.env.preset = 'night'; out.env.bg = '#0a0714';
+    setKey([0.4, -0.6, 0.5], '#ff5ea8', 1.5);
+    out.lights = (out.lights || []).concat([{ dir: [-0.4, -0.3, -0.5], color: '#31d7ff', intensity: 0.8 }]);
+    out.dof = Object.assign({ focus: 4.5, range: 3, maxBlur: 6 }, out.dof || {});
+  } else if (st.id === 'documentary') {
+    out.env.preset = 'daylight'; out.env.bg = '#cfd8e0';
+    setKey([0.45, -0.8, 0.35], '#fff3df', 1.15);
+    out.dof = Object.assign({ focus: 5, range: 4, maxBlur: 3 }, out.dof || {});
+  } else if (st.id === 'commerce') {
+    out.env.preset = 'studio'; out.env.bg = '#e8e6e2';
+    setKey([0.2, -0.55, 0.6], '#ffffff', 1.8);
+    out.lights = (out.lights || []).concat([{ dir: [-0.3, -0.3, 0.5], color: '#fff6e8', intensity: 0.7 }]);
+    out.dof = Object.assign({ focus: 5, range: 4, maxBlur: 2 }, out.dof || {});
+  } else if (st.id === 'tvc') {
+    out.env.bg = '#0c0f14';
+    setKey([0.35, -0.65, 0.55], '#ffffff', 1.85);
+    out.dof = Object.assign({ focus: 4.2, range: 2.4, maxBlur: 4 }, out.dof || {});
+  } else {
+    out.env.bg = '#1b1a22';
+    setKey([0.35, -0.7, 0.5], '#ffe7c4', 1.4);
+  }
+  return out;
+}
+
+/**
+ * 给规格里的机位生成一段可编辑关键帧。纯函数：不改入参。
+ * opts = { duration, camera（id 或 name，缺省第一台）, fovEnd }
+ */
+export function applyCameraMove(spec, moveId, opts) {
+  const o = opts || {};
+  const id = String(moveId || 'static');
+  const out = cloneSpec(spec);
+  const cams = Array.isArray(out.cameras) ? out.cameras : [];
+  if (!cams.length) return out;
+  let cam = cams[0];
+  if (o.camera) cam = cams.find((c) => c.id === o.camera || c.name === o.camera) || cam;
+  const pos = asVec3(cam.pos, [0, 2, 6]);
+  const target = asVec3(cam.target, [0, 1, 0]);
+  const fov = clampFov(cam.fov);
+  const dur = Math.max(0.5, Number(o.duration) || Number(out.duration) || 5);
+  const toc = (p, tg, f, t, ease) => ({ t, pos: p.slice(), target: (tg || target).slice(), fov: f === undefined ? fov : clampFov(f), ...(ease ? { ease } : {}) });
+  const dir = [target[0] - pos[0], target[1] - pos[1], target[2] - pos[2]];
+  const dist = Math.max(0.001, Math.sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]));
+  const unit = [dir[0] / dist, dir[1] / dist, dir[2] / dist];
+  let keys;
+  switch (id) {
+    case 'push_in':
+      keys = [toc(pos, target, fov, 0), toc(lerpVec(pos, target, 0.3), target, fov, dur)];
+      break;
+    case 'pull_out':
+      keys = [toc(pos, target, fov, 0), toc(lerpVec(pos, target, -0.3), target, fov, dur)];
+      break;
+    case 'pan_left':
+      keys = [toc(pos, target, fov, 0), toc(pos, [target[0] - 1.2, target[1], target[2]], fov, dur)];
+      break;
+    case 'pan_right':
+      keys = [toc(pos, target, fov, 0), toc(pos, [target[0] + 1.2, target[1], target[2]], fov, dur)];
+      break;
+    case 'orbit_left':
+      keys = [toc(pos, target, fov, 0), toc(orbitVec(pos, target, -45), target, fov, dur)];
+      break;
+    case 'orbit_right':
+      keys = [toc(pos, target, fov, 0), toc(orbitVec(pos, target, 45), target, fov, dur)];
+      break;
+    case 'arc_left':
+      keys = [toc(pos, target, fov, 0), toc(orbitVec(pos, target, -60, 0.9), target, fov, dur)];
+      break;
+    case 'arc_right':
+      keys = [toc(pos, target, fov, 0), toc(orbitVec(pos, target, 60, 0.9), target, fov, dur)];
+      break;
+    case 'crane_up':
+      keys = [toc(pos, target, fov, 0), toc([pos[0], pos[1] + 1.3, pos[2]], [target[0], target[1] + 0.2, target[2]], fov, dur)];
+      break;
+    case 'crane_down':
+      keys = [toc(pos, target, fov, 0), toc([pos[0], Math.max(0.3, pos[1] - 1.3), pos[2]], [target[0], Math.max(0.2, target[1] - 0.2), target[2]], fov, dur)];
+      break;
+    case 'dolly_zoom':
+      keys = [toc(pos, target, fov, 0), toc(lerpVec(pos, target, 0.25), target, Math.min(140, fov * 1.35), dur)];
+      break;
+    case 'crash_zoom':
+      keys = [toc(pos, target, fov, 0), toc(lerpVec(pos, target, 0.45), target, Math.max(8, fov * 0.72), dur * 0.35, 'linear'), toc(lerpVec(pos, target, 0.45), target, Math.max(8, fov * 0.72), dur, 'constant')];
+      break;
+    case 'follow':
+      keys = [toc(pos, target, fov, 0), toc([pos[0] + unit[0] * 1.6, pos[1], pos[2] + unit[2] * 1.6], [target[0] + unit[0] * 1.6, target[1], target[2] + unit[2] * 1.6], fov, dur)];
+      break;
+    case 'tracking':
+      keys = [toc(pos, target, fov, 0), toc([pos[0] + 2, pos[1], pos[2]], [target[0] + 2, target[1], target[2]], fov, dur)];
+      break;
+    case 'reveal':
+      keys = [toc(lerpVec(pos, target, 0.35), target, fov, 0), toc(pos, target, fov, dur)];
+      break;
+    case 'whip_pan':
+      keys = [toc(pos, target, fov, 0), toc(pos, [target[0] + 3, target[1], target[2]], fov, dur * 0.2, 'linear'), toc(pos, [target[0] + 3, target[1], target[2]], fov, dur, 'constant')];
+      break;
+    case 'orbit_high':
+      keys = [toc(pos, target, fov, 0), toc([orbitVec(pos, target, 45)[0], pos[1] + 1.1, orbitVec(pos, target, 45)[2]], target, fov, dur)];
+      break;
+    case 'vertigo':
+      keys = [toc(pos, target, fov, 0), toc(lerpVec(pos, target, 0.25), target, Math.max(8, fov * 0.7), dur)];
+      break;
+    case 'handheld':
+      keys = [0, 0.25, 0.5, 0.75, 1].map((k) => toc([
+        pos[0] + Math.sin(k * 17.3) * 0.025,
+        pos[1] + Math.sin(k * 23.1) * 0.02,
+        pos[2] + Math.cos(k * 19.7) * 0.025,
+      ], target, fov, dur * k));
+      break;
+    case 'static':
+    default:
+      keys = [toc(pos, target, fov, 0), toc(pos, target, fov, dur)];
+      break;
+  }
+  cam.keys = keys;
+  out.cameraMove = id;
+  out.shot = out.shot || {};
+  out.shot.cameraMove = id;
+  return out;
+}
+
+/**
+ * 应用运镜/转场预设：转场映射到基础机位运动；模板只写备注。
+ * 纯函数，不修改入参。
+ */
+export function applyMotionPreset(spec, presetId, opts) {
+  const p = MOTION_PRESETS.find((x) => x.id === String(presetId || ''));
+  if (!p) return spec;
+  let out = p.cameraMove ? applyCameraMove(spec, p.cameraMove, opts) : cloneSpec(spec);
+  out.motionPreset = p.id;
+  out.shot = out.shot || {};
+  out.shot.note = [out.shot.note, p.promptZh].filter(Boolean).join(' · ');
+  return out;
+}
+
+/**
+ * 以当前机位为基准，生成四/十二方位截图用的临时机位（纯函数）。
+ * count=4：围绕主体的前/右/后/左；count=12：3 个高度层 × 4 个方向。
+ * 返回 [{ name, nameEn, pos:[x,y,z], target:[x,y,z], fov }]，不修改入参。
+ */
+export function viewCamerasAround(scene, opts) {
+  const o = opts || {};
+  const count = Number(o.count) === 12 ? 12 : 4;
+  const cams = Array.isArray(scene && scene.cameras) ? scene.cameras : [];
+  const base = cams.find((c) => c && c.id === (scene && scene.activeCameraId)) || cams[0] || {};
+  const target = asVec3(base.target, [0, 1, 0]);
+  const pos = asVec3(base.pos, [0, 2, 6]);
+  const fov = clampFov(base.fov);
+  const dist = Math.max(1.6, Math.hypot(pos[0] - target[0], pos[2] - target[2]));
+  const baseYaw = Math.atan2(pos[0] - target[0], pos[2] - target[2]);
+  const dirs = [
+    { zh: '前', en: 'front', a: 0 },
+    { zh: '右', en: 'right', a: Math.PI / 2 },
+    { zh: '后', en: 'back', a: Math.PI },
+    { zh: '左', en: 'left', a: -Math.PI / 2 },
+  ];
+  const out = [];
+  if (count === 4) {
+    for (const d of dirs) {
+      const a = baseYaw + d.a;
+      out.push({
+        name: d.zh, nameEn: d.en,
+        pos: [target[0] + Math.sin(a) * dist, Math.max(0.3, pos[1]), target[2] + Math.cos(a) * dist],
+        target: target.slice(), fov,
+      });
+    }
+    return out;
+  }
+  const heights = [
+    Math.max(0.8, pos[1] - 0.8),
+    Math.max(1.2, pos[1]),
+    Math.max(1.8, pos[1] + 1.2),
+  ];
+  const levels = [{ zh: '低', en: 'low' }, { zh: '中', en: 'mid' }, { zh: '高', en: 'high' }];
+  for (let li = 0; li < 3; li++) {
+    for (const d of dirs) {
+      const a = baseYaw + d.a;
+      out.push({
+        name: levels[li].zh + d.zh, nameEn: levels[li].en + '-' + d.en,
+        pos: [target[0] + Math.sin(a) * dist, heights[li], target[2] + Math.cos(a) * dist],
+        target: target.slice(), fov,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * 手绘运镜：地面路径点 → 相机关键帧（纯函数）。
+ * path: [{x,z}] 或 [[x,z]]；opts = { duration, posY, targetY, fov }
+ * 相机沿路径移动，target 看向下一个路径点（末点用前一段方向延伸）。
+ */
+export function cameraPathKeys(path, opts) {
+  const o = opts || {};
+  const raw = Array.isArray(path) ? path : [];
+  const pts = raw.map((p) => {
+    if (Array.isArray(p)) return { x: Number(p[0]) || 0, z: Number(p[1]) || 0 };
+    return { x: Number(p && p.x) || 0, z: Number(p && p.z) || 0 };
+  });
+  if (!pts.length) return { keys: [] };
+  if (pts.length === 1) pts.push({ x: pts[0].x, z: pts[0].z });
+  const dur = Math.max(0.5, Number(o.duration) || 5);
+  const y = Number.isFinite(o.posY) ? o.posY : 1.6;
+  const ty = Number.isFinite(o.targetY) ? o.targetY : 1.0;
+  const fov = clampFov(o.fov);
+  const keys = pts.map((p, i) => {
+    const t = dur * i / (pts.length - 1);
+    const next = pts[Math.min(pts.length - 1, i + 1)];
+    const prev = pts[Math.max(0, i - 1)];
+    let tx = next.x, tz = next.z;
+    if (Math.abs(tx - p.x) < 1e-6 && Math.abs(tz - p.z) < 1e-6) {
+      tx = p.x + (p.x - prev.x);
+      tz = p.z + (p.z - prev.z);
+    }
+    return { t, pos: [p.x, y, p.z], target: [tx, ty, tz], fov, ease: 'auto' };
+  });
+  return { keys };
+}
+
+/**
+ * 从设定集角色添加一个 3D 场景对象（纯函数）。
+ * char = { name, assetIds? }；opts = { x,z,rotY,h,color,pose,assetId }
+ * 同名（model/actor/body）已存在时只返回 id，不重复添加。
+ */
+export function addBibleCharacter(scene, char, opts) {
+  const name = String((char && char.name) || '').trim();
+  const src = JSON.parse(JSON.stringify(scene || {}));
+  const objects = Array.isArray(src.objects) ? src.objects : [];
+  if (!name) {
+    src.objects = objects;
+    return { added: false, scene: src, id: null };
+  }
+  const hit = objects.find((o) => String(o.name || '').trim() === name && (o.kind === 'model' || o.kind === 'actor' || o.kind === 'body'));
+  if (hit) return { added: false, scene: src, id: hit.id || null };
+  const o = opts || {};
+  const id = 'char_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 5);
+  objects.push({
+    id, kind: 'model', assetId: String(o.assetId || 'xbot'),
+    name: name.slice(0, 40),
+    pos: { x: Number(o.x) || 0, y: 0, z: Number(o.z) || 0 },
+    rotY: Number(o.rotY) || 0,
+    h: Number(o.h) || 1.75,
+    color: String(o.color || '#c9ced6'),
+    visible: true,
+    poseId: String(o.pose || 'stand'),
+    refAssetIds: Array.isArray(char && char.assetIds) ? char.assetIds.map(String).filter(Boolean).slice(0, 8) : [],
+  });
+  src.objects = objects;
+  return { added: true, scene: src, id };
+}
+
+/** 9 个场景预设 → 规格。所有坐标用 [x,y,z]，与 buildStageFromSpec 的二维 [x,z] 兼容。 */
+export function specFromScenePreset(presetId, opts) {
+  const o = opts || {};
+  const id = String(presetId || 'dialogue2');
+  const dur = Math.max(1.5, Number(o.duration) || 8);
+  const actors = Array.isArray(o.actors) && o.actors.length ? o.actors : ['主角', '对手', '第三角色', '第四角色'];
+  const A = String(actors[0] || '主角');
+  const B = String(actors[1] || '对手');
+  const C = String(actors[2] || '第三角色');
+  const D = String(actors[3] || '第四角色');
+  const base = (title, env) => ({
+    title: String(o.brief || title).slice(0, 40),
+    duration: dur,
+    env: Object.assign({ preset: 'studio', grid: true, tonemap: 'agx' }, env || {}),
+  });
+  const lights = [{ dir: [0.35, -0.78, 0.45], color: '#ffffff', intensity: 1.3 }, { dir: [-0.45, -0.25, -0.5], color: '#9fb4d8', intensity: 0.5 }];
+  const table = { name: '桌子', preset: 'box', pos: [0, 0, 0], scale: [2.2, 0.75, 1.1], color: '#8f98a3' };
+  if (id === 'blank') {
+    return Object.assign(base('空白场景', { preset: 'studio' }), {
+      characters: [], props: [{ name: '地面', preset: 'plane', pos: [0, 0, 0], scale: [14, 1, 14], color: '#9aa3ad' }],
+      cameras: [{ name: '主机位', pos: [0, 2.2, 6], target: [0, 1, 0], fov: 42 }],
+      shots: [{ camera: '主机位', start: 0, end: dur }], lights, dof: { focus: 5, range: 4, maxBlur: 4 },
+    });
+  }
+  if (id === 'chase') {
+    const half = Math.max(0.8, dur / 2);
+    return Object.assign(base('追逐场景', { preset: 'daylight' }), {
+      characters: [
+        { name: A, pos: [-3, 0, 0], rotY: 0, clip: 'run', color: '#c9ced6', path: [[-3, 0], [-3, 0], [4, -1.5], [9, -1.5]], pathFace: true, locomotion: { source: 'clip', stride: 1.1, cycle: 0.8, refSpeed: 4 } },
+        { name: B, pos: [-4.6, 0, 0.6], rotY: 0, clip: 'run', color: '#b3bcc6', path: [[-4.6, 0.6], [-4.6, 0.6], [3, -1.0], [8.2, -1.0]], pathFace: true, locomotion: { source: 'clip', stride: 1.1, cycle: 0.8, refSpeed: 4 } },
+      ],
+      props: [{ name: '路面', preset: 'plane', pos: [2, 0, 0], scale: [26, 1, 10], color: '#9aa3ad' }],
+      cameras: [{ name: '侧跟', pos: [1.5, 1.6, 7.5], target: [1.5, 1.0, 0], fov: 44 }, { name: '低位追', pos: [5.5, 0.8, 5.2], target: [3.5, 1.0, 0], fov: 40 }],
+      shots: [{ camera: '侧跟', start: 0, end: half }, { camera: '低位追', start: half, end: dur }],
+      lights: [{ dir: [0.4, -0.75, 0.4], color: '#fff4e0', intensity: 1.3 }], dof: { focus: 6, range: 5, maxBlur: 4 },
+    });
+  }
+  if (id === 'dialogue2' || id === 'dialogue3') {
+    const three = id === 'dialogue3';
+    const chars = three
+      ? [{ name: A, pos: [-1.1, 0, 0.2], rotY: 1.2, clip: 'idle', color: '#c9ced6' }, { name: B, pos: [1.1, 0, 0.2], rotY: -1.2, clip: 'idle', color: '#b9c2cc' }, { name: C, pos: [0, 0, -1.3], rotY: 0.2, clip: 'idle', color: '#c3bdd0' }]
+      : [{ name: A, pos: [-0.9, 0, 0], rotY: 1.45, clip: 'idle', color: '#c9ced6' }, { name: B, pos: [0.9, 0, 0], rotY: -1.45, clip: 'idle', color: '#b9c2cc' }];
+    const half = Math.max(0.8, dur / 2);
+    const cams = three
+      ? [{ name: '全景', pos: [0, 1.9, 5.2], target: [0, 1.05, 0], fov: 44 }, { name: 'A 过肩', pos: [-1.8, 1.55, -2.2], target: [0.9, 1.4, 0], fov: 40 }, { name: 'B 过肩', pos: [1.8, 1.55, -2.2], target: [-0.9, 1.4, 0], fov: 40 }]
+      : [{ name: 'A 过肩', pos: [-1.5, 1.55, -2.1], target: [0.9, 1.4, 0], fov: 40 }, { name: 'B 过肩', pos: [1.5, 1.55, -2.1], target: [-0.9, 1.4, 0], fov: 40 }, { name: '双人', pos: [0, 1.5, 4.6], target: [0, 1.05, 0], fov: 40 }];
+    const shots = three
+      ? [{ camera: '全景', start: 0, end: dur * 0.25 }, { camera: 'A 过肩', start: dur * 0.25, end: dur * 0.62 }, { camera: 'B 过肩', start: dur * 0.62, end: dur }]
+      : [{ camera: '双人', start: 0, end: Math.max(0.6, dur * 0.2) }, { camera: 'A 过肩', start: Math.max(0.6, dur * 0.2), end: half }, { camera: 'B 过肩', start: half, end: dur }];
+    return Object.assign(base(three ? '三人对话' : '对话双人', { preset: 'studio' }), {
+      characters: chars, props: [table], cameras: cams, shots, lights,
+      dof: { focus: 4.5, range: 2.2, maxBlur: 7 },
+    });
+  }
+  if (id === 'interview') {
+    return Object.assign(base('采访场景', { preset: 'studio' }), {
+      characters: [{ name: A, pos: [-1.1, 0, 0], rotY: 1.35, clip: 'idle', color: '#c9ced6' }, { name: B, pos: [1.1, 0, 0], rotY: -1.35, clip: 'idle', color: '#b9c2cc' }],
+      props: [table, { name: '水杯', preset: 'cylinder', pos: [0.7, 0.82, 0.2], scale: [0.09, 0.16, 0.09], color: '#b9c6d2' }],
+      cameras: [{ name: '主持近景', pos: [-2.2, 1.55, 1.8], target: [-1.1, 1.4, 0], fov: 36 }, { name: '嘉宾近景', pos: [2.2, 1.55, 1.8], target: [1.1, 1.4, 0], fov: 36 }, { name: '双人', pos: [0, 1.65, 4.4], target: [0, 1.1, 0], fov: 42 }],
+      shots: [{ camera: '双人', start: 0, end: dur * 0.2 }, { camera: '主持近景', start: dur * 0.2, end: dur * 0.6 }, { camera: '嘉宾近景', start: dur * 0.6, end: dur }],
+      lights, dof: { focus: 4.2, range: 2.4, maxBlur: 5 },
+    });
+  }
+  if (id === 'monologue') {
+    return Object.assign(base('独白特写', { preset: 'studio' }), {
+      characters: [{ name: A, pos: [0, 0, 0], rotY: 0, clip: 'idle', color: '#c9ced6' }],
+      props: [{ name: '地面', preset: 'plane', pos: [0, 0, 0], scale: [10, 1, 10], color: '#9aa3ad' }],
+      cameras: [{ name: '正面特写', pos: [0, 1.55, 1.5], target: [0, 1.42, 0], fov: 30 }, { name: '侧面近景', pos: [1.7, 1.5, 1.2], target: [0, 1.35, 0], fov: 34 }],
+      shots: [{ camera: '正面特写', start: 0, end: dur * 0.65 }, { camera: '侧面近景', start: dur * 0.65, end: dur }],
+      lights, dof: { focus: 1.8, range: 1.1, maxBlur: 8 },
+    });
+  }
+  if (id === 'lecture') {
+    return Object.assign(base('课堂/演讲', { preset: 'daylight' }), {
+      characters: [{ name: A, pos: [0, 0, -1.4], rotY: 0, clip: 'idle', color: '#c9ced6' }, { name: B, pos: [-1.8, 0, 1.5], rotY: -2.6, clip: 'idle', color: '#b9c2cc' }, { name: C, pos: [0, 0, 1.8], rotY: -3.1, clip: 'idle', color: '#c3bdd0' }, { name: D, pos: [1.8, 0, 1.5], rotY: 2.6, clip: 'idle', color: '#b7c6bd' }],
+      props: [{ name: '讲台', preset: 'box', pos: [0, 0.55, -0.9], scale: [2.4, 0.8, 0.7], color: '#8f98a3' }],
+      cameras: [{ name: '全景', pos: [0, 2.4, 7], target: [0, 1.0, 0], fov: 44 }, { name: '讲者', pos: [0, 1.6, 2.4], target: [0, 1.25, -1.4], fov: 36 }],
+      shots: [{ camera: '全景', start: 0, end: dur * 0.55 }, { camera: '讲者', start: dur * 0.55, end: dur }],
+      lights: [{ dir: [0.4, -0.8, 0.35], color: '#fff7e8', intensity: 1.25 }], dof: { focus: 6, range: 4, maxBlur: 3 },
+    });
+  }
+  if (id === 'outdoor_walk') {
+    return Object.assign(base('户外行走', { preset: 'daylight' }), {
+      characters: [
+        { name: A, pos: [-0.55, 0, 0], rotY: 0, clip: 'walk', color: '#c9ced6', path: [[-0.55, 0], [-0.55, 0], [5, 0]], pathFace: true, locomotion: { source: 'clip', stride: 0.9, cycle: 1.0, refSpeed: 1.6 } },
+        { name: B, pos: [0.55, 0, 0.2], rotY: 0, clip: 'walk', color: '#b9c2cc', path: [[0.55, 0.2], [0.55, 0.2], [5, 0.2]], pathFace: true, locomotion: { source: 'clip', stride: 0.9, cycle: 1.0, refSpeed: 1.6 } },
+      ],
+      props: [{ name: '路面', preset: 'plane', pos: [2, 0, 0], scale: [20, 1, 8], color: '#9aa3ad' }],
+      cameras: [{ name: '侧面跟拍', pos: [1.8, 1.65, 5.2], target: [1.8, 1.0, 0], fov: 42 }, { name: '正面跟拍', pos: [1.8, 1.6, -4.5], target: [1.8, 1.05, 0], fov: 38 }],
+      shots: [{ camera: '侧面跟拍', start: 0, end: dur * 0.55 }, { camera: '正面跟拍', start: dur * 0.55, end: dur }],
+      lights: [{ dir: [0.45, -0.8, 0.35], color: '#fff4e0', intensity: 1.2 }], dof: { focus: 6, range: 5, maxBlur: 3 },
+    });
+  }
+  // meeting
+  return Object.assign(base('会议室', { preset: 'studio' }), {
+    characters: [
+      { name: A, pos: [-1.7, 0, 0], rotY: 1.5, clip: 'idle', color: '#c9ced6' },
+      { name: B, pos: [1.7, 0, 0], rotY: -1.5, clip: 'idle', color: '#b9c2cc' },
+      { name: C, pos: [0, 0, -1.4], rotY: 0.2, clip: 'idle', color: '#c3bdd0' },
+      { name: D, pos: [0, 0, 1.4], rotY: 3.1, clip: 'idle', color: '#b7c6bd' },
+    ],
+    props: [{ name: '会议桌', preset: 'box', pos: [0, 0.4, 0], scale: [3.6, 0.8, 1.8], color: '#7f8a96' }],
+    cameras: [{ name: '俯拍', pos: [0, 4.2, 3.4], target: [0, 0.4, 0], fov: 46 }, { name: '侧方全景', pos: [0, 2.1, 5.2], target: [0, 1.0, 0], fov: 42 }],
+    shots: [{ camera: '俯拍', start: 0, end: dur * 0.45 }, { camera: '侧方全景', start: dur * 0.45, end: dur }],
+    lights, dof: { focus: 5, range: 4, maxBlur: 4 },
+  });
+}
+
 /**
  * 一句话 → 场景规格。
  * opts = { template, duration, actors, mood }
@@ -3265,8 +4135,16 @@ export function specFromBrief(brief, opts) {
     duration: dur,
     env: { preset: tpl === 'chase' ? 'daylight' : tpl === 'fight' ? 'night' : 'studio', grid: true, tonemap: 'agx' },
   };
+  // 3D-BOX 组合入口：显式场景预设优先；风格与运镜在最后统一施加，保持旧模板行为不变。
+  const finish = (spec) => {
+    let out = spec;
+    if (o.style) out = applyDirectorStyle(out, o.style);
+    if (o.cameraMove) out = applyCameraMove(out, o.cameraMove, { duration: out.duration || dur });
+    return out;
+  };
+  if (o.scene) return finish(specFromScenePreset(o.scene, { brief, duration: dur, actors }));
   if (tpl === 'fight') {
-    return Object.assign(base, {
+    return finish(Object.assign(base, {
       characters: [
         { name: A, pos: [-1.1, 0, 0], rotY: 1.2, pose: 'fight', color: '#c9ced6' },
         { name: B, pos: [1.1, 0, 0], rotY: -1.2, pose: 'fight', color: '#b9c2cc' },
@@ -3287,10 +4165,10 @@ export function specFromBrief(brief, opts) {
       fog: { color: '#2a3038', near: 6, far: 22, density: 1 },
       dof: { focus: 4.2, range: 2.6, maxBlur: 5 },
       poseAnim: null,
-    });
+    }));
   }
   if (tpl === 'chase') {
-    return Object.assign(base, {
+    return finish(Object.assign(base, {
       characters: [
         { name: A, pos: [-3, 0, 0], rotY: 0, pose: 'run' && null, clip: 'run', color: '#c9ced6',
           path: [[-3, 0], [-3, 0], [4, -1.5], [9, -1.5]], pathFace: true,
@@ -3307,10 +4185,10 @@ export function specFromBrief(brief, opts) {
       shots: [{ camera: '侧跟', start: 0, end: half }, { camera: '低位追', start: half, end: dur }],
       lights: [{ dir: [0.4, -0.75, 0.4], color: '#fff4e0', intensity: 1.3 }],
       dof: { focus: 6, range: 5, maxBlur: 4 },
-    });
+    }));
   }
   // dialogue：正反打
-  return Object.assign(base, {
+  return finish(Object.assign(base, {
     characters: [
       { name: A, pos: [-0.9, 0, 0], rotY: 1.45, clip: 'idle', color: '#c9ced6' },
       { name: B, pos: [0.9, 0, 0], rotY: -1.45, clip: 'idle', color: '#b9c2cc' },
@@ -3328,7 +4206,7 @@ export function specFromBrief(brief, opts) {
     ],
     lights: [{ dir: [0.3, -0.7, 0.5], color: '#fff6ea', intensity: 1.15 }, { dir: [-0.5, -0.2, -0.4], color: '#cfd6e2', intensity: 0.5 }],
     dof: { focus: 4.5, range: 2.2, maxBlur: 7 },
-  });
+  }));
 }
 
 
@@ -3418,6 +4296,120 @@ export function dopeSheetInfo(scene) {
   out.markers = Array.isArray(scene && scene.markers) ? scene.markers.slice() : [];
   return out;
 }
+/**
+ * 角色某时刻的骨骼世界矩阵（与 skinModel 使用同一套姿态/IK/约束管线）。
+ * 只给「骨骼附件」用；返回 asset/世界矩阵/身高缩放。
+ */
+function directorCharacterBoneMats(ob) {
+  const asset = gltfAssetOf(ob && ob.assetId);
+  if (!asset || !asset.bones || !asset.nodes) return null;
+  const clipName = ob.clip || (asset.animations && asset.animations[0] && asset.animations[0].name) || '';
+  const clip = clipName && typeof asset.clipByName === 'function' ? asset.clipByName(clipName) : null;
+  asset._anim = clip;
+  const shape = Object.assign({},
+    ob.typeId ? bodyShapeOf(ob.typeId) : {},
+    ob.bonePose ? { bonePose: ob.bonePose } : {},
+    ob.poseId ? { poseId: ob.poseId } : {},
+    ob.poseBlend ? { poseBlend: ob.poseBlend } : {},
+    ob.skinning ? { skinning: ob.skinning } : {},
+    ob.ik ? { ik: ob.ik } : {},
+    ob.constraints ? { constraints: ob.constraints } : {},
+    ob.clips ? { clips: ob.clips } : {});
+  const time = Number(ob.animTime) || 0;
+  const poseMap = shape.bonePose && Object.keys(shape.bonePose).length ? shape.bonePose : null;
+  const poseId = shape.poseId || null;
+  const spec = poseId ? (BONE_POSES.find((p) => p.id === poseId) || null) : null;
+  const poseDirs = spec ? (spec.dirs || []) : (shape.poseDirs || null);
+  const poseBase = spec ? (spec.base || null) : null;
+  const poseRootY = spec ? (Number(spec.rootY) || 0) : (Number(shape.rootY) || 0);
+  const poseBlend = shape.poseBlend && shape.poseBlend.length ? shape.poseBlend : null;
+  const wantPose = !!(poseMap || (poseDirs && poseDirs.length) || poseBase || poseBlend || shape.ik || shape.constraints || shape.clips);
+  const bm = poseBlend
+    ? boneMatricesWithPoseMix(asset, time, poseBlend)
+    : (wantPose
+      ? boneMatricesWithPose(asset, time, poseMap, poseDirs, poseBase, poseRootY,
+        (shape.ik || shape.constraints || shape.clips) ? { ik: shape.ik, constraints: shape.constraints, clips: shape.clips } : null)
+      : boneMatrices(asset, time));
+  if (!bm || !bm.world) return null;
+  const ms = Number(asset.rawHeight) > 0 ? (Number(ob.h) || 1.78) / asset.rawHeight : 1;
+  return { asset, world: bm.world, scale: ms };
+}
+
+const directorNormBone = (s) => String(s || '').toLowerCase().replace(/^mixamorig:?/, '').replace(/[^a-z0-9]/g, '');
+
+/** 骨骼名容错：RightHand / right_hand / mixamorig:RightHand 都能命中；找不到返回 -1。 */
+export function directorBoneIndex(asset, name) {
+  if (!asset || !Array.isArray(asset.bones)) return -1;
+  const want = directorNormBone(name);
+  if (!want) return -1;
+  let i = asset.bones.findIndex((b) => directorNormBone(b && b.name) === want);
+  if (i < 0) i = asset.bones.findIndex((b) => directorNormBone(b && b.name).includes(want));
+  return i;
+}
+
+/** 欧拉角 → 局部轴（R = Ry·Rx·Rz，与 objectAxes 同序）。 */
+function directorAxesFromEuler(rx, ry, rz) {
+  const cx = Math.cos(rx), sx = Math.sin(rx);
+  const cy = Math.cos(ry), sy = Math.sin(ry);
+  const cz = Math.cos(rz), sz = Math.sin(rz);
+  return {
+    x: v3(cy * cz + sy * sx * sz, cx * sz, -sy * cz + cy * sx * sz),
+    y: v3(-cy * sz + sy * sx * cz, cx * cz, sy * sz + cy * sx * cz),
+    z: v3(sy * cx, -sx, cy * cx),
+  };
+}
+/** 局部轴相乘：返回 A·B（先作用 B 再作用 A）。 */
+function directorAxesMul(A, B) {
+  const mul = (c) => v3(A.x.x * c.x + A.y.x * c.y + A.z.x * c.z, A.x.y * c.x + A.y.y * c.y + A.z.y * c.z, A.x.z * c.x + A.y.z * c.y + A.z.z * c.z);
+  return { x: mul(B.x), y: mul(B.y), z: mul(B.z) };
+}
+/** 局部轴 → 欧拉角（R = Ry·Rx·Rz 约定）；万向锁时 rz 置 0。 */
+function directorEulerFromAxes(A) {
+  const rx = Math.asin(Math.max(-1, Math.min(1, -A.z.y)));
+  const cx = Math.cos(rx);
+  let ry, rz;
+  if (Math.abs(cx) > 1e-6) {
+    ry = Math.atan2(A.z.x, A.z.z);
+    rz = Math.atan2(A.x.y / cx, A.y.y / cx);
+  } else {
+    rz = 0;
+    ry = Math.atan2(A.x.x, -A.x.z);
+  }
+  return { rx, ry, rz };
+}
+
+/**
+ * 骨骼插槽（角色局部坐标）：返回骨骼原点 + 完整局部轴 + 偏航角，供武器/帽子/背包跟随。
+ * 不生成网格，只读骨骼世界矩阵；找不到骨骼时返回 null（不把道具瞬移到脚下）。
+ */
+export function directorObjectBoneSocket(ob, boneName) {
+  const mats = directorCharacterBoneMats(ob);
+  if (!mats) return null;
+  const bi = directorBoneIndex(mats.asset, boneName);
+  if (bi < 0) return null;
+  const bone = mats.asset.bones[bi];
+  const m = mats.world[bone.nodeIdx];
+  if (!m) return null;
+  const k = mats.scale * (Number(ob.s) || 1);
+  const sc = ob.scale || { x: 1, y: 1, z: 1 };
+  // 骨骼旋转列归一化（蒙皮矩阵带缩放，附件只要方向）
+  const norm = (x, y, z) => { const l = Math.hypot(x, y, z) || 1; return v3(x / l, y / l, z / l); };
+  return {
+    x: m[12] * k * (Number(sc.x) || 1),
+    y: m[13] * k * (Number(sc.y) || 1),
+    z: m[14] * k * (Number(sc.z) || 1),
+    yaw: Math.atan2(m[8], m[10]),
+    axes: { x: norm(m[0], m[1], m[2]), y: norm(m[4], m[5], m[6]), z: norm(m[8], m[9], m[10]) },
+  };
+}
+
+/** 资产的骨骼名清单（去掉 mixamorig: 前缀），供附件 UI 与 AI prompt 使用。 */
+export function directorBoneNames(assetId) {
+  const asset = gltfAssetOf(assetId);
+  if (!asset || !Array.isArray(asset.bones)) return [];
+  return asset.bones.map((b) => String((b && b.name) || '').replace(/^mixamorig:?/i, '')).filter(Boolean);
+}
+
 export function applyPlayhead(scene, t) {
   if (!scene) return scene;
   const time = Math.max(0, Number(t) || 0);
@@ -3574,6 +4566,54 @@ export function applyPlayhead(scene, t) {
     }
     return next;
   });
+
+  // 骨骼附件：武器/帽子/背包跟随角色骨骼（在对象运动求值之后覆盖 pos/rotY/rx/rz）
+  {
+    const byId = new Map();
+    const byName = new Map();
+    for (const o of out.objects) {
+      byId.set(String(o.id), o);
+      if (o.name && !byName.has(String(o.name))) byName.set(String(o.name), o);
+    }
+    for (const ob of out.objects) {
+      const at = ob.attach;
+      if (!at || typeof at !== 'object') continue;
+      const key = String(at.to || at.character || at.target || '');
+      // 先按 id 精确匹配，找不到再按 name（避免角色名与道具 id 撞名时绑错）
+      const target = byId.get(key) || byName.get(key);
+      if (!target || target === ob || (target.kind !== 'model' && target.kind !== 'actor')) continue;
+      const sock = directorObjectBoneSocket(target, at.bone || 'RightHand');
+      if (!sock) continue;
+      const cry = Number(target.rotY) || 0;
+      const cc = Math.cos(cry), cs = Math.sin(cry);
+      const bx = target.pos.x + sock.x * cc + sock.z * cs;
+      const by = target.pos.y + sock.y;
+      const bz = target.pos.z - sock.x * cs + sock.z * cc;
+      const oo = Array.isArray(at.offset) ? at.offset : (at.offset || []);
+      const ox = Number(oo[0] !== undefined ? oo[0] : oo.x) || 0;
+      const oy = Number(oo[1] !== undefined ? oo[1] : oo.y) || 0;
+      const oz = Number(oo[2] !== undefined ? oo[2] : oo.z) || 0;
+      // 朝向 = 角色偏航 · 骨骼旋转 · 附件自转（含俯仰/翻滚，不只是偏航）
+      const worldAxes = sock.axes
+        ? directorAxesMul(directorAxesMul(directorAxesFromEuler(0, cry, 0), sock.axes), directorAxesFromEuler(Number(at.rx) || 0, Number(at.rotY) || 0, Number(at.rz) || 0))
+        : null;
+      const eul = worldAxes ? directorEulerFromAxes(worldAxes) : { rx: 0, ry: cry + sock.yaw + (Number(at.rotY) || 0), rz: 0 };
+      ob.pos = worldAxes
+        ? v3(bx + ox * worldAxes.x.x + oy * worldAxes.y.x + oz * worldAxes.z.x,
+             by + ox * worldAxes.x.y + oy * worldAxes.y.y + oz * worldAxes.z.y,
+             bz + ox * worldAxes.x.z + oy * worldAxes.y.z + oz * worldAxes.z.z)
+        : (() => { const oc = Math.cos(cry + sock.yaw), os = Math.sin(cry + sock.yaw); return v3(bx + ox * oc + oz * os, by + oy, bz - ox * os + oz * oc); })();
+      ob.rotY = eul.ry;
+      ob.rx = eul.rx;
+      ob.rz = eul.rz;
+      ob.attachBone = String(at.bone || 'RightHand');
+      const k2 = Number(at.scale);
+      if (k2 > 0) {
+        const bs = ob.scale || { x: 1, y: 1, z: 1 };
+        ob.scale = v3((Number(bs.x) || 1) * k2, (Number(bs.y) || 1) * k2, (Number(bs.z) || 1) * k2);
+      }
+    }
+  }
 
   // 分镜串联：当前时间的活动相机（覆盖 activeCameraId）
   const liveCamId = activeCameraAt(scene, time);
@@ -4125,6 +5165,81 @@ export function actorTypeIdOf(presetId) {
   return 'm_standard';
 }
 /**
+ * 基础几何体的局部单位面（底面在 y=0，X/Z 居中，单位高度 1）。
+ * compound 与普通 geom 共用同一套图元，避免两处尺寸漂移。
+ */
+function directorPrimitiveLocalFaces(preset) {
+  const p = String(preset || 'box');
+  if (p === 'sphere') return directorSphereFaces(0, 0.5, 0, 0.5);
+  if (p === 'cylinder') return directorCylinderFaces(0, 0.5, 0, 0.5, 1);
+  if (p === 'cone') return directorConeFaces(0, 0, 0, 0.5, 1);
+  if (p === 'plane') return directorBoxFaces(0, 0.005, 0, 1, 0.01, 1);
+  if (p === 'capsule') return directorCapsuleFaces(0, 0.5, 0, 0.25, 0.5);
+  if (p === 'torus') return directorTorusFaces(0, 0.5, 0, 0.35, 0.15);
+  if (p === 'pyramid') return directorPyramidFaces(0, 0, 0, 1, 1, 1);
+  if (p === 'disc') return directorDiskFaces(0, 0.01, 0, 0.5);
+  if (p === 'arc') return directorHalfArcFaces(0, 0.5, 0, 0.5, 0.1);
+  if (p === 'half_cylinder') return directorHalfCylinderFaces(0, 0.5, 0, 0.5, 1);
+  if (p === 'ancient_house') return ancientHouseFaces(0, 0, 0, 1, 1, 1, 0.34);
+  if (p === 'ancient_stall') return ancientStallFaces(0, 0, 0, 1, 1, 1);
+  if (p === 'stone_step') return directorBoxFaces(0, 0.15, 0, 1, 0.3, 1);
+  return directorBoxFaces(0, 0.5, 0, 1, 1, 1);
+}
+
+/** 单位图元高度（锚点/包围盒用，绝不生成网格）。 */
+function directorPrimitiveUnitHeight(preset) {
+  const p = String(preset || 'box');
+  if (p === 'plane' || p === 'disc') return 0.01;
+  if (p === 'ancient_house') return 1.34;
+  if (p === 'ancient_stall') return 0.84;
+  if (p === 'stone_step') return 0.3;
+  return 1;
+}
+
+/**
+ * 参数化组合道具：一个对象由多个基础图元组成（警车/武器/路灯/桌椅）。
+ * part.pos 是相对父对象的地面偏移（底面中心），part.scale 是 [宽,高,深]；
+ * 各部件跟随父对象的 pos/rotY/scale，并保留自己的颜色供渲染分批。
+ */
+function directorCompoundFaces(ob) {
+  const sc = ob.scale || { x: 1, y: 1, z: 1 };
+  const k = Number(ob.s) || 1;
+  const psx = k * (Number(sc.x) || 1), psy = k * (Number(sc.y) || 1), psz = k * (Number(sc.z) || 1);
+  const pry = Number(ob.rotY) || 0;
+  const pc = Math.cos(pry), pn = Math.sin(pry);
+  const out = [];
+  for (const pt of ob.parts.slice(0, 64)) {
+    if (!pt) continue;
+    const psc = pt.scale || { x: 1, y: 1, z: 1 };
+    const sx = Number(psc.x) || 1, sy = Number(psc.y) || 1, sz = Number(psc.z) || 1;
+    const rx = Number(pt.rx) || 0, ry = Number(pt.rotY) || 0, rz = Number(pt.rz) || 0;
+    const cx = Math.cos(rx), snx = Math.sin(rx);
+    const cy = Math.cos(ry), sny = Math.sin(ry);
+    const cz = Math.cos(rz), snz = Math.sin(rz);
+    // 与 objectAxes 同序：R = Ry·Rx·Rz；三列即局部轴。
+    const ax = v3(cy * cz + sny * snx * snz, cx * snz, -sny * cz + cy * snx * snz);
+    const ay = v3(-cy * snz + sny * snx * cz, cx * cz, sny * snz + cy * snx * cz);
+    const az = v3(sny * cx, -snx, cy * cx);
+    const ox = Number(pt.pos && pt.pos.x) || 0;
+    const oy = Number(pt.pos && pt.pos.y) || 0;
+    const oz = Number(pt.pos && pt.pos.z) || 0;
+    const color = String(pt.color || ob.color || '');
+    for (const f of directorPrimitiveLocalFaces(pt.preset)) {
+      const vv = f.v.map((p) => {
+        const x = p.x * sx, y = p.y * sy, z = p.z * sz;
+        const xr = ax.x * x + ay.x * y + az.x * z;
+        const yr = ax.y * x + ay.y * y + az.y * z;
+        const zr = ax.z * x + ay.z * y + az.z * z;
+        const lx = (xr + ox) * psx, ly = (yr + oy) * psy, lz = (zr + oz) * psz;
+        return v3(ob.pos.x + lx * pc + lz * pn, ob.pos.y + ly, ob.pos.z - lx * pn + lz * pc);
+      });
+      out.push({ v: vv, shade: f.shade, ...(color ? { color } : {}) });
+    }
+  }
+  return out;
+}
+
+/**
  * 物体锚点（标签/构图用）：**O(1) 解析计算，绝不生成网格**。
  * 历史事故：早期版本在这里调用 directorObjectFaces()，单个模型要蒙皮 4.9 万三角形 ≈ 77ms，
  * 指针每移动一次都算 → 拖动/缩放卡死、gizmo 跟手错位（"缩放乱跳"）。性能敏感路径禁止走 face 生成。
@@ -4135,14 +5250,16 @@ export function directorObjectAnchor(ob) {
   const sc = ob.scale || { x: 1, y: 1, z: 1 };
   const sy = (Number(sc.y) || 1) * (Number(ob.s) || 1);
   let top = py + (Number(ob.h) || 1.7) * sy;   // 模型/人偶：按设定身高
-  if (ob.kind === 'geom' || ob.kind === 'obj' || !ob.kind) {
-    const preset = String(ob.preset || 'box');
-    const unitH = preset === 'plane' || preset === 'disc' ? 0.01
-      : preset === 'ancient_house' ? 1.34      // 墙身 1 + 屋顶 0.34
-      : preset === 'ancient_stall' ? 0.84      // 台面+遮棚
-      : preset === 'stone_step' ? 0.3
-      : 1;                                     // 其余单位图元高度 1
-    top = py + unitH * sy;
+  if (ob.kind === 'compound' && Array.isArray(ob.parts) && ob.parts.length) {
+    let partTop = 0;
+    for (const pt of ob.parts) {
+      const psc = pt.scale || { x: 1, y: 1, z: 1 };
+      const y = (Number(pt.pos && pt.pos.y) || 0) + directorPrimitiveUnitHeight(pt.preset) * (Number(psc.y) || 1);
+      if (y > partTop) partTop = y;
+    }
+    top = py + Math.max(0.05, Math.max(partTop, Number(ob.h) || 0)) * sy;
+  } else if (ob.kind === 'geom' || ob.kind === 'obj' || !ob.kind) {
+    top = py + directorPrimitiveUnitHeight(ob.preset) * sy;
   }
   // 朝向只影响平面轮廓，标签用轴对齐包围盒中心即可（不引入旋转误差）
   return { top, center: v3(px, top, pz) };
@@ -4176,6 +5293,9 @@ export function directorObjectFaces(ob) {
       if (out.length) return out;
     }
     return actorFaces(ob);
+  }
+  if (ob.kind === 'compound' && Array.isArray(ob.parts) && ob.parts.length) {
+    return directorCompoundFaces(ob);
   }
   const sc = ob.scale || { x: 1, y: 1, z: 1 };
   const s = Number(ob.s) || 1;
@@ -4216,21 +5336,7 @@ export function directorObjectFaces(ob) {
     return directorBoxFaces(0, hgt / 2, 0, w, hgt, w * 0.6).map((f) => ({ v: f.v.map(xf), shade: f.shade }));
   }
   const preset = String(ob.preset || 'box');
-  let local;
-  if (preset === 'sphere') local = directorSphereFaces(0, 0.5, 0, 0.5);
-  else if (preset === 'cylinder') local = directorCylinderFaces(0, 0.5, 0, 0.5, 1);
-  else if (preset === 'cone') local = directorConeFaces(0, 0, 0, 0.5, 1);
-  else if (preset === 'plane') local = directorBoxFaces(0, 0.005, 0, 1, 0.01, 1);
-  else if (preset === 'capsule') local = directorCapsuleFaces(0, 0.5, 0, 0.25, 0.5);
-  else if (preset === 'torus') local = directorTorusFaces(0, 0.5, 0, 0.35, 0.15);
-  else if (preset === 'pyramid') local = directorPyramidFaces(0, 0, 0, 1, 1, 1);
-  else if (preset === 'disc') local = directorDiskFaces(0, 0.01, 0, 0.5);
-  else if (preset === 'arc') local = directorHalfArcFaces(0, 0.5, 0, 0.5, 0.1);
-  else if (preset === 'half_cylinder') local = directorHalfCylinderFaces(0, 0.5, 0, 0.5, 1);
-  else if (preset === 'ancient_house') local = ancientHouseFaces(0, 0, 0, 1, 1, 1, 0.34);
-  else if (preset === 'ancient_stall') local = ancientStallFaces(0, 0, 0, 1, 1, 1);
-  else if (preset === 'stone_step') local = directorBoxFaces(0, 0.15, 0, 1, 0.3, 1);
-  else local = directorBoxFaces(0, 0.5, 0, 1, 1, 1);
+  const local = directorPrimitiveLocalFaces(preset);
   return local.map((f) => ({ v: f.v.map(xf), shade: f.shade }));
 }
 
@@ -4564,7 +5670,7 @@ const DIRECTOR_GL_FS = [
 // ============================================================
 // 舞台文档持久化（按项目 id 存 localStorage）
 // ============================================================
-export const directorDocKey = (pid) => 'dsh-director-stage:' + String(pid || 'default');
+export const directorDocKey = (pid, stageId) => 'dsh-director-stage:' + String(pid || 'default') + (stageId ? '::' + String(stageId) : '');
 /** 用户自建动作（骨骼+姿态编排后保存；出现在「动作」下拉里，与模型自带片段并列）。 */
 const userActionsKey = (pid) => 'dsh-director-actions:' + String(pid || 'default');
 export function loadUserActions(pid) {
@@ -4623,10 +5729,10 @@ export function applyUserAction(ob, action) {
   if (!ob.poseLoop) delete ob.poseLoop;
   return ob;
 }
-export function saveStageDoc(pid, scene) {
+export function saveStageDoc(pid, scene, stageId) {
   try {
     if (typeof localStorage === 'undefined') return false;
-    localStorage.setItem(directorDocKey(pid), JSON.stringify(Object.assign({}, scene, { updatedAt: Date.now() })));
+    localStorage.setItem(directorDocKey(pid, stageId), JSON.stringify(Object.assign({}, scene, { updatedAt: Date.now() })));
     return true;
   } catch { return false; }
 }
@@ -4660,10 +5766,10 @@ export function migrateStageScene(scene) {
   return scene;
 }
 
-export function loadStageDoc(pid, title) {
+export function loadStageDoc(pid, title, stageId) {
   try {
     if (typeof localStorage === 'undefined') return directorDefaultScene(title);
-    const raw = localStorage.getItem(directorDocKey(pid));
+    const raw = localStorage.getItem(directorDocKey(pid, stageId));
     if (!raw) return directorDefaultScene(title);
     const doc = JSON.parse(raw);
     if (!doc || !Array.isArray(doc.objects)) return directorDefaultScene(title);
@@ -4675,8 +5781,8 @@ export function loadStageDoc(pid, title) {
     return migrateStageScene(doc);   // 旧场景自动升级到真实人偶资产
   } catch { return directorDefaultScene(title); }
 }
-export function clearStageDoc(pid) {
-  try { if (typeof localStorage !== 'undefined') localStorage.removeItem(directorDocKey(pid)); return true; }
+export function clearStageDoc(pid, stageId) {
+  try { if (typeof localStorage !== 'undefined') localStorage.removeItem(directorDocKey(pid, stageId)); return true; }
   catch { return false; }
 }
 
@@ -5254,7 +6360,7 @@ export function createDirectorGlRenderer(canvas) {
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
-  const buildMesh = (id, faces, ob) => {
+  const buildMesh = (id, faces, ob, sigExtra) => {
     const tris = directorTriangulateFaces(faces);
     const pos = new Float32Array(tris.length * 9);
     const nrm = new Float32Array(tris.length * 9);
@@ -5271,7 +6377,7 @@ export function createDirectorGlRenderer(canvas) {
     if (!rec) { rec = { vbo: gl.createBuffer(), nbo: gl.createBuffer(), count: 0, sig: '' }; meshCache.set(id, rec); }
     const t = (ob && ob.pos) || { x: 0, y: 0, z: 0 };
     const sc = (ob && ob.scale) || { x: 1, y: 1, z: 1 };
-    const sig = tris.length + '|' + t.x + ',' + t.y + ',' + t.z + '|' + (Number(ob && ob.rotY) || 0) + '|' + sc.x + ',' + sc.y + ',' + sc.z + '|' + (Number(ob && ob.h) || 1) + '|' + String(ob && ob.preset || '');
+    const sig = tris.length + '|' + t.x + ',' + t.y + ',' + t.z + '|' + (Number(ob && ob.rotY) || 0) + '|' + sc.x + ',' + sc.y + ',' + sc.z + '|' + (Number(ob && ob.h) || 1) + '|' + String(ob && ob.preset || '') + '|' + String(sigExtra || '');
     if (rec.sig !== sig) {
       gl.bindBuffer(gl.ARRAY_BUFFER, rec.vbo); gl.bufferData(gl.ARRAY_BUFFER, pos, gl.DYNAMIC_DRAW);
       gl.bindBuffer(gl.ARRAY_BUFFER, rec.nbo); gl.bufferData(gl.ARRAY_BUFFER, nrm, gl.DYNAMIC_DRAW);
@@ -5702,6 +6808,8 @@ export function createDirectorGlRenderer(canvas) {
           if (asset) {
             const rec = uploadSkin(ob.assetId, asset);
             const t = Number(ob.animTime) || 0;
+            // 外部生成的 GLB 可能带多个动画：优先按对象 clip 选，其次第一条。
+            if (ob.clip && typeof asset.clipByName === 'function') asset._anim = asset.clipByName(ob.clip) || asset._anim;
             const bones = asset.bones ? boneMatrices(asset, t) : null;
             const cc2 = directorHexToRgb(ob.color || mannequinColorOf(ob.typeId) || CLAY);
             const model = directorMat4Model(ob.pos, Number(ob.rotY) || 0, v3(Number(ob.s) || 1, Number(ob.s) || 1, Number(ob.s) || 1));
@@ -5716,20 +6824,32 @@ export function createDirectorGlRenderer(canvas) {
         const faces = directorObjectFaces(ob);
         stats.faces += faces.length;
         if (!faces.length) return;
-        const rec = buildMesh(ob.id, faces, ob);
-        stats.tris += rec.count / 3;
-        gl.bindBuffer(gl.ARRAY_BUFFER, rec.vbo);
-        gl.enableVertexAttribArray(loc.aPosition);
-        gl.vertexAttribPointer(loc.aPosition, 3, gl.FLOAT, false, 0, 0);
-        gl.bindBuffer(gl.ARRAY_BUFFER, rec.nbo);
-        gl.enableVertexAttribArray(loc.aNormal);
-        gl.vertexAttribPointer(loc.aNormal, 3, gl.FLOAT, false, 0, 0);
-        gl.uniformMatrix4fv(loc.uModel, false, directorMat4Identity());
-        gl.uniformMatrix3fv(loc.uNormalMat, false, directorMat3NormalFrom(v3(0, 0, 0), 0, v3(1, 1, 1)));
-        const cc = directorHexToRgb(ob.color || mannequinColorOf(ob.typeId) || CLAY);
-        gl.uniform3f(loc.uColor, cc[0], cc[1], cc[2]);
-        gl.uniform1f(loc.uSelected, (o.selectedId && ob.id === o.selectedId) ? 1 : 0);
-        gl.drawArrays(gl.TRIANGLES, 0, rec.count);
+        // 组合道具的每个 part 可带自己的颜色：按颜色分批绘制，避免整车被刷成同一色。
+        const faceGroups = new Map();
+        for (const f of faces) {
+          const key = f.color || '';
+          let arr = faceGroups.get(key);
+          if (!arr) { arr = []; faceGroups.set(key, arr); }
+          arr.push(f);
+        }
+        const sigExtra = ob.kind === 'compound' ? JSON.stringify(ob.parts || []) : '';
+        const isSel = (o.selectedId && ob.id === o.selectedId) ? 1 : 0;
+        for (const [colorKey, groupFaces] of faceGroups) {
+          const rec = buildMesh(colorKey ? ob.id + '|' + colorKey : ob.id, groupFaces, ob, sigExtra);
+          stats.tris += rec.count / 3;
+          gl.bindBuffer(gl.ARRAY_BUFFER, rec.vbo);
+          gl.enableVertexAttribArray(loc.aPosition);
+          gl.vertexAttribPointer(loc.aPosition, 3, gl.FLOAT, false, 0, 0);
+          gl.bindBuffer(gl.ARRAY_BUFFER, rec.nbo);
+          gl.enableVertexAttribArray(loc.aNormal);
+          gl.vertexAttribPointer(loc.aNormal, 3, gl.FLOAT, false, 0, 0);
+          gl.uniformMatrix4fv(loc.uModel, false, directorMat4Identity());
+          gl.uniformMatrix3fv(loc.uNormalMat, false, directorMat3NormalFrom(v3(0, 0, 0), 0, v3(1, 1, 1)));
+          const cc = directorHexToRgb(colorKey || ob.color || mannequinColorOf(ob.typeId) || CLAY);
+          gl.uniform3f(loc.uColor, cc[0], cc[1], cc[2]);
+          gl.uniform1f(loc.uSelected, isSel);
+          gl.drawArrays(gl.TRIANGLES, 0, rec.count);
+        }
         stats.drawn++;
       });
       // gizmo：三根轴 + 旋转环（深度测试关闭 → 永远可见；最后画）
@@ -5984,7 +7104,7 @@ export function directorRenderScene(ctx, w, h, scene, opts) {
   (scene.objects || []).forEach((ob) => {
     const fs = directorObjectFaces(ob);
     stats.faces += fs.length;
-    fs.forEach((f) => items.push({ f, color: ob.color || mannequinColorOf(ob.typeId) || CLAY, base: ob }));
+    fs.forEach((f) => items.push({ f, color: f.color || ob.color || mannequinColorOf(ob.typeId) || CLAY, base: ob }));
   });
   if (false && env.groundVisible !== false) {
     const s = 400, op = 0;   // 不画地面填充，只画网格
@@ -6136,18 +7256,23 @@ function directorObjectScreenBox(ob, project) {
   const k = Number(ob.s) || 1;
   const sx = k * (Number(sc.x) || 1), sy = k * (Number(sc.y) || 1), sz = k * (Number(sc.z) || 1);
   let hx, hy, hz;
-  if (ob.kind === 'model' || ob.kind === 'gltf' || ob.kind === 'actor') {
+  if (ob.kind === 'compound' && Array.isArray(ob.parts) && ob.parts.length) {
+    // 组合道具：按部件实际展开范围估包围盒（仍不生成网格）
+    let mx = 0, my = 0, mz = 0;
+    for (const pt of ob.parts) {
+      const psc = pt.scale || { x: 1, y: 1, z: 1 };
+      mx = Math.max(mx, Math.abs(Number(pt.pos && pt.pos.x) || 0) + 0.5 * (Number(psc.x) || 1));
+      mz = Math.max(mz, Math.abs(Number(pt.pos && pt.pos.z) || 0) + 0.5 * (Number(psc.z) || 1));
+      my = Math.max(my, (Number(pt.pos && pt.pos.y) || 0) + directorPrimitiveUnitHeight(pt.preset) * (Number(psc.y) || 1));
+    }
+    hx = mx * sx; hy = my * sy; hz = mz * sz;
+  } else if (ob.kind === 'model' || ob.kind === 'gltf' || ob.kind === 'actor') {
     const h = Number(ob.h) || 1.78;
     hx = h * 0.30 * Math.max(0.5, sx);
     hy = h * Math.max(0.5, sy);
     hz = h * 0.22 * Math.max(0.5, sz);
   } else {
-    const preset = String(ob.preset || 'box');
-    const H = preset === 'plane' || preset === 'disc' ? 0.02
-      : preset === 'ancient_house' ? 1.34
-        : preset === 'ancient_stall' ? 0.84
-          : preset === 'stone_step' ? 0.3 : 1;
-    hx = 0.5 * sx; hy = H * sy; hz = 0.5 * sz;
+    hx = 0.5 * sx; hy = directorPrimitiveUnitHeight(ob.preset) * sy; hz = 0.5 * sz;
   }
   const ry = Number(ob.rotY) || 0, c = Math.cos(ry), sn = Math.sin(ry);
   const xf = (x, y, z) => v3(ob.pos.x + x * c + z * sn, ob.pos.y + Math.max(0, y), ob.pos.z - x * sn + z * c);
@@ -6358,16 +7483,7 @@ export function compileDirectorPrompt(scene, opts) {
   // 景别/运镜文案一律从中英双语的单一来源取：避免输出内部 id（如 medium_close），也避免英文分支里混中文
   const fillDef = SHOT_FILLS.find((f) => f.id === shot.shotSize) || null;
   const sizeLabel = fillDef ? (zh ? fillDef.zh : fillDef.en) : String(shot.shotSize || '');
-  const MOVE_LABELS = {
-    static: { zh: '固定机位', en: 'static camera' },
-    push_in: { zh: '推近', en: 'push in' },
-    pull_out: { zh: '拉远', en: 'pull out' },
-    pan_left: { zh: '向左摇', en: 'pan left' },
-    pan_right: { zh: '向右摇', en: 'pan right' },
-    orbit_left: { zh: '左环绕', en: 'orbit left' },
-    orbit_right: { zh: '右环绕', en: 'orbit right' },
-    handheld: { zh: '手持微晃', en: 'handheld' },
-  };
+  const MOVE_LABELS = Object.fromEntries(CAMERA_MOVES.map((m) => [m.id, { zh: m.zh, en: m.en }]));
   const mvDef = MOVE_LABELS[shot.cameraMove] || null;
   const moveLabel = mvDef ? (zh ? mvDef.zh : mvDef.en) : String(shot.cameraMove || '');
   const cam = (scene.cameras || []).find((c) => c.id === scene.activeCameraId) || (scene.cameras || [])[0] || {};

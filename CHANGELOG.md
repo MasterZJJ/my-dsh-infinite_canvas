@@ -7,6 +7,49 @@ GitHub Releases carry the same notes in English; maintainer-facing runbooks live
 ## [Unreleased]
 
 ### Added
+- **合入上游 0.21.0（`0.21.0-local.1`）——一次买到十来个功能面**。上游这版跳了 0.20.5 → 0.21.0
+  （`index.js` +766 行 / `client.js` +3616 行 / 工具 30→35 / 新增 6 条 RPC），带进来的能力：
+  - **音频节点 + TTS**：文生语音节点（音色 / 情绪 / 强度 / 语速 / 格式），两套协议
+    （OpenAI 同步 `/audio/speech`、lk888 异步 `/v1/media/generate`）+ 豆包 TTS 2.0 预设。
+  - **成片音频轨（BGM/SFX）**：成片节点新增 `audio` 输入口，支持静音 / 循环 / 增益 / 起点 /
+    偏移 / 时长；素材库、批量执行、创作台、3D-BOX、角色库、工作流、运镜预设、图片工具
+    （放大·抠图·扩图·多角度·重打光）、视觉拉片、视频前置体检 + 按秒单价
+    （`canvas_production_set_price`）、资产导入/列出工具（`canvas_import_asset` /
+    `canvas_list_assets` / 节点 `assetId` 直挂）、宿主无关化（核心只强依赖 3 个 ctx 成员，
+    见 `docs/host-agnostic.md`）一并合入。
+- **成片音频轨接入宿主侧 ffmpeg 合成**（`0.21.0-local.1`，本 fork 的设计决策）。上游把 BGM/SFX 做在
+  浏览器录制链路里（解码成 AudioBuffer 播放），而本 fork 的成片合成在宿主 ffmpeg——不接就会
+  **静默丢 BGM**（用户接了音频轨却没声音，比报错更糟）。实现：客户端采集
+  `audioTracks{assetId,start,offset,duration,gain,loop}` → 宿主解析成磁盘文件 → ffmpeg 用
+  `-stream_loop -1`（循环）+ `atrim`（偏移/时长）+ `volume`（增益）+ `adelay`（起点）+
+  `amix normalize=0`（保持各自增益，默认归一化会把 BGM 压没）混入总音轨；起点晚于成片时长的轨
+  跳过并留可见告警，不静默丢。
+
+### Changed
+- **版本号升为 `0.21.0-local.1`**：核心号跟到上游 0.21.0，本地序号重新从 1 开始（更新检查不会把
+  本地构建判成「旧版」）。基线由 0.20.5 前移到 0.21.0，`docs/fork-differences.md` 已同步。
+
+### Fixed
+- **合入上游 0.21.0 时保留本 fork 的三处正确修法**（合并冲突的实质判断，不是照抄上游）：
+  ① `/api/rpc` 与 `/api/llm-stream` 的收流继续走 **Buffer 分片 → 最后统一 UTF-8 解码**
+  （上游仍是 `raw += chunk`，中文跨分片会被切成 U+FFFD，落盘就是随机「�」），只把上限采用上游的
+  16MB（视觉拉片多帧 base64）；② `NODE_PATCH_FIELDS` 取并集（本 fork 的 `combatMode` 等 + 上游
+  `assetId`）；③ 分镜表 `boardScript` 与上游 `assetId` 置 done 在同一处并存，互不覆盖。
+
+### Internal
+- **上游合并方式：npm tarball 三路合并**（上游 GitHub 仓库从本机不可达，`git clone` 报 SSL/HTTP 000，
+  所以用「目标版 tarball = theirs、上一版 tarball = base、本仓库 = ours」逐文件 `git merge-file`）。
+  实测 **9 处冲突**：`index.js` 3、`client.js` 6（8 处是「两边各加各的」取并集，1 处是成片节点音频轨）、
+  `package.json` 1（版本号）；README / docs / SKILL.md / locale / cordis.patch.yml 全部零冲突自动合并。
+  方法与冲突面已写进 `docs/fork-differences.md` §10。
+- **回归门禁随上游改版同步更新**（不是放水，是把断言重新对准新结构）：
+  `test-panel-layout.mjs` —— 自动创作动作区从设置页 `AutoModeCard` 迁到创作台 `AutoStudioPanel`
+  （行为级 6 组断言 + RPC 参数断言同源搬过去），图标列期望加入 `add-audio`/角色库/工作流/创作台/
+  `open-3dbox-home`，统一弹窗标签页 3→5；`test-director-stage.mjs` —— 导演台入口并入 3D-BOX 库首页
+  （`open-3dbox-home` → `BoxHome` → 舞台）；`test-director-ux.mjs` —— `saveStageDoc` 多舞台后多了
+  `stageId` 参数。全量回归 **PASS 88 · FAIL 0 · SKIP 8 · ERROR 0**（跳过项均为环境前置）。
+
+### Added
 - **成片节点「合成导出」改走宿主侧 ffmpeg 合成**（`0.20.7-local.8`）。新增宿主模块
   `finalcut-compose.js` + 三条 RPC（`finalcutProbe` 能力探测 / `finalcutComposeStart` 起任务 /
   `finalcutJobGet` 查进度）：片段按「画布顺序 → 资产 id」交给宿主，宿主自己解析资产在磁盘上的

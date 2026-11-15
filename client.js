@@ -82,7 +82,8 @@ function revealCanvasInRight() {
         // last = 真·最后一帧（画面结尾）；tailpick = 续帧接力的最佳选帧（动作进行中/清晰/不抖）
         outputs: [{ id: 'out', kind: 'video' }, { id: 'tailpick', kind: 'image' }, { id: 'last', kind: 'image' }],
       },
-      'finalcut': { inputs: [{ id: 'in', kind: 'video' }], outputs: [] },
+      'finalcut': { inputs: [{ id: 'in', kind: 'video' }, { id: 'audio', kind: 'audio' }], outputs: [] },
+      'audio': { inputs: [{ id: 'prompt', kind: 'text' }], outputs: [{ id: 'out', kind: 'audio' }] },
       'group': { inputs: [], outputs: [] },
     };
     // 旧节点类型 → 合并类型。旧项目文档在读入时统一归一（loadGraphDoc / mergeHostDoc / importHostProject），
@@ -334,7 +335,7 @@ function revealCanvasInRight() {
       return null;
     }
     // 允许多条入线的输入端口（参考图类），其余输入端口保持单线
-    const MULTI_INPUT_PORTS = new Set(['ref', 'char', 'scene', 'prop']);
+    const MULTI_INPUT_PORTS = new Set(['ref', 'char', 'scene', 'prop', 'audio']);
     // 分镜端口期望的资产分类（仅用于连接时的非阻断提示）
     const PORT_CATEGORY = { char: 'character', scene: 'scene', prop: 'prop' };
     const CATEGORIES = ['character', 'scene', 'prop', 'script', 'storyboard', 'audio', 'finalcut', 'general'];
@@ -474,11 +475,71 @@ function revealCanvasInRight() {
       'nText': '文本',
       'nImage': '图片',
       'nVideo': '视频',
+      'nAudio': '音频',
+      'audioNodeEmpty': '空音频节点：从资产库拖入音频',
+      'audioMute': '静音',
+      'audioLoop': '循环',
+      'audioGain': '音量',
+      'audioTracksLabel': '音频轨（BGM/音效）',
+      'audioTracksEmpty': '连接音频节点到成片的 audio 输入口',
+      'audioTextPh': '输入要合成的文本…',
+      'audioGenerate': '生成音频',
+      'audioRegenerate': '重新生成',
+      'audioGenerating': '生成中…',
+      'audioModel': '音频模型',
+      'audioNoModel': '未配置 TTS（设置 → 音频模型）',
+      'audioVoice': '音色',
+      'audioVoiceDefault': '默认音色',
+      'audioVoicePh': '音色 ID（留空用默认）',
+      'audioVoiceLoadFail': '音色列表加载失败，可手动填音色 ID',
+      'audioEmotion': '情感',
+      'audioEmotionAuto': '自动',
+      'audioEmotionHappy': '开心',
+      'audioEmotionSad': '悲伤',
+      'audioEmotionAngry': '愤怒',
+      'audioEmotionFear': '恐惧',
+      'audioEmotionSurprised': '惊讶',
+      'audioEmotionCalm': '平静',
+      'audioEmotionScale': '情绪强度',
+      'audioSpeechRate': '语速',
+      'audioFormat': '格式',
+      'ttsProtocol': 'TTS 协议',
+      'ttsProtocolHint': 'OpenAI /audio/speech 为同步接口；星海聚合走 /v1/media/generate 异步任务（豆包 TTS 2.0）。',
+      'ttsProtocolOpenai': 'OpenAI 同步 /audio/speech',
+      'ttsProtocolLk888': '星海聚合 异步 /v1/media/generate',
+      'ttsPresetLk888': '填入豆包 TTS 2.0 预设',
+      'batchTitle': '批量执行',
+      'batchStart': '开始执行',
+      'batchStop': '停止',
+      'batchClose': '关闭',
+      'batchQueued': '等待',
+      'batchRunning': '生成中…',
+      'batchDone': '完成',
+      'batchFailed': '失败',
+      'batchStopped': '已停止',
+      'batchSkipped': '已跳过',
+      'batchSummary': '共 {n} 项 · 视频 {v} 条 / {s} 秒',
+      'batchCost': '预估 ¥{cost}（单价 {price}/秒）',
+      'batchNoPrice': '未设置视频单价——在对话里说「设置视频单价 X 元/秒」后显示金额',
+      'batchEmptyHint': '暂无批量任务：选中节点或分组后用「批量生成」打开。',
+      'batchNoTargets': '选中内容里没有可生成的节点',
+      'batchMenu': '批量生成（{n}）',
+      'batchGroupRun': '整组执行（{n}）',
+      'batchGroupVideo': '批量生成视频（{n}）',
+      'batchGroupDownload': '批量下载（{n}）',
+      'batchDownloaded': '已开始下载 {n} 个文件',
+      'batchNoAsset': '没有可下载的产物',
+      'batchConcurrency': '并发',
+      'batchQuoteHint': '按队列执行，可随时停止；单个失败不阻塞其余',
+      'batchJumpHint': '点击条目定位节点',
+      'batchMissingPrompt': '{n} 项缺少提示词，可能失败',
+      'batchDoneToast': '批量执行完成：成功 {ok} · 失败 {fail}',
       'tagText': '文本节点',
       'tagScript': '剧本节点',
       'tagStoryboard': '分镜表',
       'tagImage': '图片节点',
       'tagVideo': '视频节点',
+      'tagAudio': '音频节点',
       'tagFinalCut': '成片节点',
       'genRunning': '生成中…',
       'generated': '已生成',
@@ -514,6 +575,83 @@ function revealCanvasInRight() {
       'segNoChain': '硬切（不接力）',
       // ---- 3D 导演台 ----
       'directorTitle': '3D 导演台',
+      // ---- 3D-BOX（一句话搭景）----
+      'boxTitle': '3D-BOX',
+      'boxSubtitle': '一句话搭景 · Agent 可接管',
+      'boxBriefPh': '预演一段城市街头的警匪追车戏…',
+      'boxAuto': '自动',
+      'boxSceneAuto': '场景：自动',
+      'boxStyleAuto': '风格：自动',
+      'boxMoveAuto': '运镜：自动',
+      'boxBuild': '生成预演',
+      'boxBuilding': 'AI 搭景中…',
+      'boxAiBuilt': 'AI 已生成预演',
+      'boxEdit': '改景',
+      'boxEditing': '改景中…',
+      'boxEdited': '已按你的描述改景',
+      'boxAiCam': 'AI运镜',
+      'boxAiCamBusy': '运镜中…',
+      'boxAiCamDone': '已生成 AI 运镜',
+      'boxBuilt': '已生成 3D-BOX 预演',
+      'boxFailed': '搭景失败：',
+      'boxShot4': '四方位截图',
+      'boxShot12': '十二方位截图',
+      'boxShotBusy': '截图中…',
+      'boxShotDone': '已生成 {n} 张方位截图',
+      'boxShotName': '3D-BOX 方位',
+      'boxToVideo': '生成视频镜头',
+      'boxToVideoHint': '把当前机位导出为参考帧并建视频节点（首帧 hard），用视频模型生成成片级细节',
+      'boxToVideoDone': '已建视频节点：参考帧 + 首帧已接好，点击视频节点生成',
+      'boxHomeTitle': '3D-BOX 库',
+      'boxHomeSub': '一句话搭景 · 我的 3D-BOX',
+      'boxHomeNew': '生成预演',
+      'boxHomeBlank': '新建空白 3D-BOX',
+      'boxHomeList': '我的 3D-BOX',
+      'boxHomeEmpty': '还没有 3D-BOX；说一句话开始',
+      'boxHomeOpen': '打开',
+      'boxHomeContinue': '继续当前 3D-BOX',
+      'boxEditPh': '一句话改景 / 运镜：把镜头推近到桌面…',
+      'hostStaleHint': '宿主进程还是旧版：请完全退出 DeepSeek Harness（含托盘/后台）后重新启动。刷新页面只会更新前端，RPC 方法要重启宿主才会注册。',
+      'boxHomeLoading': '加载中…',
+      'boxHomeCurrent': '当前项目',
+      'boxHomeFailed': '加载 3D-BOX 库失败：',
+      'boxHomeMeta': '{c} 机位 · {s} 分镜 · {d}s',
+      'dirCharLib': '角色库',
+      'dirCharPick': '选择设定集角色',
+      'dirCharAdd': '添加角色',
+      'dirCharEmpty': '设定集里还没有角色',
+      'dirCharAdded': '已添加角色：{name}',
+      'dirCharExists': '角色已在场景里：{name}',
+      'dirCharRefs': '{n} 张参考图',
+      'motionPresetLabel': '运镜/转场',
+      'motionPresetPick': '选择运镜/转场',
+      'motionPresetTag': '运镜/转场',
+      'videoPreflight': '生成前预检',
+      'videoPreflightOK': '素材预检通过',
+      'videoCost': '预计 ¥{cost}（{price}/秒）',
+      'videoNoPrice': '未配置视频单价',
+      'videoRefCapWarn': '参考图 {n} 张超过 {vendor} 上限 {cap} 张，本次只会用前 {cap} 张',
+      'videoNoRefVendor': '{vendor} 不支持实体参考图，本次将忽略 {n} 张参考图',
+      'videoCharPick': '从设定集加角色参考',
+      'videoCharNoAssets': '该角色还没有参考图资产',
+      'videoCharAdded': '已加 {n} 张角色参考',
+      'videoCanvasRef': '画布参考',
+      'videoCanvasRefNone': '先在画布上选中图片节点',
+      'videoCanvasRefAdded': '已加 {n} 张画布参考',
+      'videoAutoLink': 'AutoLink',
+      'videoAutoLinkNone': '提示词里没有可匹配的 @名称@',
+      'videoAutoLinkAdded': '已自动连接 {n} 张参考',
+      'videoAutoLinkMiss': '有 @名称@ 但没有找到同名图片节点',
+      'videoFirstFrame': '首帧',
+      'videoFirstFrameNoEdge': '先连一张首帧图片到 frame 端口',
+      'videoFirstFrameDone': '已切换为首帧硬衔接',
+      'videoLong': '长视频',
+      'videoLongHint': '长视频请用分镜表按镜头切段，再由成片拼接；单节点保持厂商时长上限',
+      'videoLongWarn': '时长 {d}s 超过单段建议上限 15s，建议用分镜表切段 + 成片',
+      'boxExamples': '试试：',
+      'boxEx1': '城市街头警匪追车',
+      'boxEx2': '环绕香水瓶运镜',
+      'boxEx3': '古装庭院对峙',
       'directorHint': '摆位与取景：拖视口旋转机位，拖人偶移动站位；导出即得到一张带布景的镜头首帧',
       'directorDefaultTitle': '未命名布景',
       'directorActor': '演员',
@@ -665,13 +803,16 @@ function revealCanvasInRight() {
       'dirClickToPlace': '点视口放置',
       'dirFullscreen': '全屏',
       'dirUpload': '上传资源',
-      'dirUploadObj': '上传模型（OBJ）',
-      'dirUploadHint': '支持 Blender「导出 → Wavefront (.obj)」；自动归一化到人高、底面落地。建议先减面（<2 万三角形）。',
-      'dirObjOnly': '只支持 .obj 文件（Blender 导出 Wavefront）',
-      'dirObjTooBig': 'OBJ 文件过大（>900KB）——请在 Blender 里先减面或拆分',
+      'dirUploadObj': '上传模型（OBJ / GLB）',
+      'dirUploadHint': '支持 Blender「导出 → Wavefront (.obj)」与 glTF 二进制（.glb）；OBJ 建议 <900KB，GLB 建议 <20MB；自动归一化高度、底面落地。',
+      'dirObjOnly': '只支持 .obj / .glb 文件（Blender 导出 Wavefront 或 glTF Binary）',
       'dirObjLoaded': '模型已载入',
       'dirObjReadFail': '文件读取失败',
       'dirObjTooLarge': 'OBJ 超过 900KB，请先减面或压缩后再导入',
+      'dirGlbTooLarge': 'GLB 超过 20MB，请先减面或压缩后再导入',
+      'dirExportGlb': '导出 GLB',
+      'dirAttach': '骨骼附件',
+      'dirAttachNone': '未绑定',
       'dirSelObject': '选中对象',
       'dirName': '名称',
       'dirPos': '位置',
@@ -828,6 +969,12 @@ function revealCanvasInRight() {
       'dirPathDraw': '画线',
       'dirPathDrawing': '正在画（点地面）',
       'dirPathDrawHint': '点地面添加路径点，再点按钮结束',
+      'dirCamPath': '手绘运镜',
+      'dirCamPathDrawing': '正在画机位（点地面）',
+      'dirCamPathHint': '在地面连续点击绘制机位轨迹；再点一次按钮完成',
+      'dirCamPathDone': '已生成 {n} 个机位关键帧',
+      'dirCamPathNeed': '至少需要 2 个路径点',
+      'dirCamPathClear': '已清除手绘机位轨迹',
       'dirPathClear': '清空',
       'dirPathPointDel': '删点',
       'dirSpecTitle': 'AI 预演规格',
@@ -1114,6 +1261,134 @@ function revealCanvasInRight() {
       'sizeLabel': '清晰度',
       'llmLabel': '文本模型（DeepSeek）',
       'llmHint': '剧本与分镜提示词使用 Harness 当前配置的模型生成，无需另配 Key。',
+      'subjTab': '角色库',
+      'subjTitle': '跨项目角色库',
+      'subjMine': '我的角色库',
+      'subjSeries': '本系列',
+      'subjOfficial': '官方角色库',
+      'subjEmpty': '角色库还是空的：从「本系列」导入角色，或新建后生成设定图。',
+      'subjNoMatch': '没有匹配的角色',
+      'subjNew': '新建角色',
+      'subjImport': '存入角色库',
+      'subjImportAll': '全部导入（{n}）',
+      'subjImportDone': '已导入 {n} 个角色',
+      'subjSaved': '已存入角色库',
+      'subjApply': '应用至画布',
+      'subjApplied': '已建 {n} 张参考图{linked}',
+      'subjLinked': '，并接到选中节点（{n} 张）',
+      'subjNoAssets': '这个角色还没有参考图：先绑定或生成设定图',
+      'subjName': '名称',
+      'subjDesc': '描述（外观/性格/服装）',
+      'subjGender': '性别',
+      'subjAge': '年龄段',
+      'subjCulture': '文化区域',
+      'subjTags': '标签（逗号分隔）',
+      'subjFilterAll': '全部',
+      'subjMale': '男',
+      'subjFemale': '女',
+      'subjOther': '其他',
+      'subjChild': '少年',
+      'subjYouth': '青年',
+      'subjMiddle': '中年',
+      'subjElder': '老年',
+      'subjAsia': '亚洲',
+      'subjWest': '欧美',
+      'subjOtherCulture': '其他',
+      'subjDelete': '删除',
+      'subjDeleteConfirm': '删除角色「{name}」？只删库里的条目，不删资产。',
+      'subjEdit': '编辑',
+      'subjAssetsN': '{n} 张参考图',
+      'subjVoice': '含音色',
+      'subjBindAssets': '绑定参考图',
+      'subjGenerateSheet': '生成设定图',
+      'subjSheetCreated': '已创建角色设定图节点，生成结果会自动回挂角色库',
+      'subjSave': '保存',
+      'subjCancel': '取消',
+      'subjFromBibleHint': '从当前项目的设定集导入；参考图会复制到通用项目，跨项目可用。',
+      'subjTargetHint': '已带上目标节点：应用后自动接 ref 并写入 @角色名@',
+      'subjNoTargetHint': '选中一个图片/视频节点后再应用，可自动接 ref 并写入 @角色名@',
+      'subjSearch': '搜索名称/描述/标签',
+      'subjOfficialHint': '官方角色模板（无参考图）：复制后可生成设定图',
+      'subjUseTemplate': '用模板新建',
+      'imgTools': '图像工具',
+      'imgToolUpscale': '超分',
+      'imgToolMatte': '抠图',
+      'imgToolOutpaint': '扩图',
+      'imgToolAngles': '多角度',
+      'imgToolRelight': '打光',
+      'imgToolFactor': '倍数',
+      'imgToolRatio': '目标比例',
+      'imgToolLight': '光线',
+      'imgToolLightGolden': '黄金时刻',
+      'imgToolLightStudio': '柔光棚拍',
+      'imgToolLightNeon': '霓虹夜景',
+      'imgToolRun': '执行',
+      'imgToolRunning': '处理中…',
+      'imgToolUnsupported': '当前图片模型不支持此工具（需 images/edits 或 dsh-image-gen 桥接）；超分仍可用',
+      'imgToolDone': '已生成「{name}」节点',
+      'imgToolNoModel': '未配置图片模型：只能使用本地超分',
+      'imgToolTransparent': '透明底',
+      'imgToolWhiteBg': '白底',
+      'wfTab': '工作流',
+      'wfTitle': '工作流工具箱',
+      'wfEmpty': '还没有工作流：选中多个节点或一个组，右键「保存为工作流」。',
+      'wfSave': '保存为工作流（{n}）',
+      'wfNamePrompt': '工作流名称',
+      'wfDefaultName': '工作流 {time}',
+      'wfSaved': '已保存工作流「{name}」',
+      'wfInsert': '插入画布',
+      'wfInserted': '已插入 {n} 个节点 / {e} 条连线',
+      'wfRename': '重命名',
+      'wfDelete': '删除',
+      'wfDeleteConfirm': '删除工作流「{name}」？不会删除画布节点。',
+      'wfMeta': '{n} 节点 · {e} 连线 · {a} 资产占位',
+      'wfAssetMissing': '工作流资产未找到：已留空占位，可重新挂载/生成',
+      'wfNeedSelection': '至少选中两个节点或一个组',
+      'wfBadge': '工作流',
+      'damTags': '标签',
+      'damFolder': '文件夹',
+      'damTagsPrompt': '标签（逗号分隔）',
+      'damFolderPrompt': '文件夹名（留空清除）',
+      'damTagFilter': '标签',
+      'damFolderFilter': '文件夹',
+      'damAll': '全部',
+      'damZip': '下载 ZIP（{n}）',
+      'damZipDone': '已打包 {n} 个文件（跳过 {s}）',
+      'damZipEmpty': '没有可打包的资产',
+      'damMerge': '合并重复（{n}）',
+      'damMergeNone': '选中资产里没有字节相同的重复项',
+      'damMergeConfirm': '找到 {n} 组重复，将合并 {k} 个重复资产。引用会迁移到保留项，重复项隐藏；本次会话可用「撤销合并」恢复。',
+      'damMergeDone': '已合并 {n} 个重复资产',
+      'damMergeUndoConfirm': '撤销本次合并并恢复节点/角色库/工作流里的引用？',
+      'damMergeUndone': '已撤销合并，恢复 {n} 个资产',
+      'damUndoMerge': '撤销合并',
+      'damShowMerged': '显示已合并（{n}）',
+      'damHideMerged': '隐藏已合并（{n}）',
+      'damMerged': '已合并',
+      'damMergedHint': '与同内容资产合并，引用已迁移；可用「撤销合并」恢复',
+      'damSource': '来源',
+      'damDate': '日期',
+      'damDate7': '最近 7 天',
+      'damDate30': '最近 30 天',
+      'damDate90': '最近 90 天',
+      'pullShots': '拉片',
+      'pullTitle': '参考视频拉片',
+      'pullHint': '均匀抽帧后用当前文本模型（需支持图片输入）反推分镜、动态与音乐线索；只上传抽出的画面帧，不传视频文件。',
+      'pullFrames': '抽帧',
+      'pullFrameUnit': '{n} 帧',
+      'pullStart': '开始拉片',
+      'pullPreparing': '正在读取视频…',
+      'pullExtracting': '抽帧 {i}/{n}…',
+      'pullAnalyzing': '模型分析中…（约 30–90 秒）',
+      'pullUsingTextModel': '使用文本模型：{model}（需支持图片输入）',
+      'pullDone': '已生成分镜节点：{n} 镜',
+      'pullFail': '拉片失败',
+      'pullManual': '手动建分镜表',
+      'pullManualHint': '无法自动分析时，先建一张空分镜表手动填写。',
+      'pullNeedAsset': '这个视频还没有可分析的产物',
+      'pullAudioNote': '音乐线索：{text}',
+      'pullNoVision': '当前文本模型不支持图片输入——请在画布设置 → 文本模型里选择支持视觉的多模态模型。',
+      'pullShotCount': '{n} 镜 · {s}s',
       'saveTextAsset': '存为资产',
       'zoomView': '放大查看',
       'copyAll': '复制全部',
@@ -1347,12 +1622,42 @@ function revealCanvasInRight() {
       'autoNeedQuote': '先刷新预算',
       'autoQuoteSummary': '{s} 场 / {sh} 镜 / {sec} 秒 / 待调用 {calls} 次',
       'autoQuoteCost': '估算 ¥{cost}',
-      'autoQuoteNoPrice': '未配置视频每秒单价（设置→制作 填入后显示估算金额）',
+      'autoQuoteNoPrice': '未设置视频单价——在对话里说「设置视频单价 X 元/秒」后显示估算金额',
       'autoApproveNeedConfirm': '请输入确认原话（批准付费必须留痕）',
       'autoApproved': '已批准付费（待调用 {calls} 次）',
       'autoAborted': '已中止（保留已产出内容）',
       'autoDone': '完成',
       'autoFail': '操作失败',
+      'autoEntryHint': '动作与预算在左侧图标栏「创作台」；对话仍是主入口。',
+      'autoNoProject': '先打开/创建一个项目，再使用自动创作',
+      'autoClosedHint': '自动创作已关闭——在设置页打开开关后使用',
+      'autoIdle': '空闲：输入一句话创意开始',
+      'autoStRunning': '运行中',
+      'autoApprovalValid': '批准有效',
+      'autoStale': '预算已变化，请重新刷新后再批准',
+      'autoScopeHint': '批准覆盖全量预算；生成可只跑选中的场。',
+      'autoSelScenes': '已选 {n} 场',
+      'autoAllScenes': '全部场',
+      'autoHasVideo': '已有视频',
+      'autoNoQuoteHint': '还没有预算单：免费段生成分镜后自动出现；也可先点「刷新预算」。',
+      'autoPhResearch': '调研',
+      'autoPhPitch': '提案',
+      'autoPhCritique': '互评',
+      'autoPhDecide': '决策',
+      'autoPhWriteback': '落盘',
+      'autoPhScript': '剧本',
+      'autoPhBoards': '分镜',
+      'autoPhBudget': '预算单',
+      'autoPhVideo': '生成视频',
+      'autoPhRefs': '参考图',
+      'autoPhDone': '完成',
+      'autoPhAborted': '已中止',
+      'autoPhFailed': '失败',
+      'consoleTitle': '创作台',
+      'consoleTabAuto': '自动创作',
+      'consoleTabBatch': '批量执行',
+      'consolePriceSet': '视频单价 ¥{price}/秒（在对话里说「设置视频单价 X 元/秒」可修改）',
+      'consolePriceNone': '未设置视频单价——在对话里说「设置视频单价 X 元/秒」后显示金额',
       'stageCurrent': '制作阶段',
       'stageReadyYes': '可交付',
       'stageReadyNo': '未就绪',
@@ -1412,6 +1717,9 @@ function revealCanvasInRight() {
       'bibleDraftEmpty': '没能起草出设定集：请先在剧本/文本节点写点创作意图，或检查文本模型配置',
       'bibleOrderHint': '设定集先行：世界观/风格/角色/场景/道具先定好 → 生成剧本 → 为角色/场景/道具生成参考图 → 再拆解分镜',
       'bibleLinkAssets': '链接资产',
+      'bibleSaveToLib': '存入角色库',
+      'bibleInLib': '已入库',
+      'bibleLibSaved': '已存入角色库：{name}',
       'bibleLinkTitle': '链接资产到设定条目',
       'bibleLinkHint': '勾选要绑定的图片/音频/视频（可多选）；@引用该条目时注入设定文字、音频作声音参考；图片参考图只认连线，不会自动上送',
       'bibleLinkApply': '完成',
@@ -1564,11 +1872,71 @@ function revealCanvasInRight() {
       'nText': 'Text',
       'nImage': 'Image',
       'nVideo': 'Video',
+      'nAudio': 'Audio',
+      'audioNodeEmpty': 'Empty audio node: add an audio asset from the library',
+      'audioMute': 'Mute',
+      'audioLoop': 'Loop',
+      'audioGain': 'Gain',
+      'audioTracksLabel': 'Audio tracks (BGM/SFX)',
+      'audioTracksEmpty': 'Connect audio nodes to the final cut audio input',
+      'audioTextPh': 'Text to synthesize…',
+      'audioGenerate': 'Generate audio',
+      'audioRegenerate': 'Regenerate',
+      'audioGenerating': 'Generating…',
+      'audioModel': 'Audio model',
+      'audioNoModel': 'No TTS configured (Settings → Audio models)',
+      'audioVoice': 'Voice',
+      'audioVoiceDefault': 'Default voice',
+      'audioVoicePh': 'Voice ID (empty = default)',
+      'audioVoiceLoadFail': 'Voice list failed; enter a voice ID manually',
+      'audioEmotion': 'Emotion',
+      'audioEmotionAuto': 'Auto',
+      'audioEmotionHappy': 'Happy',
+      'audioEmotionSad': 'Sad',
+      'audioEmotionAngry': 'Angry',
+      'audioEmotionFear': 'Fearful',
+      'audioEmotionSurprised': 'Surprised',
+      'audioEmotionCalm': 'Calm',
+      'audioEmotionScale': 'Intensity',
+      'audioSpeechRate': 'Rate',
+      'audioFormat': 'Format',
+      'ttsProtocol': 'TTS protocol',
+      'ttsProtocolHint': 'OpenAI /audio/speech is synchronous; the lk888 gateway uses /v1/media/generate async tasks (Doubao TTS 2.0).',
+      'ttsProtocolOpenai': 'OpenAI sync /audio/speech',
+      'ttsProtocolLk888': 'lk888 async /v1/media/generate',
+      'ttsPresetLk888': 'Fill Doubao TTS 2.0 preset',
+      'batchTitle': 'Batch run',
+      'batchStart': 'Start',
+      'batchStop': 'Stop',
+      'batchClose': 'Close',
+      'batchQueued': 'Queued',
+      'batchRunning': 'Generating…',
+      'batchDone': 'Done',
+      'batchFailed': 'Failed',
+      'batchStopped': 'Stopped',
+      'batchSkipped': 'Skipped',
+      'batchSummary': '{n} items · {v} videos / {s}s',
+      'batchCost': 'Est. ¥{cost} (unit {price}/s)',
+      'batchNoPrice': 'No video unit price set — say "set video price to X yuan/second" in the chat',
+      'batchEmptyHint': 'No batch task — select nodes or a group and use "Batch generate".',
+      'batchNoTargets': 'Nothing runnable in the selection',
+      'batchMenu': 'Batch generate ({n})',
+      'batchGroupRun': 'Run group ({n})',
+      'batchGroupVideo': 'Generate videos ({n})',
+      'batchGroupDownload': 'Download all ({n})',
+      'batchDownloaded': 'Started downloading {n} files',
+      'batchNoAsset': 'No generated assets to download',
+      'batchConcurrency': 'Concurrency',
+      'batchQuoteHint': 'Runs as a queue and can be stopped; one failure does not block the rest',
+      'batchJumpHint': 'Click an item to locate its node',
+      'batchMissingPrompt': '{n} items have no prompt and may fail',
+      'batchDoneToast': 'Batch finished: {ok} done · {fail} failed',
       'tagText': 'Text node',
       'tagScript': 'Script node',
       'tagStoryboard': 'Storyboard',
       'tagImage': 'Image node',
       'tagVideo': 'Video node',
+      'tagAudio': 'Audio node',
       'tagFinalCut': 'Final cut node',
       'genRunning': 'Generating…',
       'generated': 'Generated',
@@ -1604,6 +1972,83 @@ function revealCanvasInRight() {
       'segNoChain': 'hard cut (no chain)',
       // ---- 3D director stage ----
       'directorTitle': '3D director stage',
+      // ---- 3D-BOX (one-line previz) ----
+      'boxTitle': '3D-BOX',
+      'boxSubtitle': 'Describe it; the agent builds it',
+      'boxBriefPh': 'Previz a city street chase…',
+      'boxAuto': 'Auto',
+      'boxSceneAuto': 'Scene: Auto',
+      'boxStyleAuto': 'Style: Auto',
+      'boxMoveAuto': 'Move: Auto',
+      'boxBuild': 'Build previz',
+      'boxBuilding': 'AI building…',
+      'boxAiBuilt': 'AI previz generated',
+      'boxEdit': 'Edit scene',
+      'boxEditing': 'Editing…',
+      'boxEdited': 'Scene updated',
+      'boxAiCam': 'AI camera',
+      'boxAiCamBusy': 'Planning…',
+      'boxAiCamDone': 'AI camera generated',
+      'boxBuilt': '3D-BOX previz generated',
+      'boxFailed': 'Build failed: ',
+      'boxShot4': '4-view screenshots',
+      'boxShot12': '12-view screenshots',
+      'boxShotBusy': 'Capturing…',
+      'boxShotDone': 'Generated {n} view screenshots',
+      'boxShotName': '3D-BOX view',
+      'boxToVideo': 'Video shot',
+      'boxToVideoHint': 'Export the current camera as a reference frame and create a video node (hard first frame) for a detailed final shot',
+      'boxToVideoDone': 'Video node created: reference frame + first frame wired; click the video node to generate',
+      'boxHomeTitle': '3D-BOX library',
+      'boxHomeSub': 'One-line previz · My 3D-BOX',
+      'boxHomeNew': 'Build previz',
+      'boxHomeBlank': 'New blank 3D-BOX',
+      'boxHomeList': 'My 3D-BOX',
+      'boxHomeEmpty': 'No 3D-BOX yet; describe a scene to start',
+      'boxHomeOpen': 'Open',
+      'boxHomeContinue': 'Continue current 3D-BOX',
+      'boxEditPh': 'One-line change / camera: push in toward the desk…',
+      'hostStaleHint': 'The host process is still an older build: fully quit DeepSeek Harness (including tray/background) and start it again. Refreshing only updates the frontend; RPC methods register at host startup.',
+      'boxHomeLoading': 'Loading…',
+      'boxHomeCurrent': 'Current project',
+      'boxHomeFailed': 'Failed to load 3D-BOX library:',
+      'boxHomeMeta': '{c} cameras · {s} shots · {d}s',
+      'dirCharLib': 'Character library',
+      'dirCharPick': 'Pick a bible character',
+      'dirCharAdd': 'Add character',
+      'dirCharEmpty': 'No characters in the bible yet',
+      'dirCharAdded': 'Added character: {name}',
+      'dirCharExists': 'Character already in scene: {name}',
+      'dirCharRefs': '{n} reference images',
+      'motionPresetLabel': 'Camera / transition',
+      'motionPresetPick': 'Pick camera / transition',
+      'motionPresetTag': 'Camera/transition',
+      'videoPreflight': 'Preflight',
+      'videoPreflightOK': 'Preflight passed',
+      'videoCost': 'Est. ¥{cost} ({price}/s)',
+      'videoNoPrice': 'No video unit price configured',
+      'videoRefCapWarn': '{n} reference images exceed {vendor} cap of {cap}; only the first {cap} will be used',
+      'videoNoRefVendor': '{vendor} does not accept entity references; {n} reference images will be ignored',
+      'videoCharPick': 'Add character refs from bible',
+      'videoCharNoAssets': 'This character has no reference assets yet',
+      'videoCharAdded': 'Added {n} character refs',
+      'videoCanvasRef': 'Canvas refs',
+      'videoCanvasRefNone': 'Select image nodes on the canvas first',
+      'videoCanvasRefAdded': 'Added {n} canvas refs',
+      'videoAutoLink': 'AutoLink',
+      'videoAutoLinkNone': 'No @name@ mentions to link',
+      'videoAutoLinkAdded': 'Auto-linked {n} refs',
+      'videoAutoLinkMiss': 'Mentions found, but no matching image nodes',
+      'videoFirstFrame': 'First frame',
+      'videoFirstFrameNoEdge': 'Wire a first-frame image into the frame port first',
+      'videoFirstFrameDone': 'Switched to hard first-frame chaining',
+      'videoLong': 'Long video',
+      'videoLongHint': 'For long videos, split shots with a storyboard and compose them in final cut; keep each node within the vendor duration cap',
+      'videoLongWarn': 'Duration {d}s exceeds the 15s per-segment guideline; use a storyboard + final cut',
+      'boxExamples': 'Try:',
+      'boxEx1': 'City street chase',
+      'boxEx2': 'Orbit a perfume bottle',
+      'boxEx3': 'Costume courtyard standoff',
       'directorHint': 'Block and frame: drag the viewport to orbit the camera, drag a figure to move it; export gives you a shot first frame with real blocking',
       'directorDefaultTitle': 'Untitled set',
       'directorActor': 'Actor',
@@ -1751,13 +2196,16 @@ function revealCanvasInRight() {
       'dirClickToPlace': 'Click the viewport to place',
       'dirFullscreen': 'Fullscreen',
       'dirUpload': 'Upload',
-      'dirUploadObj': 'Upload model (OBJ)',
-      'dirUploadHint': 'Accepts Blender "Export → Wavefront (.obj)"; auto-normalised to human height, feet on ground. Decimate first (<20k tris).',
-      'dirObjOnly': 'Only .obj files are supported (Blender Wavefront export)',
-      'dirObjTooBig': 'OBJ file too large (>900KB) — decimate or split it in Blender first',
+      'dirUploadObj': 'Upload model (OBJ / GLB)',
+      'dirUploadHint': 'Accepts Blender Wavefront (.obj) and glTF Binary (.glb); OBJ under 900KB, GLB under 20MB; auto-normalised height, feet on ground.',
+      'dirObjOnly': 'Only .obj / .glb files are supported (Wavefront or glTF Binary)',
       'dirObjLoaded': 'Model loaded',
       'dirObjReadFail': 'Failed to read the file',
       'dirObjTooLarge': 'OBJ exceeds 900KB; reduce the mesh before importing',
+      'dirGlbTooLarge': 'GLB exceeds 20MB; reduce or compress the mesh before importing',
+      'dirExportGlb': 'Export GLB',
+      'dirAttach': 'Bone attach',
+      'dirAttachNone': 'Not bound',
       'dirSelObject': 'Selected object',
       'dirName': 'Name',
       'dirPos': 'Position',
@@ -1798,6 +2246,12 @@ function revealCanvasInRight() {
       'dirPathDraw': 'Draw',
       'dirPathDrawing': 'Drawing (click ground)',
       'dirPathDrawHint': 'Click ground to add points, click again to finish',
+      'dirCamPath': 'Draw camera path',
+      'dirCamPathDrawing': 'Drawing camera (click ground)',
+      'dirCamPathHint': 'Click the ground to draw camera keyframes; click the button again to finish',
+      'dirCamPathDone': 'Generated {n} camera keyframes',
+      'dirCamPathNeed': 'Need at least 2 path points',
+      'dirCamPathClear': 'Camera path cleared',
       'dirPathClear': 'Clear',
       'dirPathPointDel': 'Del pt',
       'dirSpecTitle': 'AI stage spec',
@@ -2203,6 +2657,134 @@ function revealCanvasInRight() {
       'ratioLabel': 'Ratio',
       'sizeLabel': 'Quality',
       'llmLabel': 'Text model (DeepSeek)',
+      'subjTab': 'Characters',
+      'subjTitle': 'Cross-project character library',
+      'subjMine': 'My library',
+      'subjSeries': 'This series',
+      'subjOfficial': 'Official library',
+      'subjEmpty': 'The library is empty: import from this series, or create a character and generate a sheet.',
+      'subjNoMatch': 'No matching characters',
+      'subjNew': 'New character',
+      'subjImport': 'Save to library',
+      'subjImportAll': 'Import all ({n})',
+      'subjImportDone': 'Imported {n} characters',
+      'subjSaved': 'Saved to library',
+      'subjApply': 'Apply to canvas',
+      'subjApplied': '{n} reference images created{linked}',
+      'subjLinked': ', linked to the target node ({n})',
+      'subjNoAssets': 'This character has no reference images yet: bind or generate a sheet first',
+      'subjName': 'Name',
+      'subjDesc': 'Description (look / personality / costume)',
+      'subjGender': 'Gender',
+      'subjAge': 'Age group',
+      'subjCulture': 'Culture',
+      'subjTags': 'Tags (comma separated)',
+      'subjFilterAll': 'All',
+      'subjMale': 'Male',
+      'subjFemale': 'Female',
+      'subjOther': 'Other',
+      'subjChild': 'Child',
+      'subjYouth': 'Young',
+      'subjMiddle': 'Middle-aged',
+      'subjElder': 'Elder',
+      'subjAsia': 'Asian',
+      'subjWest': 'Western',
+      'subjOtherCulture': 'Other',
+      'subjDelete': 'Delete',
+      'subjDeleteConfirm': 'Delete character "{name}"? Only the library entry is removed; assets stay.',
+      'subjEdit': 'Edit',
+      'subjAssetsN': '{n} reference images',
+      'subjVoice': 'voice bound',
+      'subjBindAssets': 'Bind references',
+      'subjGenerateSheet': 'Generate sheet',
+      'subjSheetCreated': 'Character sheet node created; the generated result will link back automatically',
+      'subjSave': 'Save',
+      'subjCancel': 'Cancel',
+      'subjFromBibleHint': 'Import from this project\'s bible; reference assets are copied to the general project so other projects can use them.',
+      'subjTargetHint': 'Target node attached: applying will wire refs and add @name@',
+      'subjNoTargetHint': 'Select one image/video node before applying to auto-wire refs and add @name@',
+      'subjSearch': 'Search name / description / tags',
+      'subjOfficialHint': 'Official character templates (no references): copy one and generate a sheet',
+      'subjUseTemplate': 'Use template',
+      'imgTools': 'Image tools',
+      'imgToolUpscale': 'Upscale',
+      'imgToolMatte': 'Cutout',
+      'imgToolOutpaint': 'Outpaint',
+      'imgToolAngles': 'Multi-angle',
+      'imgToolRelight': 'Relight',
+      'imgToolFactor': 'Scale',
+      'imgToolRatio': 'Target ratio',
+      'imgToolLight': 'Lighting',
+      'imgToolLightGolden': 'Golden hour',
+      'imgToolLightStudio': 'Studio softbox',
+      'imgToolLightNeon': 'Neon night',
+      'imgToolRun': 'Run',
+      'imgToolRunning': 'Processing…',
+      'imgToolUnsupported': 'The current image model does not support this tool (needs images/edits or the dsh-image-gen bridge); upscale is still available',
+      'imgToolDone': 'Created the "{name}" node',
+      'imgToolNoModel': 'No image model configured: only local upscale is available',
+      'imgToolTransparent': 'Transparent',
+      'imgToolWhiteBg': 'White background',
+      'wfTab': 'Workflows',
+      'wfTitle': 'Workflow toolbox',
+      'wfEmpty': 'No workflows yet: select several nodes or a group, then right-click "Save as workflow".',
+      'wfSave': 'Save as workflow ({n})',
+      'wfNamePrompt': 'Workflow name',
+      'wfDefaultName': 'Workflow {time}',
+      'wfSaved': 'Saved workflow "{name}"',
+      'wfInsert': 'Insert into canvas',
+      'wfInserted': 'Inserted {n} nodes / {e} edges',
+      'wfRename': 'Rename',
+      'wfDelete': 'Delete',
+      'wfDeleteConfirm': 'Delete workflow "{name}"? Canvas nodes are not affected.',
+      'wfMeta': '{n} nodes · {e} edges · {a} asset slots',
+      'wfAssetMissing': 'Workflow asset not found: left as an empty placeholder; remount or regenerate it',
+      'wfNeedSelection': 'Select at least two nodes or one group',
+      'wfBadge': 'Workflow',
+      'damTags': 'Tags',
+      'damFolder': 'Folder',
+      'damTagsPrompt': 'Tags (comma separated)',
+      'damFolderPrompt': 'Folder name (leave empty to clear)',
+      'damTagFilter': 'Tag',
+      'damFolderFilter': 'Folder',
+      'damAll': 'All',
+      'damZip': 'Download ZIP ({n})',
+      'damZipDone': 'Packed {n} files ({s} skipped)',
+      'damZipEmpty': 'Nothing to pack',
+      'damMerge': 'Merge duplicates ({n})',
+      'damMergeNone': 'No byte-identical duplicates in the selection',
+      'damMergeConfirm': 'Found {n} duplicate groups; {k} assets will be merged. References move to the keeper, duplicates are hidden, and this session can undo the merge.',
+      'damMergeDone': 'Merged {n} duplicate assets',
+      'damMergeUndoConfirm': 'Undo this merge and restore references in nodes / character library / workflows?',
+      'damMergeUndone': 'Merge undone; {n} assets restored',
+      'damUndoMerge': 'Undo merge',
+      'damShowMerged': 'Show merged ({n})',
+      'damHideMerged': 'Hide merged ({n})',
+      'damMerged': 'Merged',
+      'damMergedHint': 'Merged with an identical asset; references moved. Use "Undo merge" to restore.',
+      'damSource': 'Source',
+      'damDate': 'Date',
+      'damDate7': 'Last 7 days',
+      'damDate30': 'Last 30 days',
+      'damDate90': 'Last 90 days',
+      'pullShots': 'Break down',
+      'pullTitle': 'Reference video shot breakdown',
+      'pullHint': 'Samples frames evenly and asks the current text model (must accept image input) for shots, motion and music cues; only frames are uploaded, never the video file.',
+      'pullFrames': 'Frames',
+      'pullFrameUnit': '{n} frames',
+      'pullStart': 'Analyze',
+      'pullPreparing': 'Reading video…',
+      'pullExtracting': 'Extracting frame {i}/{n}…',
+      'pullAnalyzing': 'Model analyzing… (about 30–90s)',
+      'pullUsingTextModel': 'Text model: {model} (must accept image input)',
+      'pullDone': 'Storyboard node created: {n} shots',
+      'pullFail': 'Shot breakdown failed',
+      'pullManual': 'Create empty storyboard',
+      'pullManualHint': 'When analysis is unavailable, create an empty storyboard and fill it manually.',
+      'pullNeedAsset': 'This video has no generated asset to analyze',
+      'pullAudioNote': 'Music cue: {text}',
+      'pullNoVision': 'The current text model does not accept images — choose a multimodal model under Settings → Text model.',
+      'pullShotCount': '{n} shots · {s}s',
       'llmHint': 'Scripts and storyboard prompts use the model configured in Harness — no extra key needed.',
       'saveTextAsset': 'Save as asset',
       'zoomView': 'View large',
@@ -2438,12 +3020,42 @@ function revealCanvasInRight() {
       'autoNeedQuote': 'Refresh the budget first',
       'autoQuoteSummary': '{s} scenes / {sh} shots / {sec}s / {calls} video calls pending',
       'autoQuoteCost': 'Est. ¥{cost}',
-      'autoQuoteNoPrice': 'No per-second video price configured (set it in Settings → Production to show an estimate)',
+      'autoQuoteNoPrice': 'No video unit price set — say "set video price to X yuan/second" in the chat to show an estimate',
       'autoApproveNeedConfirm': 'Type your confirmation words first (paid approval must leave a trace)',
       'autoApproved': 'Approved ({calls} video calls pending)',
       'autoAborted': 'Aborted (produced content kept)',
       'autoDone': 'Done',
       'autoFail': 'Action failed',
+      'autoEntryHint': 'Actions & budget live in the Production console (left icon rail); chat remains the main entry.',
+      'autoNoProject': 'Open or create a project first',
+      'autoClosedHint': 'Auto creation is off — enable it in Settings',
+      'autoIdle': 'Idle: type a one-line idea to start',
+      'autoStRunning': 'Running',
+      'autoApprovalValid': 'Approval valid',
+      'autoStale': 'Budget changed — refresh before approving',
+      'autoScopeHint': 'Approval covers the full budget; generation may run selected scenes only.',
+      'autoSelScenes': '{n} scenes selected',
+      'autoAllScenes': 'All scenes',
+      'autoHasVideo': 'has video',
+      'autoNoQuoteHint': 'No budget yet: it appears after the free stage builds storyboards, or click Refresh.',
+      'autoPhResearch': 'Research',
+      'autoPhPitch': 'Pitch',
+      'autoPhCritique': 'Critique',
+      'autoPhDecide': 'Decide',
+      'autoPhWriteback': 'Write-back',
+      'autoPhScript': 'Script',
+      'autoPhBoards': 'Boards',
+      'autoPhBudget': 'Budget',
+      'autoPhVideo': 'Video',
+      'autoPhRefs': 'Refs',
+      'autoPhDone': 'Done',
+      'autoPhAborted': 'Aborted',
+      'autoPhFailed': 'Failed',
+      'consoleTitle': 'Production console',
+      'consoleTabAuto': 'Auto creation',
+      'consoleTabBatch': 'Batch run',
+      'consolePriceSet': 'Video price ¥{price}/s (say "set video price to X yuan/second" in chat to change)',
+      'consolePriceNone': 'No video price set — say "set video price to X yuan/second" in the chat',
       'stageCurrent': 'Stage',
       'stageReadyYes': 'deliverable',
       'stageReadyNo': 'not ready',
@@ -2503,6 +3115,9 @@ function revealCanvasInRight() {
       'bibleDraftEmpty': 'Nothing drafted: write some intent in a script/text node first, or check the text model',
       'bibleOrderHint': 'Bible first: set worldview/style/characters/scenes/props → generate the script → generate reference images → then break down the storyboard',
       'bibleLinkAssets': 'Link assets',
+      'bibleSaveToLib': 'Save to characters',
+      'bibleInLib': 'In library',
+      'bibleLibSaved': 'Saved to character library: {name}',
       'bibleLinkTitle': 'Link assets to this bible entry',
       'bibleLinkHint': 'Pick images/audio/video to bind (multi-select); @mentions inject bible text and audio as a voice reference; image references come from wires only and are never auto-sent',
       'bibleLinkApply': 'Done',
@@ -2715,6 +3330,7 @@ function revealCanvasInRight() {
 .dshic-rail-btn:hover{background:color-mix(in srgb,var(--dsw-alias-label-primary) 8%,transparent);color:var(--dsw-alias-label-primary);}
 .dshic-rail-btn.is-active{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 16%,transparent);color:var(--dsw-alias-brand-primary);}
 .dshic-rail-btn.is-danger{color:var(--dsw-alias-state-error-primary);}
+.dshic-rail-btn.is-run{color:var(--dsw-alias-state-warning-primary);animation:dshic-pulse 1.2s infinite;}
 .dshic-rail-btn:disabled{opacity:.45;cursor:default;}
 .dshic-rail-sep{width:24px;height:1px;flex:none;background:var(--dsw-alias-border-l1);margin:4px 0;}
 /* ── 顶部工具栏：返回图标 → 项目切换（双击/铅笔改名）→ 右侧纯图标按钮 ── */
@@ -2813,6 +3429,37 @@ body[data-ds-dark-theme] .dshic-proj-menu-item.is-active{background:color-mix(in
   background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dshic-line2);border-radius:16px;
   box-shadow:var(--dshic-shadow-lg);overflow:hidden;box-sizing:border-box;}
 body[data-ds-dark-theme] .dshic-studio-modal{border-color:var(--dsw-alias-border-l2);}
+/* 3D-BOX 库：一句话新建 + 我的 3D-BOX */
+.dshic-boxhome-overlay{position:fixed;inset:0;z-index:320;background:color-mix(in srgb,var(--dsw-alias-label-primary) 32%,transparent);
+  display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;}
+.dshic-boxhome{width:min(980px,calc(100vw - 48px));height:min(720px,calc(100vh - 48px));display:flex;flex-direction:column;
+  background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dshic-line2);border-radius:16px;box-shadow:var(--dshic-shadow-lg);
+  overflow:hidden;box-sizing:border-box;}
+.dshic-boxhome-head{flex:none;display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--dsw-alias-border-l1);}
+.dshic-boxhome-title{font-size:16px;font-weight:700;}
+.dshic-boxhome-sub{color:var(--dsw-alias-label-secondary);font-size:12px;}
+.dshic-boxhome-spacer{flex:1;}
+.dshic-boxhome-hero{flex:none;padding:18px 18px 12px;display:flex;flex-direction:column;gap:10px;border-bottom:1px solid var(--dsw-alias-border-l1);}
+.dshic-boxhome-row{display:flex;align-items:center;gap:8px;}
+.dshic-boxhome-input{flex:1;min-width:180px;height:36px;border-radius:9px;border:1px solid var(--dshic-line2);
+  background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);padding:0 12px;font-size:13px;outline:none;}
+.dshic-boxhome-input:focus{border-color:var(--dsw-alias-label-primary);}
+.dshic-boxhome-btn{height:36px;padding:0 14px;border-radius:9px;border:1px solid var(--dshic-line2);background:var(--dsw-alias-bg-base);
+  color:var(--dsw-alias-label-primary);font-size:13px;cursor:pointer;white-space:nowrap;}
+.dshic-boxhome-btn.is-primary{background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-base);border-color:transparent;font-weight:600;}
+.dshic-boxhome-examples{display:flex;gap:8px;flex-wrap:wrap;}
+.dshic-boxhome-presets{display:flex;gap:8px;flex-wrap:wrap;}
+.dshic-boxhome-select{height:30px;padding:0 8px;border-radius:8px;border:1px solid var(--dshic-line2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;outline:none;cursor:pointer;max-width:180px;}
+.dshic-boxhome-chip{font-size:12px;padding:5px 9px;border-radius:999px;border:1px solid var(--dshic-line2);
+  background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-secondary);cursor:pointer;}
+.dshic-boxhome-list{flex:1;min-height:0;overflow:auto;padding:14px 18px 18px;display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;align-content:start;}
+.dshic-boxhome-card{display:flex;flex-direction:column;gap:6px;padding:12px;border-radius:12px;border:1px solid var(--dshic-line2);
+  background:var(--dsw-alias-bg-base);cursor:pointer;text-align:left;}
+.dshic-boxhome-card:hover{border-color:var(--dsw-alias-label-primary);}
+.dshic-boxhome-card-t{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.dshic-boxhome-card-m{font-size:11px;color:var(--dsw-alias-label-secondary);}
+.dshic-boxhome-empty{grid-column:1/-1;padding:36px 12px;text-align:center;color:var(--dsw-alias-label-secondary);font-size:13px;}
+.dshic-boxhome-loading{grid-column:1/-1;padding:24px;text-align:center;color:var(--dsw-alias-label-secondary);font-size:12px;}
 .dshic-studio-head{flex:none;display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--dsw-alias-border-l1);}
 .dshic-studio-tabs{display:flex;gap:4px;}
 .dshic-studio-tab{height:30px;padding:0 14px;border:none;border-radius:8px;background:transparent;color:var(--dsw-alias-label-secondary);
@@ -2826,6 +3473,33 @@ body[data-ds-dark-theme] .dshic-studio-modal{border-color:var(--dsw-alias-border
 .dshic-studio-overlay .dshic-modal-overlay{z-index:340;}
 .dshic-studio-bible{display:flex;flex-direction:column;gap:8px;width:100%;max-width:820px;margin:0 auto;}
 .dshic-studio-memory{display:flex;flex-direction:column;min-height:0;width:100%;max-width:820px;margin:0 auto;}
+.dshic-studio-subjects{width:100%;max-width:1080px;margin:0 auto;}
+.dshic-subjects{display:flex;flex-direction:column;gap:10px;}
+.dshic-studio-subtabs{display:flex;align-items:center;gap:4px;border-bottom:1px solid var(--dshic-line2);padding-bottom:6px;}
+.dshic-subj-filters{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.dshic-subj-filters .dshic-input{flex:1;min-width:160px;}
+.dshic-subj-filters .dshic-select{width:auto;min-width:86px;}
+.dshic-subj-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(196px,1fr));gap:10px;}
+.dshic-subj-card{display:flex;flex-direction:column;border:1px solid var(--dshic-line2);border-radius:12px;overflow:hidden;background:var(--dsw-alias-bg-layer-2);min-width:0;}
+.dshic-subj-thumb{height:118px;background:var(--dsw-alias-bg-layer-3);display:flex;align-items:center;justify-content:center;overflow:hidden;}
+.dshic-subj-thumb img{width:100%;height:100%;object-fit:cover;display:block;}
+.dshic-subj-initial{font-size:34px;font-weight:600;color:var(--dsw-alias-label-tertiary);}
+.dshic-subj-body{display:flex;flex-direction:column;gap:4px;padding:8px;min-width:0;}
+.dshic-subj-name{font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.dshic-subj-meta{font-size:10px;color:var(--dsw-alias-label-secondary);min-height:13px;}
+.dshic-subj-desc{font-size:11px;line-height:15px;color:var(--dsw-alias-label-secondary);display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;min-height:30px;}
+.dshic-subj-tags{display:flex;gap:3px;flex-wrap:wrap;max-height:18px;overflow:hidden;}
+.dshic-subj-actions{display:flex;flex-wrap:wrap;gap:2px;margin-top:2px;}
+.dshic-subj-actions .dshic-mini{height:22px;padding:0 6px;font-size:10px;}
+.dshic-subj-empty{padding:28px 10px;text-align:center;font-size:12px;color:var(--dsw-alias-label-tertiary);}
+.dshic-studio-workflows{width:100%;max-width:900px;margin:0 auto;}
+.dshic-workflows{display:flex;flex-direction:column;gap:10px;}
+.dshic-wf-list{display:flex;flex-direction:column;gap:8px;}
+.dshic-wf-card{border:1px solid var(--dshic-line2);border-radius:12px;padding:10px;background:var(--dsw-alias-bg-layer-2);display:flex;flex-direction:column;gap:5px;}
+.dshic-wf-head{display:flex;align-items:center;gap:6px;min-width:0;}
+.dshic-wf-name{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;}
+.dshic-wf-meta{font-size:11px;color:var(--dsw-alias-label-secondary);}
+.dshic-wf-actions{display:flex;gap:4px;flex-wrap:wrap;margin-top:2px;}
 /* ── 3D 导演台：三栏（对象 / 视口 / 属性）；视口是纯 Canvas2D 软件渲染（见 directorRenderScene） ── */
 .dshic-dir-modal{width:min(1220px,calc(100vw - 40px));height:min(820px,calc(100vh - 40px));}
 .dshic-dir-body{flex:1;min-height:0;display:flex;gap:0;overflow:hidden;}
@@ -2859,7 +3533,14 @@ body[data-ds-dark-theme] .dshic-studio-modal{border-color:var(--dsw-alias-border
 .dshic-dir-win{flex:1;display:flex;flex-direction:column;min-height:0;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);border-radius:12px;overflow:hidden;box-shadow:0 18px 60px rgba(0,0,0,.45);border:1px solid var(--dsw-alias-border-l1);}
 .dshic-dir-win.is-full{border-radius:0;border:none;box-shadow:none;}
 .dshic-dir-overlay:has(.dshic-dir-win.is-full){padding:0;background:var(--dsw-alias-bg-base);}
+.dshic-dir-overlay .dshic-modal-overlay{z-index:9100;}
 .dshic-dir-top{flex:none;height:44px;display:flex;align-items:center;gap:10px;padding:0 12px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-base);position:relative;z-index:2;}
+/* 3D-BOX 一句话搭景：默认只露这一条，复杂 3D 控件留在下方三栏 */
+.dshic-dir-boxbar{flex:none;display:flex;align-items:center;gap:6px;padding:6px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);position:relative;z-index:2;}
+.dshic-dir-boxtitle{flex:none;font-size:12px;font-weight:700;letter-spacing:.02em;color:var(--dsw-alias-label-primary);padding:2px 6px;border-radius:6px;background:var(--dsw-alias-bg-layer-2);}
+.dshic-dir-boxbrief{flex:1;min-width:140px;}
+.dshic-dir-boxbar select.dshic-dir-input{max-width:132px;}
+.dshic-dir-boxbar .dshic-dir-cta{flex:none;height:28px;padding:0 12px;white-space:nowrap;}
 .dshic-dir-top-l{display:flex;align-items:center;gap:10px;min-width:180px;}
 .dshic-dir-title{font-size:13px;font-weight:600;}
 .dshic-dir-saved{font-size:11px;color:var(--dsw-alias-label-secondary);}
@@ -2954,6 +3635,8 @@ body[data-ds-dark-theme] .dshic-studio-modal{border-color:var(--dsw-alias-border
 .dshic-dir-toast.is-err{background:rgba(215,58,73,.94);}
 .dshic-dir-tree{flex:none;padding:0 10px 6px;display:flex;flex-direction:column;gap:2px;}
 .dshic-dir-treegroup{display:flex;align-items:center;gap:6px;padding:4px 2px;font-size:11.5px;color:var(--dsw-alias-label-secondary);}
+.dshic-dir-charpick{display:flex;align-items:center;gap:4px;padding:4px 2px 6px;}
+.dshic-dir-charpick .dshic-dir-input{flex:1;min-width:0;}
 .dshic-dir-treekey{flex:1;}
 .dshic-dir-treecount{font-variant-numeric:tabular-nums;opacity:.75;}
 .dshic-dir-treerow{display:flex;align-items:center;gap:2px;}
@@ -3210,6 +3893,59 @@ body[data-ds-dark-theme] .dshic-inline-input{border-color:var(--dsw-alias-border
 .dshic-input:focus{border-color:var(--dsw-alias-brand-primary);}
 .dshic-preview{width:100%;border-radius:8px;background:var(--dsw-alias-bg-layer-2);object-fit:contain;max-height:190px;display:block;}
 .dshic-video{width:100%;max-height:190px;border-radius:8px;background:#000;display:block;}
+.dshic-audio-body{display:flex;flex-direction:column;gap:8px;padding:10px;box-sizing:border-box;min-height:0;overflow:auto;}
+.dshic-audio-form{display:flex;flex-direction:column;gap:6px;min-height:0;}
+.dshic-audio-title{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary);}
+.dshic-audio-ctl{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--dsw-alias-label-secondary);}
+.dshic-audio-ctl input[type="range"]{flex:1;min-width:40px;}
+/* 创作台：右下角固定浮层（自动创作 + 批量执行 两页签；单价在对话里设置，面板只读展示） */
+.dshic-console{position:fixed;right:16px;bottom:16px;z-index:210;width:412px;max-height:min(74vh,620px);display:flex;flex-direction:column;
+  background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);border-radius:14px;box-shadow:var(--dshic-shadow-lg);overflow:hidden;}
+.dshic-console-tabs{display:flex;gap:4px;padding:8px 10px 0;}
+.dshic-console-tab{flex:1;height:28px;display:flex;align-items:center;justify-content:center;gap:4px;border:none;border-radius:8px;cursor:pointer;
+  background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;}
+.dshic-console-tab.is-active{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 14%,transparent);color:var(--dsw-alias-brand-primary);font-weight:600;}
+.dshic-console-body{flex:1;min-height:0;display:flex;flex-direction:column;overflow:auto;padding-bottom:4px;}
+.dshic-console-price{display:flex;align-items:center;gap:6px;padding:8px 12px;border-top:1px solid var(--dsw-alias-border-l1);
+  font-size:11px;color:var(--dsw-alias-label-tertiary);}
+.dshic-console-price span{flex:1;min-width:0;}
+.dshic-console-loading,.dshic-console-hint{padding:14px 12px;font-size:12px;color:var(--dsw-alias-label-secondary);}
+body[data-ds-dark-theme] .dshic-console{border-color:var(--dsw-alias-border-l2);}
+/* 批量执行页（创作台页签内容）：队列 → 进度/停止 */
+.dshic-batch{display:flex;flex-direction:column;min-height:0;}
+.dshic-batch-head{display:flex;align-items:center;gap:6px;padding:10px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);font-size:13px;font-weight:600;}
+.dshic-batch-head .dshic-flex{flex:1;}
+.dshic-batch-summary{padding:10px 12px 6px;display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dsw-alias-label-secondary);}
+.dshic-batch-summary b{color:var(--dsw-alias-label-primary);font-weight:600;}
+.dshic-batch-list{flex:1;overflow:auto;padding:4px 6px 8px;display:flex;flex-direction:column;gap:2px;min-height:80px;}
+.dshic-batch-item{display:flex;align-items:flex-start;gap:8px;padding:6px 7px;border:none;border-radius:8px;background:transparent;
+  color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;text-align:left;cursor:pointer;width:100%;box-sizing:border-box;}
+.dshic-batch-item:hover{background:var(--dsw-alias-interactive-bg-hover,color-mix(in srgb,var(--dsw-alias-label-primary) 7%,transparent));}
+.dshic-batch-dot{flex:none;width:7px;height:7px;border-radius:50%;margin-top:6px;background:var(--dsw-alias-label-tertiary);}
+.dshic-batch-item[data-st="running"] .dshic-batch-dot{background:var(--dsw-alias-brand-primary);animation:dshic-pulse 1.2s infinite;}
+.dshic-batch-item[data-st="done"] .dshic-batch-dot{background:var(--dsw-alias-state-success-primary);}
+.dshic-batch-item[data-st="error"] .dshic-batch-dot{background:var(--dsw-alias-state-error-primary);}
+.dshic-batch-item[data-st="stopped"] .dshic-batch-dot,
+.dshic-batch-item[data-st="skipped"] .dshic-batch-dot{background:var(--dsw-alias-label-tertiary);}
+.dshic-batch-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.dshic-batch-st{flex:none;font-size:11px;color:var(--dsw-alias-label-secondary);}
+.dshic-batch-err{display:block;color:var(--dsw-alias-state-error-primary);font-size:11px;line-height:15px;margin-top:2px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.dshic-batch-foot{display:flex;align-items:center;gap:8px;padding:9px 12px;border-top:1px solid var(--dsw-alias-border-l1);}
+.dshic-batch-foot .dshic-flex{flex:1;}
+.dshic-batch-hint{padding:0 12px 9px;font-size:11px;color:var(--dsw-alias-label-tertiary);}
+/* 自动创作页（创作台页签内容）：brief/状态/分场预算/动作 */
+.dshic-autostudio{display:flex;flex-direction:column;padding:10px 12px;gap:6px;}
+.dshic-auto-status{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--dsw-alias-label-primary);}
+.dshic-auto-dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--dsw-alias-label-tertiary);}
+.dshic-auto-dot.is-run{background:var(--dsw-alias-brand-primary);animation:dshic-pulse 1.2s infinite;}
+.dshic-quote{display:flex;flex-direction:column;gap:2px;padding:8px 9px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;}
+.dshic-quote-row{display:flex;align-items:center;gap:7px;padding:3px 2px;border-radius:6px;font-size:11px;color:var(--dsw-alias-label-primary);cursor:pointer;}
+.dshic-quote-row:hover{background:var(--dsw-alias-interactive-bg-hover,color-mix(in srgb,var(--dsw-alias-label-primary) 7%,transparent));}
+.dshic-quote-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.dshic-quote-meta{flex:none;color:var(--dsw-alias-label-secondary);}
+.dshic-quote-cost{flex:none;min-width:44px;text-align:right;color:var(--dsw-alias-label-primary);}
+body[data-ds-dark-theme] .dshic-batch{border-color:var(--dsw-alias-border-l2);}
 .dshic-node-row{display:flex;align-items:center;gap:6px;min-width:0;flex-wrap:wrap;}
 .dshic-node-row .dshic-flex{flex:1;min-width:0;}
 .dshic-mini{display:inline-flex;align-items:center;gap:4px;height:24px;padding:0 8px;border-radius:7px;border:none;cursor:pointer;
@@ -3310,6 +4046,8 @@ body[data-ds-dark-theme] .dshic-inline-input{border-color:var(--dsw-alias-border
 .dshic-asset-project{width:100%;box-sizing:border-box;height:22px;margin:0 0 6px;border:1px solid var(--dsw-alias-border-l2);
   border-radius:6px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font:inherit;font-size:10px;
   padding:0 5px;outline:none;cursor:pointer;text-align:left;}
+.dshic-asset-dam{display:flex;flex-wrap:wrap;gap:3px;padding:0 7px 6px;max-height:34px;overflow:hidden;}
+.dshic-asset-dam .dshic-tag{font-size:9px;line-height:14px;padding:0 4px;}
 .dshic-asset-actions .dshic-iconbtn{width:20px;height:20px;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l2);
   color:var(--dsw-alias-label-primary);}
 .dshic-field{display:flex;flex-direction:column;gap:3px;}
@@ -3754,6 +4492,11 @@ body[data-ds-dark-theme] .dshic-storage-details{border-color:var(--dsw-alias-bor
 .dshic-ref-thumb.is-drop{outline:2px solid var(--dshic-accent);outline-offset:1px;}
 .dshic-composer-refhint{font-size:10px;color:var(--dshic-field-hint);line-height:1.45;}
 .dshic-composer-prompt{flex:none;padding:9px 0 0;}
+.dshic-composer-motion{display:flex;align-items:center;gap:6px;padding:7px 10px 0;}
+.dshic-composer-motion-lb{font-size:11px;color:var(--dsw-alias-label-secondary);white-space:nowrap;}
+.dshic-composer-preflight{flex-wrap:wrap;}
+.dshic-preflight-warn{font-size:11px;color:#c2410c;}
+.dshic-preflight-ok{font-size:11px;color:var(--dsw-alias-label-secondary);}
 /* 分镜面板第二个提示词（额外要求）与上一个之间保留间距 */
 .dshic-composer-prompt + .dshic-prompt{margin-top:7px;}
 /* 提示词：13px / 行高 1.62 / 内距 9px 14px（原型 .pw）；面板里是白底无边框的直接书写区 */
@@ -3902,6 +4645,8 @@ body[data-ds-dark-theme] .dshic-board-editor{border-color:var(--dsw-alias-border
     const DEFAULT_SETTINGS = {
       // 文本模型全部用 Harness 的当前模型与默认参数：画布只选择模型，不单独配置生成参数
       textLlm: { provider: '', model: '' },
+
+
       // 供应商 + 模型两级：一个供应商（URL/Key）配一次，下面挂多个模型；★星标模型 = 节点未指定时的默认路由
       imageProviders: [],  // [{id, name, baseUrl, apiKey, extra, size?, responseFormat?, mode?, models: [{id, model}]}]
       videoProviders: [],  // [{id, name, url, apiKey, extra, outputFormat?, generateAudio?, protocol?, watermark?, models: [{id, model}]}]
@@ -4066,6 +4811,65 @@ body[data-ds-dark-theme] .dshic-board-editor{border-color:var(--dsw-alias-border
       const d = (n && n.data) || {};
       if (d.videoModel) return d.videoModel;
       return legacyVideoApiRefMap[d.videoApiId] || '';
+    }
+    /** 确定性图像工具能力注册表：按图片模型协议决定按钮是否出现（不支持就隐藏，绝不点了报错）。
+     *  upscale 是浏览器本地重采样，永远可用；其余工具需要 /images/edits（或 dsh-image-gen 桥接的 edit 模式）。
+     *  transparent = 模型原生支持透明背景（gpt-image 系）；其它 edits 模型退化为「纯白底抠图」。 */
+    const IMAGE_TOOL_CAPS = {
+      bridge: { upscale: true, matte: true, outpaint: true, angles: true, relight: true, transparent: false },
+      edits: { upscale: true, matte: true, outpaint: true, angles: true, relight: true, transparent: false },
+      generations: { upscale: true, matte: false, outpaint: false, angles: false, relight: false, transparent: false },
+    };
+    function imageToolCaps(cfg) {
+      if (cfg && cfg.viaImageGen) return { ...IMAGE_TOOL_CAPS.bridge };
+      const mode = cfg && cfg.mode === 'edits' ? 'edits' : 'generations';
+      const caps = { ...IMAGE_TOOL_CAPS[mode] };
+      if (mode === 'edits') caps.transparent = /gpt-image|transparent/i.test(String((cfg && cfg.model) || ''));
+      return caps;
+    }
+    async function imageBlobDims(blob) {
+      const url = URL.createObjectURL(blob);
+      try {
+        const img = new Image();
+        img.src = url;
+        await new Promise((res, rej) => {
+          img.onload = () => res();
+          img.onerror = () => rej(new Error('图片解码失败'));
+          setTimeout(res, 12000);
+        });
+        return { width: Number(img.naturalWidth) || 0, height: Number(img.naturalHeight) || 0 };
+      } finally {
+        try { URL.revokeObjectURL(url); } catch { /* 忽略 */ }
+      }
+    }
+    /** 本地超分：canvas 高质量重采样（不经过任何生成模型，结果确定）。 */
+    async function upscaleImageBlob(blob, factor) {
+      const f = Math.max(1, Math.min(4, Number(factor) || 2));
+      const url = URL.createObjectURL(blob);
+      try {
+        const img = new Image();
+        img.src = url;
+        await new Promise((res, rej) => {
+          img.onload = () => res();
+          img.onerror = () => rej(new Error('图片解码失败'));
+          setTimeout(res, 12000);
+        });
+        const w = Number(img.naturalWidth) || 0;
+        const h = Number(img.naturalHeight) || 0;
+        if (!w || !h) throw new Error('图片尺寸不可用');
+        const cv = document.createElement('canvas');
+        cv.width = Math.round(w * f);
+        cv.height = Math.round(h * f);
+        const g = cv.getContext('2d');
+        g.imageSmoothingEnabled = true;
+        g.imageSmoothingQuality = 'high';
+        g.drawImage(img, 0, 0, cv.width, cv.height);
+        const out = await new Promise((res) => cv.toBlob(res, 'image/png'));
+        if (!out) throw new Error('超分输出失败');
+        return { blob: out, width: cv.width, height: cv.height, factor: f };
+      } finally {
+        try { URL.revokeObjectURL(url); } catch { /* 忽略 */ }
+      }
     }
 
     function emptyGraph() { return { nodes: {}, edges: [], view: { x: 60, y: 40, scale: 1 } }; }
@@ -4282,6 +5086,346 @@ body[data-ds-dark-theme] .dshic-board-editor{border-color:var(--dsw-alias-border
     // ============================================================
     const LS_BIBLE = 'dsh-ic:bible:';
     const LS_BIBLE_SYNC = 'dsh-ic:biblesync:';
+    // 跨项目角色库（subject）：全局 localStorage，不绑定单个项目；参考图资产放 GENERAL_PID，
+    // 其它项目通过 assetId 直接引用（assetUrl/collectRefs 都能读），删源项目不影响角色库。
+    const LS_SUBJECTS = 'dsh-ic:subjects';
+    // 官方角色模板（无参考图）：给“角色造型室”一个可用起点，复制后生成设定图。
+    const OFFICIAL_SUBJECTS = [
+      { id: 'off_linmo', nameZh: '林默', nameEn: 'Lin Mo', gender: 'male', age: 'youth', culture: 'asia', tagsZh: ['记者', '冷静', '悬疑'], tagsEn: ['reporter', 'calm', 'mystery'], descZh: '28 岁调查记者，克制冷静；深灰风衣、利落短发，左眉有一道旧疤，习惯把录音笔握在手心。', descEn: '28-year-old investigative reporter, restrained and calm; charcoal trench coat, short hair, an old scar over the left brow, always palming a recorder.' },
+      { id: 'off_mira', nameZh: '米拉', nameEn: 'Mira', gender: 'female', age: 'youth', culture: 'west', tagsZh: ['赏金猎人', '冷面', '动作'], tagsEn: ['bounty hunter', 'cold', 'action'], descZh: '30 岁赏金猎人，银白短发、黑色战术夹克，颈侧有细线纹身；动作干净，很少眨眼。', descEn: '30-year-old bounty hunter with silver-white short hair, a black tactical jacket and a fine-line neck tattoo; economical movement, rarely blinks.' },
+      { id: 'off_zhou', nameZh: '老周', nameEn: 'Old Zhou', gender: 'male', age: 'middle', culture: 'asia', tagsZh: ['修表匠', '温和', '市井'], tagsEn: ['watchmaker', 'gentle', 'street'], descZh: '55 岁修表匠，灰白胡茬、圆框眼镜、深蓝围裙；手指有细密老茧，说话慢，记得每个客人的表。', descEn: '55-year-old watchmaker with grey stubble, round glasses and a navy apron; callused fingers, slow speech, remembers every customer\'s watch.' },
+      { id: 'off_xiaoman', nameZh: '小满', nameEn: 'Xiaoman', gender: 'female', age: 'child', culture: 'asia', tagsZh: ['学徒', '好奇', '冒险'], tagsEn: ['apprentice', 'curious', 'adventure'], descZh: '12 岁学徒，双马尾、黄色雨衣，抱着一本翻烂的旧地图；遇到新鲜事先蹲下看，再回头喊人。', descEn: '12-year-old apprentice with twin tails and a yellow raincoat, clutching a worn old map; squats to inspect anything new, then calls others over.' },
+      { id: 'off_ethan', nameZh: '伊森', nameEn: 'Ethan', gender: 'male', age: 'middle', culture: 'west', tagsZh: ['飞行员', '疲惫', '硬汉'], tagsEn: ['pilot', 'weary', 'tough'], descZh: '42 岁退役飞行员，胡茬、旧皮夹克、右腕机械表；站姿松但眼神一直在扫跑道。', descEn: '42-year-old retired pilot with stubble, a worn leather jacket and a mechanical watch on the right wrist; loose stance, eyes always scanning the runway.' },
+      { id: 'off_alan', nameZh: '阿澜', nameEn: 'Alan', gender: 'female', age: 'youth', culture: 'asia', tagsZh: ['摄影师', '热烈', '都市'], tagsEn: ['photographer', 'passionate', 'urban'], descZh: '24 岁街头摄影师，红色冲锋衣、挑染短发，肩上挂一台掉漆的旧相机；笑起来很大声。', descEn: '24-year-old street photographer in a red shell jacket with streaked short hair, a paint-chipped camera on the shoulder; laughs loudly.' },
+    ];
+    function emptySubject() {
+      return {
+        id: '', name: '', desc: '', gender: '', age: '', culture: '', tags: [],
+        assetIds: [], voiceAssetId: null, createdAt: 0, updatedAt: 0,
+      };
+    }
+    function normalizeSubject(x) {
+      const s = x && typeof x === 'object' ? x : {};
+      return {
+        id: String(s.id || ''),
+        name: String(s.name || '').trim().slice(0, 60),
+        desc: String(s.desc || '').slice(0, 2000),
+        gender: String(s.gender || '').slice(0, 20),
+        age: String(s.age || '').slice(0, 20),
+        culture: String(s.culture || '').slice(0, 30),
+        tags: Array.isArray(s.tags) ? s.tags.map((t) => String(t).trim()).filter(Boolean).slice(0, 12) : [],
+        assetIds: Array.isArray(s.assetIds) ? s.assetIds.map(String).filter(Boolean).slice(0, 16) : [],
+        voiceAssetId: s.voiceAssetId ? String(s.voiceAssetId) : null,
+        createdAt: Number(s.createdAt) || 0,
+        updatedAt: Number(s.updatedAt) || 0,
+      };
+    }
+    function loadSubjects() {
+      const a = lsGet(LS_SUBJECTS, []);
+      return (Array.isArray(a) ? a : []).map(normalizeSubject).filter((s) => s.id && s.name);
+    }
+    function saveSubjects(list) {
+      lsSet(LS_SUBJECTS, (list || []).map(normalizeSubject).filter((s) => s.id && s.name));
+      notify();
+    }
+    function upsertSubject(entry) {
+      const now = Date.now();
+      const e = normalizeSubject({ ...entry, updatedAt: now, createdAt: entry.createdAt || now });
+      if (!e.id) e.id = uid('sub');
+      const list = loadSubjects();
+      const i = list.findIndex((s) => s.id === e.id);
+      if (i >= 0) list[i] = e; else list.unshift(e);
+      saveSubjects(list);
+      return e;
+    }
+    function removeSubject(id) {
+      saveSubjects(loadSubjects().filter((s) => s.id !== id));
+    }
+    /** 把角色引用的资产复制到「通用项目」，保证跨项目/源项目删除后仍可用。 */
+    async function copySubjectAssetsToGeneral(ids) {
+      const out = [];
+      for (const id of (ids || [])) {
+        try {
+          const rec = await idbGet(id).catch(() => null);
+          if (rec && rec.projectId === GENERAL_PID) { out.push(id); continue; }
+          const blob = await assetBlob(id);
+          if (!blob) continue;
+          const kind = (rec && rec.kind) || ((blob.type || '').startsWith('audio') ? 'audio' : 'image');
+          const saved = await saveAssetRecord(GENERAL_PID, kind, blob, {
+            name: (rec && rec.name) || 'subject asset',
+            prompt: (rec && rec.prompt) || '',
+            source: 'subject',
+            category: (rec && rec.category) || 'character',
+          });
+          if (saved && saved.id) out.push(saved.id);
+        } catch { /* 单个资产失败不阻塞其余 */ }
+      }
+      return out;
+    }
+    /** 把角色参考图挂到画布：已有同资产图片节点直接复用；选中目标节点时自动接 ref 并写入 @角色名@。 */
+    async function applySubjectToCanvas(subject, targetNodeId) {
+      const sub = normalizeSubject(subject);
+      if (!sub.name) return 0;
+      const target = targetNodeId ? S.graph.nodes[targetNodeId] : null;
+      // 参考图只取图片资产：音频（音色）不建画布节点，避免把 mp3 当图片节点挂上去
+      const recs = await Promise.all(sub.assetIds.slice(0, 16).map((id) => idbGet(id).catch(() => null)));
+      const ids = sub.assetIds.slice(0, 16).filter((id, i) => recs[i] && recs[i].kind === 'image').slice(0, 8);
+      if (!ids.length) { toast(T('subjNoAssets')); return 0; }
+      const existing = Object.values(S.graph.nodes).filter((nd) => nd && nd.type === 'image' && ids.includes(String(nd.data && nd.data.assetId)));
+      const have = new Set(existing.map((nd) => String(nd.data.assetId)));
+      const created = [];
+      const baseX = (target ? Number(target.x) : (S.graph.nodes && Object.values(S.graph.nodes)[0] ? Object.values(S.graph.nodes)[0].x : 0)) || 0;
+      const baseY = (target ? Number(target.y) + 300 : 0) || 0;
+      ids.filter((id) => !have.has(id)).forEach((assetId, i) => {
+        const nd = addNodeAt('image', { x: baseX - 420 + i * 140, y: baseY });
+        if (!nd) return;
+        update((s) => {
+          const g = s.graph.nodes[nd.id];
+          if (g) g.data = Object.assign({}, g.data, { assetId, status: 'done', label: sub.name + ' 参考' });
+        });
+        created.push(nd);
+      });
+      const nodes = existing.concat(created);
+      let added = 0;
+      if (target && (target.type === 'image' || target.type === 'video')) {
+        const wired = new Set(S.graph.edges.filter((e) => e.toNode === target.id && e.toPort === 'ref').map((e) => e.fromNode));
+        for (const nd of nodes) {
+          if (wired.has(nd.id)) continue;
+          if (connect(nd, 'out', target, 'ref')) added++;
+        }
+        const mention = '@' + sub.name + '@';
+        const cur = String((target.data && target.data.prompt) || '');
+        if (!cur.includes(mention)) {
+          update((s) => {
+            const g = s.graph.nodes[target.id];
+            if (g) g.data.prompt = (cur ? cur + ' ' : '') + mention;
+          });
+        }
+      }
+      flushSave();
+      toast(T('subjApplied').replace('{n}', String(nodes.length)).replace('{linked}', added ? T('subjLinked').replace('{n}', String(added)) : ''));
+      return nodes.length;
+    }
+    /** 为角色创建「设定图」图片节点；生成结果会经 commitGenResult 自动回挂角色库。 */
+    function createSubjectSheetNode(subject) {
+      const sub = normalizeSubject(subject);
+      if (!sub.name) return null;
+      const bible = loadBible(S.activeId);
+      const zh = effLang() !== 'en';
+      const spec = assetSheetNodeSpec('character', sub.name, bible, zh);
+      const nd = addNodeAt('image', { x: worldCenter().x - 180, y: worldCenter().y - 120, ratio: '16:9' });
+      if (!nd) return null;
+      update((s) => {
+        const g = s.graph.nodes[nd.id];
+        if (!g) return;
+        g.data.label = '角色-' + sub.name + ' 设定图';
+        g.data.prompt = spec.prompt || (sub.desc ? ('角色设定图：' + sub.name + '，' + sub.desc) : ('角色设定图：' + sub.name));
+        g.data.ratio = '16:9';
+        g.data.subjectId = sub.id;
+      });
+      flushSave();
+      toast(T('subjSheetCreated'));
+      return nd.id;
+    }
+    /** 图像工具产物：落资产 + 在源节点右侧建图片节点（保留原图，便于对比/回退）。 */
+    async function commitDerivedImage(srcNode, blob, label, opts) {
+      const src = srcNode || {};
+      const rec = await saveAssetRecord(S.activeId, 'image', blob, {
+        name: String(label || 'image-tool') + ' ' + nowStamp(),
+        prompt: String((src.data && src.data.prompt) || ''),
+        source: 'image-tool',
+        category: 'image',
+      });
+      const pos = { x: (Number(src.x) || 0) + (Number(src.w) || 360) + 80, y: Number(src.y) || 0, ratio: (opts && opts.ratio) || (src.data && src.data.ratio) || '16:9' };
+      const nd = addNodeAt('image', pos);
+      if (!nd) return null;
+      update((s) => {
+        const g = s.graph.nodes[nd.id];
+        if (!g) return;
+        g.data.assetId = rec.id;
+        g.data.status = 'done';
+        g.data.label = String(label || 'image-tool');
+        if (opts && opts.ratio) g.data.ratio = opts.ratio;
+        if (opts && opts.width && opts.height) { g.data.assetW = opts.width; g.data.assetH = opts.height; }
+        s.assetsTick++;
+        s.sel = new Set([nd.id]);
+      });
+      flushSave();
+      toast(T('imgToolDone').replace('{name}', String(label || 'image-tool')));
+      return nd.id;
+    }
+
+    // ============================================================
+    // 工作流工具箱：组/选区 → 快照（节点/连线/参数/资产占位） → 跨项目插入重映射
+    // ============================================================
+    const LS_WORKFLOWS = 'dsh-ic:workflows';
+    function normalizeWorkflow(w) {
+      const x = w && typeof w === 'object' ? w : {};
+      return {
+        id: String(x.id || ''),
+        name: String(x.name || '').trim().slice(0, 80),
+        createdAt: Number(x.createdAt) || 0,
+        updatedAt: Number(x.updatedAt) || 0,
+        nodes: Array.isArray(x.nodes) ? x.nodes.slice(0, 200) : [],
+        edges: Array.isArray(x.edges) ? x.edges.slice(0, 400) : [],
+        assets: Array.isArray(x.assets) ? x.assets.slice(0, 400) : [],
+        meta: x.meta && typeof x.meta === 'object' ? x.meta : { version: 1, source: 'canvas' },
+      };
+    }
+    function loadWorkflows() {
+      const a = lsGet(LS_WORKFLOWS, []);
+      return (Array.isArray(a) ? a : []).map(normalizeWorkflow).filter((w) => w.id && w.name)
+        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    }
+    function saveWorkflows(list) {
+      lsSet(LS_WORKFLOWS, (list || []).map(normalizeWorkflow).filter((w) => w.id && w.name));
+      notify();
+    }
+    function upsertWorkflow(wf) {
+      const now = Date.now();
+      const w = normalizeWorkflow({ ...wf, updatedAt: now, createdAt: wf.createdAt || now });
+      if (!w.id) w.id = uid('wf');
+      const list = loadWorkflows();
+      const i = list.findIndex((x) => x.id === w.id);
+      if (i >= 0) list[i] = w; else list.unshift(w);
+      saveWorkflows(list);
+      return w;
+    }
+    function removeWorkflow(id) {
+      saveWorkflows(loadWorkflows().filter((w) => w.id !== id));
+    }
+    const WF_RUNTIME_FIELDS = ['status', 'error', 'progress', 'genWarn', 'stopNote', 'seam', 'tailPending', 'history', 'warnings'];
+    async function saveWorkflowFromIds(ids) {
+      const list = batchExpand(ids).filter((n) => n && n.type !== 'group');
+      if (list.length < 2) { toast(T('wfNeedSelection')); return null; }
+      const stamp = new Date();
+      const defName = T('wfDefaultName').replace('{time}', stamp.toLocaleTimeString(effLang() === 'en' ? 'en-US' : 'zh-CN', { hour: '2-digit', minute: '2-digit' }));
+      let name = defName;
+      try {
+        const v = window.prompt(T('wfNamePrompt'), defName);
+        if (v === null) return null;
+        name = String(v || '').trim() || defName;
+      } catch { /* prompt 不可用：用默认名 */ }
+      const minX = Math.min(...list.map((n) => Number(n.x) || 0));
+      const minY = Math.min(...list.map((n) => Number(n.y) || 0));
+      const keyById = new Map(list.map((n, i) => [n.id, 'n' + i]));
+      const nodes = list.map((n, i) => {
+        const data = JSON.parse(JSON.stringify(n.data || {}));
+        for (const k of WF_RUNTIME_FIELDS) delete data[k];
+        data.status = 'idle'; data.error = null; data.progress = null;
+        if (data.aiStatus === 'running') data.aiStatus = 'idle';
+        return {
+          key: 'n' + i, type: n.type,
+          x: Math.round((Number(n.x) || 0) - minX), y: Math.round((Number(n.y) || 0) - minY),
+          w: Number(n.w) || 360, h: Number(n.h) || 360, data,
+        };
+      });
+      const edges = S.graph.edges
+        .filter((e) => keyById.has(e.fromNode) && keyById.has(e.toNode))
+        .map((e) => ({ from: keyById.get(e.fromNode), fromPort: e.fromPort || '', to: keyById.get(e.toNode), toPort: e.toPort || '' }));
+      const assets = [];
+      for (const n of nodes) {
+        for (const field of ['assetId', 'fcAssetId', 'lastAssetId']) {
+          const aid = n.data[field];
+          if (!aid) continue;
+          if (assets.some((a) => a.nodeKey === n.key && a.field === field)) continue;
+          let rec = null;
+          try { rec = await idbGet(aid); } catch { rec = null; }
+          assets.push({ nodeKey: n.key, field, assetId: String(aid), name: (rec && rec.name) || '', kind: (rec && rec.kind) || '' });
+        }
+      }
+      const grouped = ids.length === 1 && S.graph.nodes[ids[0]] && S.graph.nodes[ids[0]].type === 'group';
+      const wf = upsertWorkflow({ id: '', name, nodes, edges, assets, meta: { version: 1, source: 'canvas', grouped } });
+      toast(T('wfSaved').replace('{name}', wf.name));
+      return wf;
+    }
+    /** 跨项目插入：按 id 命中 → 按名称重映射 → 都没有则清空并留占位（绝不把 A 项目资产误当 B 项目资产）。 */
+    async function insertWorkflow(wf) {
+      const w = normalizeWorkflow(wf);
+      if (!w.nodes.length) return null;
+      let all = [];
+      try { all = (await idbByProject(S.activeId)).concat(await idbByProject(GENERAL_PID)); } catch { all = []; }
+      const byId = new Map(all.map((a) => [a.id, a]));
+      const byName = new Map();
+      for (const a of all) if (a && a.name) byName.set(String(a.kind) + '|' + String(a.name), a);
+      const slotByNodeField = new Map((w.assets || []).map((a) => [a.nodeKey + '|' + a.field, a]));
+      const center = worldCenter();
+      const maxX = Math.max(...w.nodes.map((n) => (Number(n.x) || 0) + (Number(n.w) || 360)));
+      const maxY = Math.max(...w.nodes.map((n) => (Number(n.y) || 0) + (Number(n.h) || 360)));
+      const baseX = center.x - maxX / 2;
+      const baseY = center.y - maxY / 2;
+      const idByKey = new Map();
+      const missingSlots = [];
+      const made = w.nodes.map((snap) => {
+        const data = JSON.parse(JSON.stringify(snap.data || {}));
+        for (const field of ['assetId', 'fcAssetId', 'lastAssetId']) {
+          const old = data[field];
+          if (!old) continue;
+          const slot = slotByNodeField.get(snap.key + '|' + field);
+          let next = byId.has(String(old)) ? String(old) : null;
+          if (!next && slot && slot.name) {
+            const hit = byName.get(String(slot.kind || '') + '|' + String(slot.name));
+            if (hit) next = hit.id;
+          }
+          if (next) data[field] = next;
+          else { delete data[field]; missingSlots.push(snap.key); }
+        }
+        const missing = !data.assetId && (snap.type === 'image' || snap.type === 'video' || snap.type === 'finalcut');
+        if (missing) {
+          data.status = 'idle'; data.progress = null;
+          data.genWarn = T('wfAssetMissing');
+        }
+        const nd = {
+          id: uid('n'), type: snap.type,
+          x: Math.round(baseX + (Number(snap.x) || 0)),
+          y: Math.round(baseY + (Number(snap.y) || 0)),
+          w: Number(snap.w) || 360, h: Number(snap.h) || 360, data,
+        };
+        idByKey.set(snap.key, nd.id);
+        return nd;
+      });
+      const madeEdges = w.edges
+        .filter((e) => idByKey.has(e.from) && idByKey.has(e.to))
+        .map((e) => ({ id: uid('e'), fromNode: idByKey.get(e.from), fromPort: e.fromPort || 'out', toNode: idByKey.get(e.to), toPort: e.toPort || '' }));
+      let group = null;
+      if (w.meta && w.meta.grouped && made.length) {
+        const pad = 24;
+        const x0 = Math.min(...made.map((n) => n.x));
+        const y0 = Math.min(...made.map((n) => n.y));
+        const x1 = Math.max(...made.map((n) => n.x + (n.w || 360)));
+        const y1 = Math.max(...made.map((n) => n.y + (n.h || 360)));
+        group = newNode('group', { x: x0 - pad, y: y0 - pad });
+        group.w = Math.round(x1 - x0 + pad * 2);
+        group.h = Math.round(y1 - y0 + pad * 2);
+        group.data.members = made.map((n) => n.id);
+      }
+      update((s) => {
+        for (const nd of made) s.graph.nodes[nd.id] = nd;
+        if (group) s.graph.nodes[group.id] = group;
+        s.graph.edges.push(...madeEdges);
+        s.sel = new Set(group ? [group.id] : made.map((n) => n.id));
+        s.selEdge = null;
+      });
+      pushHistory();
+      flushSave();
+      toast(T('wfInserted').replace('{n}', String(made.length)).replace('{e}', String(madeEdges.length)));
+      return { nodes: made.length, edges: madeEdges.length, missing: new Set(missingSlots).size };
+    }
+
+    /** 生成结果回挂角色库：图片节点的 subjectId 命中时，把新资产加进该角色的参考图。 */
+    function linkAssetToSubject(nodeId, assetId) {
+      const nd = S.graph.nodes[nodeId];
+      const sid = nd && nd.data && nd.data.subjectId;
+      if (!sid || !assetId) return;
+      const list = loadSubjects();
+      const i = list.findIndex((s) => s.id === sid);
+      if (i < 0) return;
+      if (!list[i].assetIds.includes(assetId)) {
+        list[i].assetIds = [assetId].concat(list[i].assetIds).slice(0, 16);
+        list[i].updatedAt = Date.now();
+        saveSubjects(list);
+      }
+    }
     function emptyBible() { return { worldview: '', style: '', styleAnchor: '', characters: [], scenes: [], props: [] }; }
     function loadBible(pid) {
       if (!pid) return emptyBible();
@@ -5988,6 +7132,7 @@ body[data-ds-dark-theme] .dshic-board-editor{border-color:var(--dsw-alias-border
      *  （mp4-first 录制 / png 编码），不存在"从文件名猜"的场景——这里没有任何名字兜底。 */
     function extFromMime(mime) {
       const sub = String(mime || '').split(';')[0].split('/')[1] || 'bin';
+      if (sub === 'gltf-binary') return 'glb';
       return /^[a-z0-9]{1,8}$/i.test(sub) ? sub : 'bin';
     }
     /** 资产内容 URL：CAS 对象（sha）→ /api/object（immutable，远程可拉）；旧落盘（rel）→ /api/file；本地 blob → objectURL。 */
@@ -6049,6 +7194,8 @@ body[data-ds-dark-theme] .dshic-board-editor{border-color:var(--dsw-alias-border
       if (meta && meta.entity) rec.entity = meta.entity;
       if (meta && Array.isArray(meta.entities) && meta.entities.length) rec.entities = meta.entities;
       if (meta && meta.nodeLabel) rec.nodeLabel = meta.nodeLabel;
+      if (meta && Array.isArray(meta.tags) && meta.tags.length) rec.tags = meta.tags;
+      if (meta && meta.folder) rec.folder = meta.folder;
       if (meta && meta.effectivePrompt) rec.effectivePrompt = meta.effectivePrompt;
       // 【硬规则】资产文件一律落数据目录的项目文件夹（projects/<项目>/<类型>/<文件>），元数据进
       // canvas.db；IndexedDB 已废弃——未配置数据目录时明确报错，绝不静默塞进浏览器。
@@ -6091,6 +7238,9 @@ body[data-ds-dark-theme] .dshic-board-editor{border-color:var(--dsw-alias-border
       if (rec.entity) out.entity = rec.entity;
       if (Array.isArray(rec.entities) && rec.entities.length) out.entities = rec.entities;
       if (rec.nodeLabel) out.nodeLabel = rec.nodeLabel;
+      if (Array.isArray(rec.tags) && rec.tags.length) out.tags = rec.tags;
+      if (rec.folder) out.folder = rec.folder;
+      if (rec.mergedInto) out.mergedInto = rec.mergedInto;
       if (rec.kind === 'text' && typeof rec.text === 'string') out.text = rec.text;
       return out;
     }
@@ -6577,6 +7727,96 @@ function queueThumb(assetId) {
       if (!ct || /json|text|plain/.test(ct)) { try { text = new TextDecoder().decode(buf); } catch { text = ''; } }
       return { ok: res.ok, status: res.status, contentType: ct, text, blob };
     }
+    // ---- TTS 统一适配：OpenAI /audio/speech（同步）与星海聚合 /v1/media/generate（异步）----
+    const TTS_VOICE_CACHE = new Map();
+    function ttsProtocolOf(cfg) {
+      const p = String((cfg && cfg.protocol) || '').toLowerCase();
+      if (p === 'lk888' || p === 'media' || p === 'async') return 'lk888';
+      if (p === 'openai' || p === 'speech') return 'openai';
+      const base = String((cfg && cfg.baseUrl) || '');
+      return /lk888|lk666/i.test(base) ? 'lk888' : 'openai';
+    }
+    function ttsAuthHeaders(cfg) {
+      return cfg && cfg.apiKey ? { Authorization: 'Bearer ' + String(cfg.apiKey).trim() } : {};
+    }
+    function ttsBase(cfg) { return String((cfg && cfg.baseUrl) || '').replace(/\/+$/, ''); }
+    /** 音色列表：星海聚合走 /v1/skills/voices；OpenAI 兼容没有统一音色端点，返回空（UI 用自由输入/配置默认）。 */
+    async function ttsVoiceList(cfg) {
+      if (!cfg || ttsProtocolOf(cfg) !== 'lk888') return [];
+      const base = ttsBase(cfg);
+      const model = String(cfg.model || '').trim();
+      const key = base + '|' + model;
+      if (TTS_VOICE_CACHE.has(key)) return TTS_VOICE_CACHE.get(key);
+      const url = base + '/v1/skills/voices?model=' + encodeURIComponent(model);
+      const res = await fetchViaProxy(url, { method: 'GET', headers: ttsAuthHeaders(cfg), timeoutMs: 30000, label: 'TTS 音色列表' });
+      if (!res.ok) throw new Error('TTS 音色列表 HTTP ' + res.status + '：' + String(res.text || '').slice(0, 200));
+      let j = null; try { j = JSON.parse(res.text || '{}'); } catch { j = null; }
+      const list = Array.isArray(j && j.voices) ? j.voices : (Array.isArray(j && j.data && j.data.voices) ? j.data.voices : []);
+      TTS_VOICE_CACHE.set(key, list);
+      return list;
+    }
+    async function ttsSynthesize(cfg, text, opts) {
+      const o = opts || {};
+      const input = String(text || '').trim();
+      if (!cfg) throw new Error(T('errNoTts'));
+      if (!input) throw new Error(T('subPlaceholder'));
+      const base = ttsBase(cfg);
+      const protocol = ttsProtocolOf(cfg);
+      if (protocol === 'lk888') {
+        const params = { format: String(o.format || cfg.format || 'mp3') };
+        if (o.voice) params.voice_id = String(o.voice);
+        if (o.speechRate !== undefined) params.speech_rate = String(o.speechRate);
+        if (o.emotion && o.emotion !== 'auto') { params.emotion = String(o.emotion); params.emotion_scale = String(o.emotionScale || 4); }
+        else params.emotion = 'auto';
+        const body = { model: String(cfg.model || 'doubao-tts-2.0'), prompt: input, params };
+        let created = null;
+        try {
+          created = await fetchViaProxy(base + '/v1/media/generate', { headers: ttsAuthHeaders(cfg), body, timeoutMs: Number(cfg.timeoutMs) > 0 ? Number(cfg.timeoutMs) : 120000, label: 'TTS 创建任务' });
+        } catch (e) { throw new Error('TTS 创建任务失败：' + String((e && e.message) || e)); }
+        // 站点文档同时出现 voice_id / speaker：400 明确指向音色字段时换名重试一次。
+        if (!created.ok && created.status === 400 && params.voice_id && /voice_id|speaker|音色/i.test(String(created.text || ''))) {
+          const params2 = { ...params, speaker: params.voice_id };
+          delete params2.voice_id;
+          try {
+            created = await fetchViaProxy(base + '/v1/media/generate', { headers: ttsAuthHeaders(cfg), body: { ...body, params: params2 }, timeoutMs: Number(cfg.timeoutMs) > 0 ? Number(cfg.timeoutMs) : 120000, label: 'TTS 创建任务(speaker)' });
+          } catch { /* 保留首次错误 */ }
+        }
+        if (!created.ok) throw new Error('TTS 创建任务 HTTP ' + created.status + '：' + String(created.text || '').slice(0, 300));
+        let cj = null; try { cj = JSON.parse(created.text || '{}'); } catch { cj = null; }
+        const taskId = cj && ((cj.data && cj.data.task_id) || cj.task_id);
+        if (!taskId) throw new Error('TTS 创建任务未返回 task_id：' + String(created.text || '').slice(0, 200));
+        const deadline = Date.now() + 180000;
+        for (;;) {
+          if (genAborted()) throw new Error(T('stoppedNote'));
+          if (Date.now() > deadline) throw new Error('TTS 任务超时（180s）');
+          await sleep(3000);
+          const st = await fetchViaProxy(base + '/v1/media/status?task_id=' + encodeURIComponent(taskId), { method: 'GET', headers: ttsAuthHeaders(cfg), timeoutMs: 30000, label: 'TTS 任务查询' });
+          if (!st.ok) continue;
+          let sj = null; try { sj = JSON.parse(st.text || '{}'); } catch { sj = null; }
+          if (!sj) continue;
+          if (!sj.is_final) continue;
+          if (String(sj.state || '').toLowerCase() !== 'success') throw new Error('TTS 失败：' + String(sj.error || sj.status || sj.state || '未知错误'));
+          if (!sj.result_url) throw new Error('TTS 成功但没有 result_url');
+          const out = await fetchViaProxy(String(sj.result_url), { method: 'GET', timeoutMs: 120000, label: 'TTS 下载' });
+          if (!out.ok) throw new Error('TTS 下载失败 HTTP ' + out.status);
+          return new Blob([out.blob], { type: out.contentType || 'audio/mpeg' });
+        }
+      }
+      const res = await fetchViaProxy(base + '/audio/speech', {
+        headers: { ...ttsAuthHeaders(cfg) },
+        body: {
+          ...(cfg.model ? { model: cfg.model } : {}),
+          input,
+          voice: o.voice || cfg.voice || 'alloy',
+          response_format: o.format || 'mp3',
+          ...(o.speechRate !== undefined ? { speed: Math.max(0.25, Math.min(4, 1 + Number(o.speechRate) / 100)) } : {}),
+        },
+        timeoutMs: Number(cfg.timeoutMs) > 0 ? Number(cfg.timeoutMs) : 120000,
+        label: 'TTS API',
+      });
+      if (!res.ok) throw new Error('TTS HTTP ' + res.status + '：' + String(res.text || '').slice(0, 200));
+      return /^audio\//.test(res.contentType) ? res.blob : new Blob([res.blob], { type: 'audio/mpeg' });
+    }
     /** 扩展参数（JSON 字符串 → 对象）：厂商专属参数的通用出口（watermark/prompt_extend/output_format/seed…）。
      *  非空但不是合法 JSON 对象时抛错（配置错误应当立刻暴露，而不是被静默吞掉）。 */
     function parseExtraParams(json) {
@@ -6729,7 +7969,9 @@ function queueThumb(assetId) {
         if (s.model) fd.append('model', s.model);
         fd.append('prompt', prompt);
         fd.append('n', '1');
-        if (s.size) fd.append('size', s.size);
+        const editSize = String((opts && opts.size) || s.size || '').trim();
+        if (editSize) fd.append('size', editSize);
+        if (opts && opts.background) fd.append('background', String(opts.background));
         fd.append('watermark', 'false'); // 稳定默认：去水印优先（与 generations 路径一致）
         refs.forEach((b, i) => fd.append('image[]', b.blob || b, 'ref-' + i + '.png'));
         // FormData 经 Response 序列化为 multipart 字节（含 boundary）→ base64 经代理原样转发
@@ -8893,6 +10135,55 @@ function queueThumb(assetId) {
         URL.revokeObjectURL(url);
       }
     }
+    /** 拉片抽帧：按时间轴均匀取 count 帧，缩到长边 768 的 JPEG dataURL（控请求体积）。
+     *  返回 [{ t, dataUrl }]；视频不可解码/时长为 0 时抛错，由调用方展示失败与手动入口。 */
+    async function extractVideoFramesAt(videoBlob, count, onProgress) {
+      const n = Math.max(3, Math.min(16, Number(count) || 9));
+      const url = URL.createObjectURL(videoBlob);
+      let v = null;
+      try {
+        v = document.createElement('video');
+        v.src = url; v.muted = true; v.preload = 'auto';
+        await new Promise((res, rej) => {
+          let done = false;
+          const fin = () => { if (!done) { done = true; res(); } };
+          v.onloadedmetadata = fin;
+          v.onerror = () => { if (!done) { done = true; rej(new Error('视频解码失败')); } };
+          setTimeout(fin, 12000);
+        });
+        const dur = Number(v.duration);
+        if (!isFinite(dur) || dur <= 0) throw new Error('视频时长不可用');
+        const vw = v.videoWidth || 1280;
+        const vh = v.videoHeight || 720;
+        const scale = Math.min(1, 768 / Math.max(1, vw));
+        const cv = document.createElement('canvas');
+        cv.width = Math.max(2, Math.round(vw * scale));
+        cv.height = Math.max(2, Math.round(vh * scale));
+        const g = cv.getContext('2d');
+        const out = [];
+        for (let i = 0; i < n; i++) {
+          // 均匀采样：从 0 到片尾留 0.05s 余量；避开首尾纯黑/纯色（各留半格）
+          const t = Math.min(Math.max(0, dur - 0.05), dur * ((i + 0.5) / n));
+          await new Promise((res) => {
+            let done = false;
+            const fin = () => { if (!done) { done = true; res(); } };
+            v.onseeked = fin;
+            try { v.currentTime = t; } catch { fin(); }
+            setTimeout(fin, 5000);
+          });
+          await new Promise((res) => { if (v.readyState >= 2) return res(); v.oncanplay = res; setTimeout(res, 2000); });
+          try { g.drawImage(v, 0, 0, cv.width, cv.height); } catch { continue; }
+          out.push({ t: Math.round(t * 100) / 100, dataUrl: cv.toDataURL('image/jpeg', 0.72) });
+          if (onProgress) onProgress(out.length, n);
+        }
+        if (!out.length) throw new Error('没有抽到可用画面');
+        return { frames: out, duration: dur, width: vw, height: vh };
+      } finally {
+        try { URL.revokeObjectURL(url); } catch { /* 忽略 */ }
+        v = null;
+      }
+    }
+
     /** 续帧链：找到「上一个视频节点」。按可靠性依次尝试：
      *  ① frame 口连线的来源视频（用户显式指定；也支持沿旧视频资产节点的 in 线回溯）；
      *  ② 同一上游分镜表连出的其它视频节点里、已生成且位置更靠上的那一个（一个分镜表铺多个视频段）；
@@ -9067,6 +10358,44 @@ function queueThumb(assetId) {
         stream.addTrack(dest.stream.getAudioTracks()[0]);
         audio = { ac, dest };
       } catch { audio = null; }
+      // BGM / SFX 轨：先解码成 AudioBuffer，录制开始时与画面同步启动
+      const bgm = [];
+      if (audio && Array.isArray(opts.audioTracks)) {
+        for (const tr of opts.audioTracks) {
+          try {
+            const resp = await fetch(tr.url);
+            if (!resp.ok) continue;
+            const ab = await resp.arrayBuffer();
+            const buffer = await audio.ac.decodeAudioData(ab);
+            bgm.push({ ...tr, buffer, node: null, gainNode: null });
+          } catch { /* 单条音频解码失败不阻塞成片 */ }
+        }
+      }
+      function startBgm() {
+        if (!audio || !bgm.length) return;
+        try { audio.ac.resume(); } catch { /* 忽略 */ }
+        const t0 = audio.ac.currentTime + 0.05;
+        for (const tr of bgm) {
+          try {
+            const src = audio.ac.createBufferSource();
+            src.buffer = tr.buffer;
+            const g = audio.ac.createGain();
+            g.gain.value = Math.max(0, Math.min(2, Number(tr.gain) || 1));
+            src.connect(g); g.connect(audio.dest);
+            src.loop = !!tr.loop;
+            const offset = Math.max(0, Math.min(Number(tr.offset) || 0, tr.buffer.duration));
+            const dur = Number(tr.duration) > 0 ? Number(tr.duration) : undefined;
+            src.start(t0 + (Number(tr.start) || 0), offset, dur);
+            tr.node = src; tr.gainNode = g;
+          } catch { /* 单条失败不影响其余 */ }
+        }
+      }
+      function stopBgm() {
+        for (const tr of bgm) {
+          try { if (tr.node) tr.node.stop(); } catch { /* 忽略 */ }
+          try { if (tr.gainNode) tr.gainNode.disconnect(); } catch { /* 忽略 */ }
+        }
+      }
       const rec = new MediaRecorder(stream, {
         mimeType: mime,
         // 码率：仅在用户显式选择时指定，否则交给浏览器/编码器默认（不在代码里写死）
@@ -9076,6 +10405,7 @@ function queueThumb(assetId) {
       rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
       const stopped = new Promise((res) => { rec.onstop = res; });
       rec.start(200);
+      startBgm();
       function startPlayback(item) {
         if (item.started) return;
         item.started = true;
@@ -9132,6 +10462,7 @@ function queueThumb(assetId) {
           failed = err || null;
           try { if (rafId) cancelAnimationFrame(rafId); } catch { /* 忽略 */ }
           try { if (timerId) clearTimeout(timerId); } catch { /* 忽略 */ }
+          try { stopBgm(); } catch { /* 忽略 */ }
           resolve();
         }
         // 推进器：rAF 为主 + 定时器兜底。
@@ -9238,6 +10569,7 @@ function queueThumb(assetId) {
         }, totalMs + slackMs);
       });
       vids.forEach(stopItem);
+      stopBgm();
       rec.stop();
       await stopped;
       if (audio) { try { audio.ac.close(); } catch { /* 忽略 */ } }
@@ -10051,6 +11383,12 @@ function queueThumb(assetId) {
       if (!res.ok || body.error) throw new Error(body.error || (T('rpcFail') + ' HTTP ' + res.status));
       return body;
     }
+    /** 宿主 RPC 错误人话化：旧 Host 未注册新方法时，提示“完全重启 Harness”而不是甩未知操作。 */
+    function hostRpcErrText(e, prefix) {
+      const msg = String((e && e.message) || e);
+      const stale = /未知操作|unknown operation|unknown method|method not found/i.test(msg);
+      return (prefix || '') + (stale ? T('hostStaleHint') : msg);
+    }
     /** 从模型输出中提取第一个平衡的 JSON 对象（兼容 ```json 围栏与 think 块）。 */
     function parseJsonBalanced(rawText) {
       const text = String(rawText ?? '')
@@ -10469,7 +11807,7 @@ function queueThumb(assetId) {
      * 走 Host 的流式接口生成文本：实时把「思考/正文」增量喂给 onDelta。
      * 旧 Host 没有该路由时自动回退到一次性 RPC（功能不受影响，只是没有实时预览）。
      */
-    async function aiCompleteStream({ system, user, model, onReasoning, onText }) {
+    async function aiCompleteStream({ system, user, model, images, onReasoning, onText }) {
       const settings = loadSettings();
       let provider;
       let modelId;
@@ -10480,7 +11818,7 @@ function queueThumb(assetId) {
         modelId = settings.textLlm.model || undefined;
       }
       const cfg = settings.textLlm || {};
-      const args = { provider, model: modelId, system, user };
+      const args = { provider, model: modelId, system, user, ...(Array.isArray(images) && images.length ? { images } : {}) };
       const maxTokens = Number(String(cfg.maxTokens ?? '').trim());
       if (String(cfg.maxTokens ?? '').trim() !== '' && Number.isFinite(maxTokens) && maxTokens > 0) args.maxTokens = maxTokens;
       const temperature = Number(String(cfg.temperature ?? '').trim());
@@ -10497,7 +11835,7 @@ function queueThumb(assetId) {
         if (genAborted()) throw e; // 手动打断：保持 abort 语义供上层识别
         throw new Error(T('connectFailed') + '：' + String((e && e.message) || e));
       }
-      if (res.status === 404 || !res.body) return await aiComplete({ system, user, model }); // 旧 Host 回退
+      if (res.status === 404 || !res.body) return await aiComplete({ system, user, model, images }); // 旧 Host 回退
       if (!res.ok) throw new Error((await res.text()).slice(0, 300) || T('rpcFail'));
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -10527,7 +11865,7 @@ function queueThumb(assetId) {
       return final.text || '';
     }
 
-    async function aiComplete({ system, user, model }) {
+    async function aiComplete({ system, user, model, images }) {
       const settings = loadSettings();
       let provider;
       let modelId;
@@ -10539,7 +11877,7 @@ function queueThumb(assetId) {
       }
       // 生成参数一律来自设置；留空则**不发该字段**，由 Harness 适配器/模型用已配置的默认值
       const cfg = settings.textLlm || {};
-      const args = { provider, model: modelId, system, user };
+      const args = { provider, model: modelId, system, user, ...(Array.isArray(images) && images.length ? { images } : {}) };
       const maxTokens = Number(String(cfg.maxTokens ?? '').trim());
       if (String(cfg.maxTokens ?? '').trim() !== '' && Number.isFinite(maxTokens) && maxTokens > 0) args.maxTokens = maxTokens;
       const temperature = Number(String(cfg.temperature ?? '').trim());
@@ -10916,6 +12254,152 @@ function queueThumb(assetId) {
         sfx: String(s.sfx || '').trim().slice(0, 120),
       }));
     }
+    /** 参考视频拉片：抽帧 → 当前文本模型（需支持图片输入）→ 归一化成与分镜表同构的 shots。
+     *  模型只拿到抽出的画面帧（不传视频文件），输出 start/end 秒与镜头描述。 */
+    function pullPromptFor(frames, duration, zh) {
+      const list = frames.map((f, i) => (zh ? '帧' : 'Frame') + (i + 1) + ': t=' + f.t + 's').join('\n');
+      const schema = zh
+        ? '{"summary":"整片一句话","shots":[{"start":0,"end":1.8,"title":"…","visual":"景别+主体+场景+光线+构图","motion":"主体动作与镜头运动","camera":"景别+焦段+运镜","timeBeats":["0s …","中段 …","结尾 …"],"dialogue":[{"role":"…","line":"…"}],"sfx":"…","characters":["…"],"scene":"…","props":["…"],"vfx":"…","transition":"cut"}],"music":{"description":"…","tempo":"…","style":"…","confidence":0.3}}'
+        : '{"summary":"one line about the whole clip","shots":[{"start":0,"end":1.8,"title":"…","visual":"shot size + subject + set + light + composition","motion":"subject action and camera movement","camera":"shot size + lens + move","timeBeats":["0s …","mid …","end …"],"dialogue":[{"role":"…","line":"…"}],"sfx":"…","characters":["…"],"scene":"…","props":["…"],"vfx":"…","transition":"cut"}],"music":{"description":"…","tempo":"…","style":"…","confidence":0.3}}';
+      const rules = zh
+        ? [
+            '- 只输出一个 JSON 对象，不要解释、不要 Markdown 代码块；',
+            '- shots 必须按时间顺序覆盖整段视频（' + duration + ' 秒）；start/end 是秒数，依据给出的帧时间估算；',
+            '- 一镜只写一个主要动作/机位运动；duration 由 end-start 得出；',
+            '- 看不清的台词不要编造：dialogue 只写画面里明确开口说话且能辨认的内容，否则给空数组；',
+            '- music 只能根据画面气氛推测（没有音轨），description 写风格/乐器/节奏，confidence 取 0–1 的低值；',
+            '- characters/scene/props 用画面里的通用名称，不要用 @；没有就给空数组。',
+          ]
+        : [
+            '- Output one JSON object only, no prose and no Markdown fences;',
+            '- shots must cover the whole clip in time order (' + duration + 's); start/end are seconds estimated from the frame timestamps;',
+            '- one main action / camera move per shot; duration = end - start;',
+            '- never invent dialogue: only fill dialogue when a person is visibly speaking and the words are legible, otherwise [] ;',
+            '- music is inferred from visuals only (no audio track): describe style/instruments/tempo and keep confidence low (0-1);',
+            '- use plain names for characters/scene/props (no @); empty arrays when absent.',
+          ];
+      return (zh ? '以下是参考视频的等间隔抽帧（按顺序发送，图片顺序与下列时间一一对应）：\n' : 'Evenly sampled frames from the reference video (sent in order, images match the timestamps below):\n')
+        + list + '\n\n' + (zh ? '请反推分镜，严格按此结构输出：\n' : 'Return the shot breakdown in exactly this shape:\n')
+        + schema + '\n' + rules.join('\n');
+    }
+    function normalizePullResult(j, duration) {
+      const rawShots = Array.isArray(j && j.shots) ? j.shots : [];
+      const dur = Math.max(0.1, Number(duration) || 0);
+      let cursor = 0;
+      const shots = rawShots.slice(0, 24).map((s, i) => {
+        let st = Number(s && s.start);
+        let en = Number(s && s.end);
+        if (!Number.isFinite(st) || st < 0) st = cursor;
+        if (!Number.isFinite(en) || en <= st) en = st + Math.max(0.3, Number(s && s.duration) || 3);
+        if (st > dur) st = Math.max(0, dur - 0.3);
+        en = Math.min(dur > 0 ? dur : en, Math.max(st + 0.3, en));
+        cursor = en;
+        return {
+          title: String((s && s.title) || (T('shotPrefix') + (i + 1))).slice(0, 24),
+          visual: String((s && (s.visual || s.description)) || '').slice(0, 600),
+          motion: String((s && (s.motion || s.action)) || '').slice(0, 400),
+          camera: String((s && s.camera) || '').slice(0, 160),
+          timeBeats: Array.isArray(s && s.timeBeats) ? s.timeBeats.map(String).map((x) => x.trim()).filter(Boolean).slice(0, 4) : [],
+          duration: Math.max(0.3, Math.round((en - st) * 10) / 10),
+          dialogue: Array.isArray(s && s.dialogue)
+            ? s.dialogue.slice(0, 6).map((d) => ({ role: String((d && d.role) || '').trim().slice(0, 24), line: String((d && d.line) || '').trim().slice(0, 200) })).filter((d) => d.role && d.line)
+            : [],
+          sfx: String((s && s.sfx) || '').trim().slice(0, 120),
+          characters: Array.isArray(s && s.characters) ? s.characters.map(String).slice(0, 6) : [],
+          scene: String((s && s.scene) || '').slice(0, 120),
+          props: Array.isArray(s && s.props) ? s.props.map(String).slice(0, 6) : [],
+          vfx: String((s && s.vfx) || '').slice(0, 160),
+          negative: '换脸、五官漂移、服装变化、手部畸形、风格突变',
+          tail: String((s && s.tail) || '').slice(0, 120),
+          cam: String((s && s.cam) || '').slice(0, 80),
+          seg: i === 0 ? 'opening' : 'continuation',
+          pullStart: Math.round(st * 10) / 10,
+          pullEnd: Math.round(en * 10) / 10,
+        };
+      });
+      const musicRaw = j && j.music;
+      const music = typeof musicRaw === 'string'
+        ? musicRaw.trim()
+        : (musicRaw && typeof musicRaw === 'object'
+          ? [musicRaw.description, musicRaw.style, musicRaw.tempo, musicRaw.confidence != null ? ('置信度 ' + musicRaw.confidence) : ''].filter(Boolean).join(' · ')
+          : '');
+      return { summary: String((j && j.summary) || '').trim(), shots, music };
+    }
+    async function analyzeReferenceVideo(n, opts) {
+      const o = opts || {};
+      const aid = n && n.data && n.data.assetId;
+      if (!aid) throw new Error(T('pullNeedAsset'));
+      const blob = await assetBlob(aid);
+      if (!blob) throw new Error(T('pullNeedAsset'));
+      const ex = await extractVideoFramesAt(blob, o.frames, (i, total) => {
+        if (o.onProgress) o.onProgress({ phase: 'extract', i, total });
+      });
+      if (o.onProgress) o.onProgress({ phase: 'analyze' });
+      const zh = effLang() !== 'en';
+      const text = await aiComplete({
+        system: zh ? '你是专业影视拉片师，只输出 JSON。' : 'You are a professional film shot-breakdown analyst. Output JSON only.',
+        user: pullPromptFor(ex.frames, ex.duration, zh),
+        model: o.model || '',
+        images: ex.frames.map((f, i) => ({ dataUrl: f.dataUrl, name: 'frame-' + (i + 1) + '.jpg' })),
+      });
+      const s = String(text || '').replace(/```json/gi, '').replace(/```/g, '').trim();
+      const a = s.indexOf('{');
+      const b = s.lastIndexOf('}');
+      let j = null;
+      try { j = JSON.parse(s.slice(a, b + 1)); } catch { j = null; }
+      if (!j || !Array.isArray(j.shots) || !j.shots.length) {
+        throw new Error(T('errParseStoryboard') + '（拉片正文 ' + s.length + ' 字；开头: ' + s.slice(0, 120) + '）');
+      }
+      const normalized = normalizePullResult(j, ex.duration);
+      normalized.frames = ex.frames.length;
+      normalized.duration = ex.duration;
+      return normalized;
+    }
+    /** 拉片结果 → 画布上的分镜表节点（与手写分镜同一数据结构，可直接铺开生成）。 */
+    function createStoryboardFromPull(videoNode, pull) {
+      const base = videoNode || {};
+      const pos = { x: (base.x || 0), y: (base.y || 0) + (base.h || 300) + 80 };
+      const sb = addNodeAt('storyboard', pos);
+      update((s) => {
+        const nd = s.graph.nodes[sb.id];
+        if (!nd) return;
+        nd.data.label = (batchNodeName(videoNode) || T('pullTitle')) + ' · ' + T('pullShots');
+        nd.data.shots = pull.shots;
+        nd.data.count = pull.shots.length;
+        nd.data.aiStatus = 'done';
+        nd.data.aiError = null;
+        nd.data.requirement = pull.summary || '';
+        nd.data.pull = {
+          summary: pull.summary || '', music: pull.music || '', frames: pull.frames || 0,
+          duration: Math.round((pull.duration || 0) * 10) / 10,
+          sourceAssetId: (videoNode && videoNode.data && videoNode.data.assetId) || null,
+          at: Date.now(),
+        };
+        s.sel = new Set([sb.id]);
+        s.composerId = null;
+      });
+      pushHistory();
+      flushSave();
+      toast(T('pullDone').replace('{n}', String(pull.shots.length)));
+      return sb.id;
+    }
+    /** 无视觉能力时的手动降级：建一张空分镜表，镜头表由用户自己填。 */
+    function createEmptyStoryboardNear(videoNode) {
+      const base = videoNode || {};
+      const sb = addNodeAt('storyboard', { x: base.x || 0, y: (base.y || 0) + (base.h || 300) + 80 });
+      update((s) => {
+        const nd = s.graph.nodes[sb.id];
+        if (!nd) return;
+        nd.data.label = (batchNodeName(videoNode) || T('pullTitle')) + ' · ' + T('pullManual');
+        nd.data.aiStatus = 'done';
+        nd.data.requirement = T('pullManualHint');
+        s.sel = new Set([sb.id]);
+      });
+      pushHistory();
+      flushSave();
+      return sb.id;
+    }
+
     /** 本地一致性检查：分镜里出现的角色/场景/道具（含 visual/motion 文本里的 @提及）是否都在
      *  设定集/资产中登记；两级告警——「未登记」与「已登记但描述为空（待补全）」。
      *  台词碎片豁免：名字以「的」结尾且出现在对白文本里的角色/场景/道具视为描述性片段（如台词
@@ -11047,11 +12531,12 @@ function queueThumb(assetId) {
       rightTab: 'projects',
       // 多画布预留：当前项目下只有默认画布（null）；将来 = 子目录/子画布 id
       activeCanvasId: null,
-      // 统一弹窗（资产 + 设定集 + 记忆）：'bible' | 'assets' | 'memory' | null；纯 UI 状态
+      // 统一弹窗（资产 + 设定集 + 记忆 + 角色库）：'bible' | 'assets' | 'memory' | 'subjects' | null；纯 UI 状态
       panelModal: null,
       // 分镜表编辑器（纯 UI 状态）：{ nodeId, shotIndex } | null。独立于生成面板，避免节点内嵌编辑器被画布变换裁切。
       storyboardEditId: null,
       storyboardEditShot: 0,
+      subjectTargetNodeId: null, // 角色库「应用至画布」的目标节点（生成器/选区带入）
       memoryViewer: null,    // 记忆查看器状态：{ loaded, index, open, body }（随项目切换重拉）
       // 工具栏项目下拉（位置由按钮真实矩形计算）：{left, top} | null；纯 UI 状态
       projectMenu: null,
@@ -11068,6 +12553,11 @@ function queueThumb(assetId) {
       canvasSearch: '',
       canvasCollapsed: false,
       menu: null,          // {x, y, kind:'add'}
+      batch: null,         // 批量执行台：{ items, running, stopped, concurrency, price, videoSecs, source } | null（纯 UI）
+      // 创作台（自动创作 + 批量执行统一面板）：consoleOpen 开关；consoleTab 'auto' | 'batch'（纯 UI）
+      consoleOpen: false,
+      consoleTab: 'auto',
+      damUndo: null,       // 资产合并撤销快照：{ pairs, nodeSnapshots, subjects, workflows, at } | null（本次会话）
       composerId: null,    // 生成面板当前挂靠的节点 id（单例；纯 UI 状态，不持久化）
       assetsTick: 0,
       // 设定集更新信号：编辑器 persist 后自增，分镜详情据此自动重算一致性告警（旧告警自动消失，免手动 revalidate）。
@@ -11101,6 +12591,8 @@ function queueThumb(assetId) {
       hostBindingStale: false, // 宿主进程为旧版（缺 bindingCapabilities rev>=2）→ 菜单提示重启并拦截动作
       // 3D 导演台（纯 UI 状态；场景数据存在节点/项目的 director 文档里，见 directorDoc）
       directorOpen: false,
+      directorStageId: null,        // 当前 3D-BOX stage（库里的某一条；null = 旧版单文件）
+      directorStageTitle: '',
       directorFull: false,          // 导演台是否全屏
       directorPendingPlace: null,   // 待放置资产（点选预设后进入放置模式）
       directorTool: 'select',       // 'select' | 'move' | 'rotate' | 'camera'
@@ -11110,6 +12602,9 @@ function queueThumb(assetId) {
       directorCamFollow: false,     // 视口是否跟随分镜机位（播放时开；点机位树/预设=手动查看，立即切视角）
       directorEase: 'auto',         // 默认插值模式
       directorTlZoom: 140,          // 时间轴缩放（px/秒）
+      directorCamPathPick: false,   // 手绘运镜：地面点击模式
+      directorCamPath: [],          // 手绘运镜：路径点 [{x,z}]
+      boxHomeOpen: false,           // 3D-BOX 库首页（我的 3D-BOX / 一句话新建）
     };
     const listeners = new Set();
     let saveTimer = null;
@@ -11376,6 +12871,13 @@ function queueThumb(assetId) {
         data.prompt = ''; data.assetId = null; data.demo = false;
         data.duration = 5; data.resolution = '720P'; data.ratio = '16:9';
       }
+      if (type === 'audio') {
+        data.assetId = null; data.prompt = ''; data.audioModel = '';
+        data.voiceId = ''; data.audioEmotion = 'auto'; data.audioEmotionScale = '4';
+        data.audioSpeechRate = '0'; data.audioFormat = 'mp3';
+        data.audioGain = 1; data.audioStart = 0; data.audioOffset = 0;
+        data.audioDuration = 0; data.audioLoop = false; data.audioMute = false;
+      }
       if (type === 'finalcut') {
         data.resolution = '720P'; data.ratio = '16:9'; data.transition = 'none';
         data.status = 'idle'; data.error = null; data.progress = null; data.assetId = null;
@@ -11390,6 +12892,8 @@ function queueThumb(assetId) {
       let size = { w: NODE_W, h: NODE_H };
       if (type === 'image' || type === 'video') {
         size = nodeSizeForRatio(data.ratio, { hasFooter: false });
+      } else if (type === 'audio') {
+        size = { w: 360, h: 300 };
       }
       return {
         id: uid('n'), type,
@@ -11647,6 +13151,7 @@ function queueThumb(assetId) {
       if (!n) return 'text';
       if (n.type === 'image') return 'image';
       if (n.type === 'video' || n.type === 'finalcut') return 'video';
+      if (n.type === 'audio') return 'audio';
       return 'text';
     }
     /** 端口单点后的自动选口：左边一个点 / 右边一个点，具体连到内部哪个语义端口由系统按上游类型判定。
@@ -11680,7 +13185,7 @@ function queueThumb(assetId) {
         else if (isImageLike(fromNode)) ip = pickIn('image', 'ref');
         else if (isVideoLike(fromNode)) ip = pickIn('image', 'frame');
       } else if (toNode.type === 'finalcut') {
-        ip = isVideoLike(fromNode) ? pickIn('video', 'in') : null;
+        ip = isVideoLike(fromNode) ? pickIn('video', 'in') : (fromNode.type === 'audio' ? pickIn('audio', 'audio') : null);
       } else if (toNode.type === 'shot') {
         ip = pickIn(fromKind);
       }
@@ -12027,12 +13532,17 @@ function queueThumb(assetId) {
     // 工作流执行
     // ============================================================
     const cancelRef = { cancelled: false };
-    const genAbort = { ctl: null }; // 当前生成的 AbortController（停止按钮真正中断底层流/轮询）
+    const genAbort = { ctl: null, batchAbort: false, batchControllers: null }; // 当前生成的 AbortController（停止按钮真正中断底层流/轮询）
     let genActive = 0; // 活跃生成计数（工作流与单节点触发统一计数）
-    function genAborted() { return !!(genAbort.ctl && genAbort.ctl.signal && genAbort.ctl.signal.aborted); }
+    function genAborted() { return !!(genAbort.batchAbort || (genAbort.ctl && genAbort.ctl.signal && genAbort.ctl.signal.aborted)); }
     function stopActiveGen() {
       cancelRef.cancelled = true;
+      genAbort.batchAbort = true;
       if (genAbort.ctl) { try { genAbort.ctl.abort(); } catch { /* 忽略 */ } }
+      if (genAbort.batchControllers) {
+        for (const ctl of genAbort.batchControllers) { try { ctl.abort(); } catch { /* 忽略 */ } }
+      }
+      if (S.batch && S.batch.running) update((s) => { if (s.batch) s.batch.stopped = true; });
     }
 
     /** 分镜节点的剧本来源：**连线上游与手动粘贴二选一**——
@@ -12215,7 +13725,7 @@ function queueThumb(assetId) {
     /** 成片合成（宿主侧 ffmpeg）：返回 { ok:true, assetId }。
      *  宿主不可用（没装 ffmpeg / 连不上）时返回 { ok:false, skip:true } → 走浏览器录制兜底；
      *  宿主任务**失败**一律当错误抛出并写清原因，绝不静默改走浏览器（否则用户只看到"莫名其妙变慢"）。 */
-    async function composeViaHost(n, items) {
+    async function composeViaHost(n, items, audioTracks) {
       let probe = null;
       try { probe = await hostRpc('finalcutProbe'); }
       catch (e) { return { ok: false, skip: true, reason: String((e && e.message) || e) }; }
@@ -12234,6 +13744,17 @@ function queueThumb(assetId) {
           transition: (n.data && n.data.transition) || 'none',
           keepAudio: !(n.data && n.data.keepAudio === false),
           bitrate: n.data && n.data.bitrate ? Number(n.data.bitrate) : 0,
+          // 成片音频轨（BGM/SFX）：起点/偏移/时长/增益/循环，宿主侧用 ffmpeg 做等价的
+          // adelay + atrim + volume + stream_loop 混音（不传就会静默丢掉 BGM）
+          audioTracks: (audioTracks || []).map((tr) => ({
+            assetId: tr.assetId,
+            name: tr.name || 'audio',
+            start: Number(tr.start) || 0,
+            offset: Number(tr.offset) || 0,
+            duration: Number(tr.duration) > 0 ? Number(tr.duration) : 0,
+            gain: Number.isFinite(Number(tr.gain)) ? Number(tr.gain) : 1,
+            loop: tr.loop === true,
+          })),
         });
       } catch (e) { return { ok: false, skip: true, reason: String((e && e.message) || e) }; }
       if (!started || !started.ok) return { ok: false, skip: true, reason: (started && started.error) || '宿主拒绝启动合成任务' };
@@ -12288,8 +13809,31 @@ function queueThumb(assetId) {
         const v = n.data.subs && n.data.subs[x.e.id];
         return v != null ? v : defSub;
       };
-      // 片段清单：宿主路径只要资产 id（不必把视频读进浏览器内存）
-      const items = [];
+        // 片段清单：宿主路径只要资产 id（不必把视频读进浏览器内存）
+        const items = [];
+        // 成片音频轨（BGM/SFX）：上游 audio 输入口；宿主路径按 assetId 交给 ffmpeg 混音
+        const audioTracks = [];
+        const audioEdges = S.graph.edges.filter((x) => x.toNode === n.id && x.toPort === 'audio');
+        for (const e of audioEdges) {
+          const nd = S.graph.nodes[e.fromNode];
+          if (!nd || !nd.data || !nd.data.assetId || nd.data.audioMute === true) continue;
+          try {
+            const rec = await idbGet(nd.data.assetId).catch(() => null);
+            const url = await assetUrl(nd.data.assetId);
+            if (!url) continue;
+            const gain = Number(nd.data.audioGain);
+            audioTracks.push({
+              assetId: nd.data.assetId,
+              url,
+              name: (rec && rec.name) || nd.data.label || 'audio',
+              start: Math.max(0, Number(nd.data.audioStart) || 0),
+              offset: Math.max(0, Number(nd.data.audioOffset) || 0),
+              duration: Number(nd.data.audioDuration) > 0 ? Number(nd.data.audioDuration) : undefined,
+              gain: Number.isFinite(gain) && gain >= 0 ? Math.min(2, gain) : 1,
+              loop: nd.data.audioLoop === true,
+            });
+          } catch { /* 单条音频读失败不阻塞成片 */ }
+        }
       const skipped = []; // 被跳过的片段必须让用户看见：静默少段 = 用户以为全片都合进去了
       for (const x of segs) {
         const segName = String((x.nd.data && x.nd.data.label) || TYPE_LABEL()[x.nd.type] || '片段');
@@ -12314,7 +13858,7 @@ function queueThumb(assetId) {
       update((s) => { const nd = s.graph.nodes[n.id]; if (nd) { nd.data.status = 'running'; nd.data.error = null; nd.data.progress = '0%'; } });
       flushSave();
       // —— 首选宿主侧 ffmpeg ——
-      const host = await composeViaHost(n, items);
+      const host = await composeViaHost(n, items, audioTracks);
       if (host.ok) return host.assetId;
       // —— 兜底：浏览器录制（实时，需要页面保持前台）——
       if (typeof document !== 'undefined' && document.hidden) {
@@ -12348,6 +13892,7 @@ function queueThumb(assetId) {
         const blob = await composeFinalCut(metas, {
           width: dims.w, height: dims.h, keepAudio: n.data.keepAudio !== false, transition: n.data.transition,
           bitrate: n.data.bitrate ? Number(n.data.bitrate) : undefined,
+          audioTracks,
         }, (frac, name) => {
           update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.progress = Math.round(frac * 100) + '% · ' + name; });
         });
@@ -12383,11 +13928,45 @@ function queueThumb(assetId) {
       } catch { /* 留痕尽力而为：Host 不在/目录不可写都不能挡住生成 */ }
     }
 
+    /** 音频生成节点：文本 → 配置的 TTS（OpenAI 同步 / 星海聚合异步）→ 音频资产。 */
+    async function genAudioNode(n) {
+      const settings = loadSettings();
+      const list = flattenTtsModels(settings);
+      const want = String((n.data && n.data.audioModel) || settings.ttsStar || '');
+      const cfg = list.find((x) => x.ref === want) || list[0];
+      if (!cfg) throw new Error(T('errNoTts'));
+      const text = resolvePrompt(n);
+      if (!String(text || '').trim()) throw new Error(T('subPlaceholder'));
+      const blob = await ttsSynthesize(cfg, text, {
+        voice: String((n.data && n.data.voiceId) || cfg.voice || ''),
+        emotion: String((n.data && n.data.audioEmotion) || 'auto'),
+        emotionScale: String((n.data && n.data.audioEmotionScale) || '4'),
+        speechRate: String((n.data && n.data.audioSpeechRate) || '0'),
+        format: String((n.data && n.data.audioFormat) || 'mp3'),
+      });
+      const rec = await saveAssetRecord(S.activeId, 'audio', blob, {
+        name: String((n.data && n.data.label) || 'TTS') + ' ' + nowStamp(),
+        prompt: text, source: 'api', category: 'audio',
+      });
+      update((s) => {
+        const nd = s.graph.nodes[n.id];
+        if (nd) {
+          nd.data.assetId = rec.id;
+          nd.data.status = 'done';
+          nd.data.error = null;
+          nd.data.progress = null;
+        }
+        s.assetsTick++;
+      });
+      return rec.id;
+    }
     async function runGenNode(n) {
       const type = n.type;
       const settings = loadSettings(); // 模型解析（供应商+模型）用
       const ctl = new AbortController();
+      genAbort.batchAbort = false;
       genAbort.ctl = ctl;
+      if (genAbort.batchControllers) genAbort.batchControllers.add(ctl);
       genActive++;
       // 生成告警收集器：参考素材截断、厂商参数落空等"需要用户知道"的事实，一律挂到节点上（绝不静默）
       const addWarn = (msg) => {
@@ -12410,6 +13989,7 @@ function queueThumb(assetId) {
         if (type === 'script') { await genScriptNode(n); return true; }
         if (type === 'storyboard') { await genStoryboardNode(n); return true; }
         if (type === 'finalcut') { await genFinalCutNode(n); return true; }
+        if (type === 'audio') { await genAudioNode(n); return true; }
         if (type !== 'image' && type !== 'video') throw new Error(T('nodeNotRunnable'));
         let prompt = resolvePrompt(n);
         const bible = loadBible(S.activeId);
@@ -12671,6 +14251,7 @@ function queueThumb(assetId) {
         genActive = Math.max(0, genActive - 1);
         if (genActive === 0) update((s) => { s.running = false; });
         if (genAbort.ctl === ctl) genAbort.ctl = null;
+        if (genAbort.batchControllers) genAbort.batchControllers.delete(ctl);
       }
     }
     function commitGenResult(nodeId, assetId, demo, kind) {
@@ -12704,6 +14285,7 @@ function queueThumb(assetId) {
         }
         s.assetsTick++;
       });
+      linkAssetToSubject(nodeId, assetId);
       void kind;
     }
     async function runWorkflow() {
@@ -12722,7 +14304,7 @@ function queueThumb(assetId) {
           if (!n) continue;
           // 已在生成中的节点跳过：避免与对话触发的 canvas_run_node 并发调用同一节点（重复计费/重复资产）
           if (n.data && n.data.status === 'running') continue;
-          if (n.type === 'image' || n.type === 'video' || n.type === 'script' || n.type === 'storyboard' || n.type === 'finalcut') {
+          if (n.type === 'image' || n.type === 'video' || n.type === 'audio' || n.type === 'script' || n.type === 'storyboard' || n.type === 'finalcut') {
             await runGenNode(n);
           }
         }
@@ -12734,6 +14316,210 @@ function queueThumb(assetId) {
     function stopRun() {
       stopActiveGen();
       toast(T('stoppedToast'));
+    }
+
+    // ============================================================
+    // 批量执行台（选区 / 整组）：预检 → 队列 → 进度 / 停止
+    // ============================================================
+    const BATCH_TYPES = new Set(['image', 'video', 'audio', 'script', 'storyboard', 'finalcut']);
+    const batchNodeName = (n) => String((n.data && n.data.label) || (TYPE_LABEL()[n.type]) || n.type || '节点');
+    /** 选区/组展开成真实节点：组递归展开，去重；不改变画布选择。 */
+    function batchExpand(ids) {
+      const out = [];
+      const seen = new Set();
+      const walk = (id) => {
+        if (!id || seen.has(id)) return;
+        seen.add(id);
+        const n = S.graph.nodes[id];
+        if (!n) return;
+        if (n.type === 'group') {
+          for (const m of (n.data.members || [])) walk(m);
+          return;
+        }
+        out.push(n);
+      };
+      for (const id of (ids || [])) walk(id);
+      return out;
+    }
+    function collectBatchTargets(ids) {
+      const out = batchExpand(ids).filter((n) => BATCH_TYPES.has(n.type));
+      // 按上游→下游排序：选区里有剧本/分镜/视频时，先跑上游，避免下游拿到空输入。
+      const order = topoOrder(S.graph);
+      if (order) {
+        const rank = new Map(order.map((id, i) => [id, i]));
+        out.sort((a, b) => (rank.get(a.id) ?? 1e9) - (rank.get(b.id) ?? 1e9));
+      }
+      return out;
+    }
+    function batchVideoSecsOf(n) {
+      return n.type === 'video' ? Math.max(0, Number(n.data && n.data.duration) || 5) : 0;
+    }
+    /** 打开预检面板。items 只包含真正可执行的节点；非可执行节点静默跳过（选择里常有文本/设定节点）。 */
+    function openBatchConsole(ids, source) {
+      const targets = collectBatchTargets(ids);
+      if (!targets.length) { toast(T('batchNoTargets')); return; }
+      const items = targets.map((n) => ({
+        id: n.id, name: batchNodeName(n), type: n.type,
+        secs: batchVideoSecsOf(n), status: 'queued', error: null,
+      }));
+      const videoSecs = items.reduce((a, it) => a + it.secs, 0);
+      update((s) => {
+        s.batch = {
+          items, source: source || 'selection', running: false, stopped: false,
+          concurrency: 1, price: 0, videoSecs, startedAt: 0, finishedAt: 0,
+        };
+        s.sel = new Set(targets.map((n) => n.id));
+        // 批量菜单直达创作台的批量页（面板统一，不再另开旧浮层）
+        s.consoleOpen = true;
+        s.consoleTab = 'batch';
+      });
+      hostRpc('productionPrice', {}).then((r) => {
+        update((s) => { if (s.batch) s.batch.price = Number(r && r.price) || 0; });
+      }).catch(() => { /* 单价读不到就只能不显示金额 */ });
+    }
+    function closeBatchConsole() {
+      if (S.batch && S.batch.running) {
+        // 关闭不等于停止：先停再关，避免后台继续计费却没有进度入口
+        stopBatchQueue();
+      }
+      update((s) => { s.batch = null; });
+    }
+    /** 创作台：打开（'auto' | 'batch'）/ 关闭。关闭时批量在跑先停（原语义）；自动创作 Host 侧继续。 */
+    function openProdConsole(tab) {
+      update((s) => { s.consoleOpen = true; s.consoleTab = tab === 'batch' ? 'batch' : 'auto'; });
+    }
+    function closeProdConsole() {
+      if (S.batch && S.batch.running) stopBatchQueue();
+      update((s) => { s.consoleOpen = false; });
+    }
+    function focusBatchItem(id) {
+      const n = S.graph.nodes[id];
+      if (!n) return;
+      update((s) => { s.sel = new Set([n.id]); s.composerId = null; });
+      const r = containerRect();
+      setView(r.width / 2 - (n.x + (n.w || 240) / 2) * V.scale, r.height / 2 - (n.y + (n.h || 96) / 2) * V.scale, V.scale, true);
+    }
+    function markBatchItem(item, status, error) {
+      item.status = status;
+      item.error = error || null;
+      notify();
+    }
+    async function startBatchQueue() {
+      const b = S.batch;
+      if (!b || b.running) return;
+      const todo = b.items.filter((it) => it.status === 'queued' || it.status === 'error' || it.status === 'stopped');
+      if (!todo.length) return;
+      update((s) => {
+        if (!s.batch) return;
+        s.batch.running = true; s.batch.stopped = false;
+        s.batch.startedAt = Date.now(); s.batch.finishedAt = 0;
+        for (const it of s.batch.items) {
+          if (it.status === 'error' || it.status === 'stopped') { it.status = 'queued'; it.error = null; }
+        }
+      });
+      genAbort.batchAbort = false;
+      genAbort.batchControllers = new Set();
+      const conc = clamp(Number(b.concurrency) || 1, 1, 3);
+      // 运行令牌：关闭/重开面板后旧 worker 不能再去消费新批次的条目（避免重复执行/重复计费）
+      b.runToken = {};
+      const runToken = b.runToken;
+      const isCurrent = () => S.batch === b && b.runToken === runToken;
+      let idx = 0;
+      const takeNext = () => {
+        if (!isCurrent() || b.stopped) return null;
+        while (idx < b.items.length) {
+          const it = b.items[idx++];
+          if (it.status === 'queued') return it;
+        }
+        return null;
+      };
+      const worker = async () => {
+        for (;;) {
+          const it = takeNext();
+          if (!it) return;
+          const n = S.graph.nodes[it.id];
+          if (!n) { markBatchItem(it, 'skipped'); continue; }
+          // 与单节点/工作流并发保护同一口径：已在生成中不重复触发（防重复计费/重复资产）
+          if (n.data && n.data.status === 'running') { markBatchItem(it, 'skipped'); continue; }
+          markBatchItem(it, 'running');
+          const ok = await runGenNode(n);
+          const stopped = b.stopped || !isCurrent();
+          const nd = S.graph.nodes[it.id];
+          if (ok) markBatchItem(it, 'done');
+          else markBatchItem(it, stopped ? 'stopped' : 'error', stopped ? null : String((nd && nd.data && nd.data.error) || '生成失败'));
+        }
+      };
+      try {
+        await Promise.all(Array.from({ length: conc }, worker));
+      } finally {
+        if (S.batch === b) genAbort.batchControllers = null;
+        if (isCurrent()) {
+          update((s) => {
+            if (s.batch !== b) return;
+            s.batch.running = false;
+            s.batch.finishedAt = Date.now();
+            if (s.batch.stopped) {
+              for (const it of s.batch.items) if (it.status === 'queued') it.status = 'stopped';
+            }
+          });
+        }
+        flushSave();
+      }
+      if (isCurrent()) {
+        const okN = b.items.filter((x) => x.status === 'done').length;
+        const failN = b.items.filter((x) => x.status === 'error').length;
+        toast(T('batchDoneToast').replace('{ok}', String(okN)).replace('{fail}', String(failN)));
+      }
+    }
+    function stopBatchQueue() {
+      if (!S.batch || !S.batch.running) return;
+      update((s) => { if (s.batch) s.batch.stopped = true; });
+      genAbort.batchAbort = true;
+      if (genAbort.batchControllers) {
+        for (const ctl of genAbort.batchControllers) { try { ctl.abort(); } catch { /* 忽略 */ } }
+      }
+      if (genAbort.ctl) { try { genAbort.ctl.abort(); } catch { /* 忽略 */ } }
+      toast(T('batchStopped'));
+    }
+    /** 批量下载：按节点顺序逐个触发浏览器下载（间隔 350ms，避免一次性弹窗被拦截）。 */
+    async function batchDownloadNodes(ids) {
+      const list = batchExpand(ids).map((n) => ({
+        n,
+        aid: n.type === 'finalcut' ? ((n.data && (n.data.assetId || n.data.fcAssetId)) || null) : ((n.data && n.data.assetId) || null),
+      })).filter((x) => x.aid);
+      if (!list.length) { toast(T('batchNoAsset')); return; }
+      for (const { n, aid } of list) {
+        try {
+          const url = await assetUrl(aid);
+          if (!url) continue;
+          const kind = n.type === 'image' ? 'image' : n.type === 'audio' ? 'audio' : 'video';
+          const name = await downloadNameForAsset(aid, (batchNodeName(n) || n.type) + '-' + n.id.slice(-4), kind);
+          downloadBlobFromUrl(url, name);
+          await new Promise((res) => setTimeout(res, 350));
+        } catch { /* 单个下载失败不阻塞其余 */ }
+      }
+      toast(T('batchDownloaded').replace('{n}', String(list.length)));
+    }
+    /** 组内图片 → 批量建视频节点（首帧接线）并直接进预检。 */
+    function batchVideosFromImages(ids) {
+      const imgs = batchExpand(ids).filter((n) => n.type === 'image' && n.data && n.data.assetId);
+      if (!imgs.length) { toast(T('batchNoTargets')); return; }
+      const added = [];
+      update((s) => {
+        imgs.forEach((img, i) => {
+          const v = newNode('video', { x: img.x + (img.w || 360) + 80, y: img.y + i * 12 });
+          v.data.prompt = String((img.data && img.data.prompt) || '').trim();
+          v.data.ratio = (img.data && img.data.ratio) || '16:9';
+          v.data.duration = 5;
+          s.graph.nodes[v.id] = v;
+          s.graph.edges.push({ id: uid('e'), fromNode: img.id, fromPort: 'out', toNode: v.id, toPort: 'frame' });
+          added.push(v.id);
+        });
+        s.sel = new Set(added);
+      });
+      pushHistory();
+      flushSave();
+      openBatchConsole(added, 'images');
     }
 
     // ============================================================
@@ -13248,6 +15034,8 @@ function queueThumb(assetId) {
       memory: 'M5 5h14M5 10h14M5 15h9M5 20h6M18 15v5M15.5 17.5h5',
       check: 'M4 12l5 5L20 6',
       chat: 'M4 5h16v11H9l-5 4V5z',
+      users: 'M16 19v-1a4 4 0 00-4-4H6a4 4 0 00-4 4v1M9 11a4 4 0 100-8 4 4 0 000 8zM22 19v-1a4 4 0 00-3-3.9M16 3.1a4 4 0 010 7.8',
+      tag: 'M4 4h7l9 9-7 7-9-9V4zM8 8h.01',
     };
     function Ic(name, size) { return h(Icon, { d: ICONS[name], size: size || 14 }); }
 
@@ -13266,15 +15054,16 @@ function queueThumb(assetId) {
       // 合并后的图片/视频节点：既是"生成器"也是"资产"（有结果就是资产）
       'image': T('nImage'),
       'video': T('nVideo'),
+      'audio': T('nAudio'),
       'finalcut': T('nFinalCut'),
       'group': T('group'),
     });
     // 生成面板标题行里的类型标签（比节点默认名更长一点，便于区分"节点"）
     const TYPE_TAG = () => ({
       'text': T('tagText'), 'script': T('tagScript'), 'storyboard': T('tagStoryboard'),
-      'image': T('tagImage'), 'video': T('tagVideo'), 'finalcut': T('tagFinalCut'),
+      'image': T('tagImage'), 'video': T('tagVideo'), 'audio': T('tagAudio'), 'finalcut': T('tagFinalCut'),
     });
-    const TYPE_KIND = { 'text': 'text', 'shot': 'shot', 'script': 'script', 'storyboard': 'shot', 'image': 'image', 'video': 'video', 'finalcut': 'video', 'group': 'text' };
+    const TYPE_KIND = { 'text': 'text', 'shot': 'shot', 'script': 'script', 'storyboard': 'shot', 'image': 'image', 'video': 'video', 'audio': 'audio', 'finalcut': 'video', 'group': 'text' };
 
     /** 节点框相交判定（含最小间距，默认 24px）。 */
     /** 实时碰撞推挤共享核心（拖动 / 节点尺寸变化共用）：与 movers 里节点相交的其他节点，
@@ -13386,7 +15175,7 @@ function queueThumb(assetId) {
       });
     }
 
-    const TYPE_ICON = { 'text': 'text', 'shot': 'shot', 'script': 'script', 'storyboard': 'board', 'image': 'image', 'video': 'video', 'finalcut': 'film', 'group': 'folder' };
+    const TYPE_ICON = { 'text': 'text', 'shot': 'shot', 'script': 'script', 'storyboard': 'board', 'image': 'image', 'video': 'video', 'audio': 'audio', 'finalcut': 'film', 'group': 'folder' };
 
     function ungroupNode(id) {
       update((s) => {
@@ -14347,6 +16136,9 @@ function queueThumb(assetId) {
       const [atPos, setAtPos] = useState({ left: 0, top: 0 });
       // 「更多」默认收起：高级项（衔接模式/重绘/接续/声音参考/扩展参数/历史…）不渲染、不占版面
       const [isMoreOpen, setIsMoreOpen] = useState(false);
+      const [motionPresets, setMotionPresets] = useState([]);
+      const [bibleChars, setBibleChars] = useState([]);
+      const [videoPrice, setVideoPrice] = useState(0);
       // 参考图拖拽排序的 UI 状态：拖动源下标 / 当前插入位置下标（只影响高亮，不动数据）
       const [dragRefIdx, setDragRefIdx] = useState(-1);
       const [overRefIdx, setOverRefIdx] = useState(-1);
@@ -14413,6 +16205,23 @@ function queueThumb(assetId) {
         bridgeDescribe().then((d) => { if (alive && d) bumpBridgeCap((v) => v + 1); });
         return () => { alive = false; };
       }, [nid]);
+      // 运镜/转场预设：视频节点打开时按需加载导演引擎（与 3D-BOX 共用一份清单）
+      useEffect(() => {
+        if (!n || n.type !== 'video') return undefined;
+        let alive = true;
+        loadDirectorEngine().then((E2) => { if (alive) setMotionPresets((E2 && E2.MOTION_PRESETS) || []); }).catch(() => {});
+        return () => { alive = false; };
+      }, [n && n.type]);
+      // 角色库：视频节点打开时读当前项目设定集角色（含参考图资产）
+      useEffect(() => {
+        if (!n || n.type !== 'video') return;
+        try { setBibleChars((loadBible(S.activeId).characters || []).filter((c) => c && String(c.name || '').trim())); } catch { setBibleChars([]); }
+      }, [n && n.id]);
+      // 视频单价：生成前费用估算（Host 配置里的 production.videoUnitPricePerSecond）
+      useEffect(() => {
+        if (!n || n.type !== 'video') return;
+        hostRpc('productionPrice', {}).then((r) => setVideoPrice(Number(r && r.price) || 0)).catch(() => setVideoPrice(0));
+      }, [n && n.id]);
       // Ctrl/⌘+滚动写在画布上会缩放：面板内保持原生滚动（全局 wheel 处理器已排除 .dshic-composer）
       if (!n) return null;
       const kind = n.type;
@@ -14652,6 +16461,86 @@ function queueThumb(assetId) {
         n.data.genWarn || n.data.stopNote || n.data.error || n.data.chainFrom || n.data.seam
         || n.data.tailPickMeta || (n.data.history || []).length > 1
       );
+      /** 从设定集角色加参考图：已有 assetId 的 image 节点直接连线；缺的自动建节点后连线。 */
+      const addCharacterRefs = (name) => {
+        const c = bibleChars.find((x) => String(x.name).trim() === String(name || '').trim());
+        if (!c) return;
+        const ids = Array.isArray(c.assetIds) ? c.assetIds.map(String).filter(Boolean).slice(0, 8) : [];
+        if (!ids.length) { toast(T('videoCharNoAssets')); return; }
+        const existing = Object.values(S.graph.nodes).filter((nd) => nd && nd.type === 'image' && ids.includes(String(nd.data && nd.data.assetId)));
+        const have = new Set(existing.map((nd) => String(nd.data.assetId)));
+        const created = [];
+        ids.filter((id) => !have.has(id)).forEach((assetId, i) => {
+          const nd = addNodeAt('image', { x: (Number(n.x) || 0) - 420 + i * 140, y: (Number(n.y) || 0) + 300 });
+          if (!nd) return;
+          update((s) => {
+            const g = s.graph.nodes[nd.id];
+            if (g) g.data = Object.assign({}, g.data, { assetId, status: 'done', label: String(c.name) + ' 参考' });
+          });
+          created.push({ id: nd.id, type: 'image' });
+        });
+        const wired = new Set(S.graph.edges.filter((e) => e.toNode === n.id && e.toPort === 'ref').map((e) => e.fromNode));
+        let added = 0;
+        for (const nd of existing.concat(created)) {
+          if (wired.has(nd.id)) continue;
+          if (connect(nd, 'out', n, 'ref')) added++;
+        }
+        toast(T('videoCharAdded').replace('{n}', String(added)));
+      };
+      /** 画布参考：把当前选中的图片节点连到视频节点的 ref 端口。 */
+      const addCanvasRefs = () => {
+        const ids = [...(S.sel || [])].filter((id) => id !== n.id);
+        const imgs = ids.map((id) => S.graph.nodes[id]).filter((nd) => nd && nd.type === 'image');
+        if (!imgs.length) { toast(T('videoCanvasRefNone')); return; }
+        const wired = new Set(S.graph.edges.filter((e) => e.toNode === n.id && e.toPort === 'ref').map((e) => e.fromNode));
+        let added = 0;
+        for (const nd of imgs) {
+          if (wired.has(nd.id)) continue;
+          if (connect(nd, 'out', n, 'ref')) added++;
+        }
+        toast(T('videoCanvasRefAdded').replace('{n}', String(added)));
+      };
+      /** AutoLink：把提示词里的 @名称@ 匹配到同名/含名的图片节点并自动连 ref。 */
+      const autoLinkRefs = () => {
+        const names = parseMentions(String(promptVal || '')).map((x) => String(x.name || '').trim()).filter(Boolean);
+        if (!names.length) { toast(T('videoAutoLinkNone')); return; }
+        const imgs = Object.values(S.graph.nodes).filter((nd) => nd && nd.type === 'image' && names.some((nm) => String((nd.data && nd.data.label) || '').includes(nm)));
+        if (!imgs.length) { toast(T('videoAutoLinkMiss')); return; }
+        const wired = new Set(S.graph.edges.filter((e) => e.toNode === n.id && e.toPort === 'ref').map((e) => e.fromNode));
+        let added = 0;
+        for (const nd of imgs) {
+          if (wired.has(nd.id)) continue;
+          if (connect(nd, 'out', n, 'ref')) added++;
+        }
+        toast(T('videoAutoLinkAdded').replace('{n}', String(added)));
+      };
+      /** 首帧预设：有 frame 连线时切 hard 首帧；没有则明确提示。 */
+      const useFirstFrame = () => {
+        const has = S.graph.edges.some((e) => e.toNode === n.id && e.toPort === 'frame');
+        if (!has) { toast(T('videoFirstFrameNoEdge')); return; }
+        setData('frameMode', 'hard');
+        toast(T('videoFirstFrameDone'));
+      };
+      const showLongHint = () => toast(T('videoLongHint'));
+      /** 生成前素材预检：参考图上限按当前视频厂商。 */
+      const videoPreflight = (() => {
+        if (!isVideo) return null;
+        const [pid] = String(modelValue || '').split('|');
+        const p = (settings.videoProviders || []).find((x) => x.id === pid);
+        const vendor = p ? detectVideoVendor({ vendor: p.vendor, url: p.url, protocol: p.protocol }) : 'openai';
+        const caps = VIDEO_REF_CAPS[vendor] || { img: 8 };
+        const nRefs = (refItems || []).length;
+        const warns = [];
+        const label = (VIDEO_VENDORS[vendor] && VIDEO_VENDORS[vendor].label) || vendor;
+        if (nRefs > (caps.img || 0)) {
+          warns.push(caps.img
+            ? T('videoRefCapWarn').replace('{n}', String(nRefs)).replace('{vendor}', label).replace('{cap}', String(caps.img))
+            : T('videoNoRefVendor').replace('{vendor}', label).replace('{n}', String(nRefs)));
+        }
+        const dur = Number(n.data.duration) || 5;
+        if (dur > 15) warns.push(T('videoLongWarn').replace('{d}', String(dur)));
+        return { vendor, caps, nRefs, warns };
+      })();
       return h('div', {
         ref: boxRef, className: 'dshic-composer',
         onPointerDown: (e) => { e.stopPropagation(); if (atOpen) setAtOpen(false); },
@@ -14674,6 +16563,14 @@ function queueThumb(assetId) {
                   onPointerDown: (e) => e.stopPropagation(),
                   onClick: () => { if (fileRef.current) fileRef.current.click(); },
                 }, '+'),
+                (isImage || isVideo)
+                  ? h('button', {
+                      type: 'button', className: 'dshic-ref-add', title: T('subjTab') + ' → ' + T('subjApply'),
+                      'data-action': 'composer-subjects',
+                      onPointerDown: (e) => e.stopPropagation(),
+                      onClick: () => update((s) => { s.subjectTargetNodeId = n.id; s.panelModal = 'subjects'; }),
+                    }, Ic('users', 12))
+                  : null,
                 refItems.map((r, i) => h('span', {
                   key: r.edgeId,
                   className: cls('dshic-ref-thumb',
@@ -14719,6 +16616,44 @@ function queueThumb(assetId) {
                 refEdges.length ? null : h('span', { className: 'dshic-composer-refhint' }, T('refNoneHint')))
             : null,
           h('input', { ref: fileRef, type: 'file', accept: 'image/*', style: { display: 'none' }, onChange: onFile }),
+          isVideo && motionPresets.length
+            ? h('div', { className: 'dshic-composer-motion', 'data-role': 'motion-presets' },
+                h('span', { className: 'dshic-composer-motion-lb' }, T('motionPresetLabel')),
+                h(PopupSelect, {
+                  value: '', width: 190, title: T('motionPresetPick'), className: 'is-motion', searchable: true,
+                  options: [{ value: '', label: T('motionPresetPick') }].concat(motionPresets.map((p) => ({ value: p.id, label: effLang() === 'en' ? p.en : p.zh }))),
+                  onChange: (v) => {
+                    if (!v) return;
+                    const p = motionPresets.find((x) => x.id === v);
+                    if (!p) return;
+                    const marker = '【' + T('motionPresetTag') + '】';
+                    const line = marker + (effLang() === 'en' ? p.promptEn : p.promptZh);
+                    const cleaned = String(promptVal || '').split('\n').filter((l) => !l.startsWith(marker)).join('\n').trim();
+                    setPrompt((cleaned ? cleaned + '\n' : '') + line);
+                  },
+                }))
+            : null,
+          isVideo && videoPreflight
+            ? h('div', { className: 'dshic-composer-motion dshic-composer-preflight', 'data-role': 'video-preflight' },
+                h('span', { className: 'dshic-composer-motion-lb' }, T('videoPreflight')),
+                h('span', { className: videoPreflight.warns.length ? 'dshic-preflight-warn' : 'dshic-preflight-ok' },
+                  videoPreflight.warns.length ? videoPreflight.warns.join('；') : T('videoPreflightOK')),
+                h('span', { className: 'dshic-preflight-ok' },
+                  videoPrice > 0
+                    ? T('videoCost').replace('{cost}', String(Math.round(videoPrice * (Number(n.data.duration) || 5) * 100) / 100)).replace('{price}', String(videoPrice))
+                    : T('videoNoPrice')),
+                bibleChars.length
+                  ? h(PopupSelect, {
+                      value: '', width: 170, title: T('videoCharPick'), className: 'is-charref', searchable: true,
+                      options: [{ value: '', label: T('videoCharPick') }].concat(bibleChars.map((c) => ({ value: c.name, label: String(c.name) + (Array.isArray(c.assetIds) && c.assetIds.length ? ' · ' + c.assetIds.length : '') }))),
+                      onChange: addCharacterRefs,
+                    })
+                  : null,
+                h('button', { type: 'button', className: 'dshic-dir-mini', 'data-action': 'video-canvas-ref', onClick: addCanvasRefs }, T('videoCanvasRef')),
+                h('button', { type: 'button', className: 'dshic-dir-mini', 'data-action': 'video-autolink', onClick: autoLinkRefs }, T('videoAutoLink')),
+                h('button', { type: 'button', className: 'dshic-dir-mini', 'data-action': 'video-first-frame', onClick: useFirstFrame }, T('videoFirstFrame')),
+                h('button', { type: 'button', className: 'dshic-dir-mini', 'data-action': 'video-long-hint', onClick: showLongHint }, T('videoLong')))
+            : null,
           h('div', { className: 'dshic-composer-prompt' },
             h(PromptArea, {
               value: promptVal, minHeight: 70, readOnly: isStoryboard && (wiredScript || !!boardScopedSource),
@@ -15042,6 +16977,188 @@ function queueThumb(assetId) {
         }, '\u26f6'));
     }
 
+    /** 参考视频拉片对话框：抽帧数 / 进度 / 失败降级为手动分镜表。
+     *  不单独配置视觉模型：统一用画布文本模型；不支持图片输入时提示换多模态模型。 */
+    function PullShotsDialog({ nodeId, onClose }) {
+      const n = S.graph.nodes[nodeId];
+      const s0 = loadSettings();
+      const textModel = s0.textLlm || { provider: '', model: '' };
+      const modelLabel = textModel.provider ? (textModel.provider + ' · ' + textModel.model) : T('followSettings');
+      const [frameCount, setFrameCount] = useState('9');
+      const [busy, setBusy] = useState(false);
+      const [phase, setPhase] = useState(null);
+      const [err, setErr] = useState(null);
+      const [result, setResult] = useState(null);
+      const alive = useRef(true);
+      useEffect(() => () => { alive.current = false; }, []);
+      const run = async () => {
+        if (busy) return;
+        setBusy(true); setErr(null); setResult(null); setPhase({ phase: 'extract', i: 0, total: Number(frameCount) });
+        try {
+          const pull = await analyzeReferenceVideo(n, {
+            frames: Number(frameCount) || 9,
+            onProgress: (p) => { if (alive.current) setPhase(p); },
+          });
+          if (!alive.current) return;
+          createStoryboardFromPull(n, pull);
+          setResult(pull);
+        } catch (e) {
+          if (!alive.current) return;
+          const msg = String((e && e.message) || e);
+          const visionHint = /image|vision|multimodal|unsupported|content|图片/i.test(msg) ? ' ' + T('pullNoVision') : '';
+          setErr(msg + visionHint);
+        } finally {
+          if (alive.current) { setBusy(false); setPhase(null); }
+        }
+      };
+      const manual = () => { createEmptyStoryboardNear(n); onClose(); };
+      const phaseText = !phase
+        ? ''
+        : phase.phase === 'extract'
+          ? T('pullExtracting').replace('{i}', String(phase.i)).replace('{n}', String(phase.total))
+          : T('pullAnalyzing');
+      return h('div', { className: 'dshic-modal-overlay', onPointerDown: (e) => { if (e.target === e.currentTarget && !busy) onClose(); } },
+        h('div', { className: 'dshic-modal', style: { width: 460 } },
+          h('div', { className: 'dshic-modal-title' }, T('pullTitle') + ' — ' + ((n && n.data && n.data.label) || '')),
+          h('div', { className: 'dshic-modal-warn' }, T('pullHint')),
+          h('div', { className: 'dshic-row', style: { gap: 8 } },
+            h('label', { className: 'dshic-field', style: { flex: 'none', width: 120 } },
+              h('span', { className: 'dshic-field-label' }, T('pullFrames')),
+              h('select', {
+                className: 'dshic-select', value: frameCount, disabled: busy,
+                onChange: (e) => setFrameCount(e.target.value), onPointerDown: (e) => e.stopPropagation(),
+              }, ['6', '9', '12', '16'].map((v) => h('option', { key: v, value: v }, T('pullFrameUnit').replace('{n}', v))))),
+            h('div', { className: 'dshic-hint', style: { flex: 1, minWidth: 0, alignSelf: 'center' } },
+              T('pullUsingTextModel').replace('{model}', modelLabel)),
+          ),
+          busy ? h('div', { className: 'dshic-modal-warn', style: { display: 'flex', alignItems: 'center', gap: 6 } }, h('span', { className: 'dshic-spin' }), phaseText) : null,
+          result
+            ? h('div', { className: 'dshic-modal-warn' },
+                T('pullShotCount').replace('{n}', String(result.shots.length)).replace('{s}', String(Math.round(result.shots.reduce((a, x) => a + (Number(x.duration) || 0), 0)))),
+                result.summary ? h('div', { style: { marginTop: 4 } }, result.summary) : null,
+                result.music ? h('div', { style: { marginTop: 4 } }, T('pullAudioNote').replace('{text}', result.music)) : null)
+            : null,
+          err ? h('div', { className: 'dshic-err' }, err) : null,
+          h('div', { className: 'dshic-modal-actions' },
+            h('button', { type: 'button', className: 'dshic-btn dshic-btn-outline', disabled: busy, onClick: onClose, onPointerDown: (e) => e.stopPropagation() }, T('batchClose')),
+            err && !busy ? h('button', { type: 'button', className: 'dshic-btn dshic-btn-outline', onClick: manual, onPointerDown: (e) => e.stopPropagation() }, T('pullManual')) : null,
+            h('button', {
+              type: 'button', className: 'dshic-gen', style: { width: 'auto', padding: '0 14px' },
+              disabled: busy || !!result, onClick: run, onPointerDown: (e) => e.stopPropagation(),
+            }, busy ? h('span', { className: 'dshic-spin' }) : Ic('board', 12), T('pullStart'))),
+        ));
+    }
+
+    /** 确定性图像工具面板：超分（本地）/ 抠图 / 扩图 / 多角度 / 打光（模型 edits）。
+     *  能力由 imageToolCaps 决定：不支持的按钮不渲染（隐藏而不是点击报错）。 */
+    function ImageToolsDialog({ nodeId, onClose }) {
+      const n = S.graph.nodes[nodeId];
+      const mcfg = n ? resolveImageModelCfg(loadSettings(), nodeImageModelRef(n)) : null;
+      const caps = imageToolCaps(mcfg);
+      const [busy, setBusy] = useState(false);
+      const [err, setErr] = useState(null);
+      const [factor, setFactor] = useState('2');
+      const [ratio, setRatio] = useState('16:9');
+      const [light, setLight] = useState('golden');
+      if (!n) return null;
+      const zh = effLang() !== 'en';
+      const editSize = (r) => {
+        if (!mcfg) return '';
+        if (mcfg.size) return mcfg.size;
+        const rr = String(r || n.data.ratio || '1:1');
+        if (/gpt-image/i.test(String(mcfg.model || ''))) {
+          return rr === '9:16' ? '1024x1536' : rr === '1:1' ? '1024x1024' : '1536x1024';
+        }
+        return '';
+      };
+      const promptFor = (kind) => {
+        if (kind === 'matte') {
+          return zh
+            ? '抠图：只保留画面主体，去除全部背景与投影，边缘干净自然；不改变主体的外观、颜色、服装和细节。' + (caps.transparent ? '背景透明。' : '背景为纯白。')
+            : 'Cutout: keep only the subject, remove all background and shadows, clean edges; do not change the subject\'s look, colours, costume or details. ' + (caps.transparent ? 'Transparent background.' : 'Pure white background.');
+        }
+        if (kind === 'outpaint') {
+          return zh
+            ? '扩图：把画面扩展到 ' + ratio + ' 比例，补全四周环境，主体不变、透视/光线/风格连贯，不裁切主体。'
+            : 'Outpaint: extend the image to ' + ratio + ' aspect ratio, fill the surrounding environment, keep the subject unchanged and the perspective/light/style continuous; never crop the subject.';
+        }
+        if (kind === 'angles') {
+          return zh
+            ? '角色多角度：以参考图中的同一角色生成四视图（正面、左侧、背面、3/4 侧），服装、发型、配色、体型完全一致；纯白背景、均匀柔光。'
+            : 'Character multi-angle: generate a four-view sheet of the same character (front, left, back, three-quarter), identical costume, hair, palette and build; pure white background, even soft light.';
+        }
+        const lightText = light === 'studio' ? (zh ? '柔光棚拍' : 'studio softbox') : light === 'neon' ? (zh ? '霓虹夜景' : 'neon night') : (zh ? '黄金时刻' : 'golden hour');
+        return zh
+          ? '打光：保持人物、构图和背景不变，把光线改为「' + lightText + '」；重设可见光源方向、色温与阴影，不改变五官和服装。'
+          : 'Relight: keep the subject, composition and background; change the lighting to "' + lightText + '"; restyle the visible key light, colour temperature and shadows without changing the face or costume.';
+      };
+      const derive = async (blob, label, opts) => {
+        await commitDerivedImage(n, blob, label, opts);
+      };
+      const runUpscale = async () => {
+        if (busy) return;
+        setBusy(true); setErr(null);
+        try {
+          const blob = await assetBlob(n.data.assetId);
+          if (!blob) throw new Error(T('mediaMissing'));
+          const up = await upscaleImageBlob(blob, factor);
+          await derive(up.blob, T('imgToolUpscale') + ' ' + up.factor + 'x', { ratio: n.data.ratio, width: up.width, height: up.height });
+          onClose();
+        } catch (e) { setErr(String((e && e.message) || e)); } finally { setBusy(false); }
+      };
+      const runEdit = async (kind) => {
+        if (busy || !mcfg) return;
+        setBusy(true); setErr(null);
+        try {
+          const blob = await assetBlob(n.data.assetId);
+          if (!blob) throw new Error(T('mediaMissing'));
+          const prompt = promptFor(kind);
+          const useRatio = kind === 'outpaint' ? ratio : (n.data.ratio || '1:1');
+          let out = null;
+          if (mcfg.viaImageGen) {
+            out = await apiGenBridge(prompt, [blob], { provider: mcfg.imageGenProvider, model: mcfg.model }, { ratio: useRatio, quality: 'high' });
+          } else {
+            out = await apiImage(prompt, [{ blob }], mcfg, {
+              ratio: useRatio,
+              size: kind === 'outpaint' ? editSize(ratio) : (kind === 'matte' || kind === 'angles' ? editSize(n.data.ratio) : (mcfg.size || '')),
+              background: kind === 'matte' && caps.transparent ? 'transparent' : undefined,
+              nodeExtra: n.data.imgExtra,
+            });
+          }
+          const label = T('imgTool' + kind.charAt(0).toUpperCase() + kind.slice(1)) || kind;
+          await derive(out, label, { ratio: useRatio });
+          onClose();
+        } catch (e) { setErr(String((e && e.message) || e)); } finally { setBusy(false); }
+      };
+      const runRow = (label, control, action) => h('div', { className: 'dshic-row', style: { gap: 8, flexWrap: 'wrap' } },
+        h('button', { type: 'button', className: 'dshic-btn', disabled: busy, onClick: action, onPointerDown: (e) => e.stopPropagation() }, busy ? h('span', { className: 'dshic-spin' }) : null, label),
+        control || null);
+      return h('div', { className: 'dshic-modal-overlay', onPointerDown: (e) => { if (e.target === e.currentTarget && !busy) onClose(); } },
+        h('div', { className: 'dshic-modal', style: { width: 460 } },
+          h('div', { className: 'dshic-modal-title' }, T('imgTools') + ' — ' + ((n.data && n.data.label) || '')),
+          !mcfg ? h('div', { className: 'dshic-modal-warn' }, T('imgToolNoModel')) : null,
+          mcfg && !caps.matte ? h('div', { className: 'dshic-modal-warn' }, T('imgToolUnsupported')) : null,
+          runRow(T('imgToolUpscale'), h('select', {
+            className: 'dshic-select', style: { width: 74 }, value: factor, disabled: busy,
+            onChange: (e) => setFactor(e.target.value), onPointerDown: (e) => e.stopPropagation(),
+          }, ['2', '3', '4'].map((v) => h('option', { key: v, value: v }, v + 'x'))), runUpscale),
+          caps.matte ? runRow(T('imgToolMatte') + (caps.transparent ? ' · ' + T('imgToolTransparent') : ' · ' + T('imgToolWhiteBg')), null, () => runEdit('matte')) : null,
+          caps.outpaint ? runRow(T('imgToolOutpaint'), h('select', {
+            className: 'dshic-select', style: { width: 84 }, value: ratio, disabled: busy,
+            onChange: (e) => setRatio(e.target.value), onPointerDown: (e) => e.stopPropagation(),
+          }, ['16:9', '9:16', '1:1'].map((v) => h('option', { key: v, value: v }, v))), () => runEdit('outpaint')) : null,
+          caps.angles ? runRow(T('imgToolAngles'), null, () => runEdit('angles')) : null,
+          caps.relight ? runRow(T('imgToolRelight'), h('select', {
+            className: 'dshic-select', style: { width: 110 }, value: light, disabled: busy,
+            onChange: (e) => setLight(e.target.value), onPointerDown: (e) => e.stopPropagation(),
+          }, [['golden', 'imgToolLightGolden'], ['studio', 'imgToolLightStudio'], ['neon', 'imgToolLightNeon']].map(([v, k]) => h('option', { key: v, value: v }, T(k)))), () => runEdit('relight')) : null,
+          busy ? h('div', { className: 'dshic-modal-warn', style: { display: 'flex', alignItems: 'center', gap: 6 } }, h('span', { className: 'dshic-spin' }), T('imgToolRunning')) : null,
+          err ? h('div', { className: 'dshic-err' }, err) : null,
+          h('div', { className: 'dshic-modal-actions' },
+            h('button', { type: 'button', className: 'dshic-btn dshic-btn-outline', disabled: busy, onClick: onClose, onPointerDown: (e) => e.stopPropagation() }, T('batchClose'))),
+        ));
+    }
+
     /** 统一媒体节点（图片/视频合并后唯一的结果节点）：节点内只显示结果。
      *  有 assetId → 预览 + 左上状态徽标 + 右上参考图角标；无结果 → 虚线空态「点击描述画面生成…」；
      *  空节点不放任何生成按钮（生成动作在 GenComposer 的发送按钮）。点击节点任意位置打开面板。 */
@@ -15123,6 +17240,8 @@ function queueThumb(assetId) {
       const [duration, setDuration] = useState(0);
       const [volume, setVolume] = useState(1);
       const [muted, setMuted] = useState(false);
+      const [pullOpen, setPullOpen] = useState(false); // 参考视频拉片对话框（放在既有 hook 之后，保持测试注入序号稳定）
+      const [toolsOpen, setToolsOpen] = useState(false); // 图像工具对话框
       // 换了资产（重新生成/历史切换）→ 回到未就绪：旧图不残留、新图加载期间有骨架兜底
       useEffect(() => {
         setMediaState('idle');
@@ -15461,6 +17580,21 @@ function queueThumb(assetId) {
               if (u) downloadBlobFromUrl(u, await downloadNameForAsset(n.data.assetId, (kind === 'image' ? 'image' : 'video') + '-' + n.id.slice(-5), kind));
             },
               }, Ic('download', 11), T('download')),
+              kind === 'video'
+                ? h('button', {
+                    type: 'button', className: 'dshic-mini is-ghost', title: T('pullHint'),
+                    onPointerDown: (e) => e.stopPropagation(),
+                    onClick: () => setPullOpen(true),
+                  }, Ic('board', 11), T('pullShots'))
+                : null,
+              kind === 'image'
+                ? h('button', {
+                    type: 'button', className: 'dshic-mini is-ghost', title: T('imgTools'),
+                    'data-action': 'image-tools',
+                    onPointerDown: (e) => e.stopPropagation(),
+                    onClick: () => setToolsOpen(true),
+                  }, Ic('spark', 11), T('imgTools'))
+                : null,
               h('button', {
                 type: 'button', className: 'dshic-mini is-ghost', disabled: running,
                 onPointerDown: (e) => e.stopPropagation(),
@@ -15473,6 +17607,12 @@ function queueThumb(assetId) {
                 onClick: openPanel,
               }, Ic('image', 11), T('refCount').replace('{n}', String(refEdges.length))),
             )
+          : null,
+        pullOpen && kind === 'video'
+          ? h(PullShotsDialog, { key: 'pull', nodeId: n.id, onClose: () => setPullOpen(false) })
+          : null,
+        toolsOpen && kind === 'image'
+          ? h(ImageToolsDialog, { key: 'imgtools', nodeId: n.id, onClose: () => setToolsOpen(false) })
           : null,
       ];
     }
@@ -16403,6 +18543,11 @@ function queueThumb(assetId) {
                   + (n.data.boardScript ? ' · ' + T('boardScopedHint') : '')
                 : '✂ ' + T('boardPlanHint').replace('{n}', String(boardPlan.segments.length)))
           : null,
+        n.data.pull && (n.data.pull.summary || n.data.pull.music)
+          ? h('div', { key: 'pull', className: 'dshic-hint', 'data-role': 'pull-summary', title: (n.data.pull.summary || '') + (n.data.pull.music ? '\n' + T('pullAudioNote').replace('{text}', n.data.pull.music) : '') },
+              '🎞 ' + T('pullShots') + (n.data.pull.frames ? ' · ' + n.data.pull.frames + 'f' : '')
+              + (n.data.pull.music ? ' · ' + n.data.pull.music.slice(0, 60) : ''))
+          : null,
         n.data.contFrom
           ? h('div', { key: 'cont', className: 'dshic-hint' }, '↩ ' + T('contFrom') + '：' + n.data.contFrom + ' ' + T('lastFrame'))
           : null,
@@ -16713,6 +18858,7 @@ function queueThumb(assetId) {
         .map((e) => ({ e, nd: S.graph.nodes[e.fromNode] }))
         .filter((x) => x.nd)
         .sort((a, b) => (a.nd.y - b.nd.y) || (a.nd.x - b.nd.x));
+      const audioEdges = S.graph.edges.filter((x) => x.toNode === n.id && x.toPort === 'audio');
       const assetUrlV = useAssetUrl(n.data.assetId);
       const fcUrl = useAssetUrl(n.data.fcAssetId);
       const [voiceDlg, setVoiceDlg] = useState(false);
@@ -16731,15 +18877,8 @@ function queueThumb(assetId) {
         if (!text) { toast(T('subPlaceholder')); return; }
         update((s) => { const nd = s.graph.nodes[n.id]; if (nd) { nd.data.tts = nd.data.tts || {}; nd.data.tts[x.e.id] = { status: 'running' }; } });
         try {
-          // TTS 也走 Host 代理：浏览器直连 TTS 网关同样会被 CORS 拦
-          const res = await fetchViaProxy((cfg.baseUrl || '').replace(/\/+$/, '') + '/audio/speech', {
-            headers: { ...(cfg.apiKey ? { Authorization: 'Bearer ' + cfg.apiKey } : {}) },
-            body: { ...(cfg.model ? { model: cfg.model } : {}), input: text, voice: cfg.voice || 'alloy', response_format: 'mp3' },
-            timeoutMs: Number(cfg.timeoutMs) > 0 ? Number(cfg.timeoutMs) : 120000,
-            label: 'TTS API',
-          });
-          if (!res.ok) throw new Error('TTS HTTP ' + res.status + '：' + res.text.slice(0, 200));
-          const blob = /^audio\//.test(res.contentType) ? res.blob : new Blob([res.blob], { type: 'audio/mpeg' });
+          // 与独立音频节点共用同一适配器：OpenAI 同步 / 星海聚合异步均可
+          const blob = await ttsSynthesize(cfg, text, { voice: cfg.voice || '', format: 'mp3' });
           const rec = await saveAssetRecord(S.activeId, 'audio', blob, { name: 'TTS-' + text.slice(0, 12), prompt: text, source: 'api', category: 'audio' });
           update((s) => { const nd = s.graph.nodes[n.id]; if (nd) { nd.data.tts = nd.data.tts || {}; nd.data.tts[x.e.id] = { status: 'done', assetId: rec.id }; } s.assetsTick++; });
         } catch (e) {
@@ -16869,6 +19008,16 @@ function queueThumb(assetId) {
               })
             : h('div', { className: 'dshic-hint' }, T('noSegments')),
         ),
+        h('span', { key: 'a1', className: 'dshic-shot-label' }, T('audioTracksLabel')),
+        h('div', { key: 'alist', className: 'dshic-shot-list' },
+          audioEdges.length
+            ? audioEdges.map((e) => {
+                const nd = S.graph.nodes[e.fromNode] || {};
+                return h('div', { key: e.id, className: 'dshic-shot-item', style: { display: 'flex', alignItems: 'center', gap: 6 } },
+                  Ic('audio', 11), h('span', {}, (nd.data && nd.data.label) || TYPE_LABEL()[nd.type] || 'audio'),
+                  h('span', { className: 'dshic-hint' }, 'Gain ' + String(nd.data && nd.data.audioGain != null ? nd.data.audioGain : 1)));
+              })
+            : h('div', { className: 'dshic-hint' }, T('audioTracksEmpty'))),
         h('div', { key: 'hint', className: 'dshic-hint' }, T('composeHint')),
         n.data.error ? h('div', { key: 'err', className: 'dshic-err' }, n.data.error) : null,
         h('button', {
@@ -16932,6 +19081,107 @@ function queueThumb(assetId) {
       ];
     }
 
+    function AudioNodeBody({ n }) {
+      const url = useAssetUrl(n.data.assetId);
+      const settings = loadSettings();
+      const models = flattenTtsModels(settings);
+      const modelRef = String(n.data.audioModel || settings.ttsStar || (models[0] && models[0].ref) || '');
+      const cfg = models.find((x) => x.ref === modelRef) || models[0] || null;
+      const running = n.data.status === 'running';
+      const [editing, setEditing] = useState(!n.data.assetId);
+      const [voices, setVoices] = useState([]);
+      const [voiceErr, setVoiceErr] = useState('');
+      useEffect(() => {
+        if (!cfg || ttsProtocolOf(cfg) !== 'lk888') { setVoices([]); setVoiceErr(''); return undefined; }
+        let alive = true;
+        ttsVoiceList(cfg).then((list) => { if (alive) { setVoices(list); setVoiceErr(''); } })
+          .catch((e) => { if (alive) { setVoices([]); setVoiceErr(String((e && e.message) || e)); } });
+        return () => { alive = false; };
+      }, [cfg && cfg.ref, cfg && cfg.baseUrl, cfg && cfg.model, cfg && cfg.protocol]);
+      const setData = (k, v) => {
+        update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data[k] = v; });
+        flushSave();
+      };
+      const stop = (e) => { if (e && e.stopPropagation) e.stopPropagation(); };
+      const fmtOpts = [{ v: 'mp3', l: 'mp3' }, { v: 'wav', l: 'wav' }, { v: 'ogg_opus', l: 'ogg_opus' }];
+      const emoOpts = [['auto', T('audioEmotionAuto')], ['happy', T('audioEmotionHappy')], ['sad', T('audioEmotionSad')], ['angry', T('audioEmotionAngry')], ['fearful', T('audioEmotionFear')], ['surprised', T('audioEmotionSurprised')], ['calm', T('audioEmotionCalm')]];
+      const rateOpts = ['-50', '-25', '0', '25', '50', '100'];
+      const voiceVal = String(n.data.voiceId || cfg && cfg.voice || '');
+      return h('div', { className: 'dshic-audio-body' },
+        h('div', { className: 'dshic-audio-title' }, Ic('audio', 14), h('span', {}, n.data.label || T('nAudio'))),
+        running ? h('div', { className: 'dshic-hint', style: { display: 'flex', gap: 6, alignItems: 'center' } }, h('span', { className: 'dshic-spin' }), n.data.progress || T('audioGenerating')) : null,
+        n.data.error ? h('div', { className: 'dshic-err', title: n.data.error }, String(n.data.error)) : null,
+        (editing || !n.data.assetId) ? h('div', { className: 'dshic-audio-form' },
+          h('textarea', {
+            className: 'dshic-textarea', style: { minHeight: 56 }, value: n.data.prompt || '',
+            placeholder: T('audioTextPh'), disabled: running,
+            onChange: (e) => setData('prompt', e.target.value), onPointerDown: stop,
+          }),
+          h('div', { className: 'dshic-node-row' },
+            h('select', {
+              className: 'dshic-msel', style: { flex: 1, minWidth: 0 }, value: modelRef, disabled: running,
+              title: T('audioModel'), onChange: (e) => setData('audioModel', e.target.value), onPointerDown: stop,
+            }, models.length ? models.map((m) => h('option', { key: m.ref, value: m.ref }, m.providerName + ' · ' + m.model)) : [h('option', { key: '', value: '' }, T('audioNoModel'))]),
+            h('select', {
+              className: 'dshic-msel', style: { width: 86 }, value: n.data.audioFormat || 'mp3', disabled: running,
+              title: T('audioFormat'), onChange: (e) => setData('audioFormat', e.target.value), onPointerDown: stop,
+            }, fmtOpts.map((o) => h('option', { key: o.v, value: o.v }, o.l)))),
+          h('div', { className: 'dshic-node-row' },
+            voices.length
+              ? h('select', {
+                  className: 'dshic-msel', style: { flex: 1, minWidth: 0 }, value: voiceVal, disabled: running,
+                  title: T('audioVoice'), onChange: (e) => setData('voiceId', e.target.value), onPointerDown: stop,
+                }, [h('option', { key: '', value: '' }, T('audioVoiceDefault'))].concat(voices.map((v) => h('option', { key: v.voice_id, value: v.voice_id }, [v.name, v.gender, v.language].filter(Boolean).join(' · ')))))
+              : h('input', {
+                  className: 'dshic-input', style: { flex: 1, minWidth: 0 }, value: voiceVal, disabled: running,
+                  placeholder: cfg && cfg.voice || T('audioVoicePh'), title: voiceErr || T('audioVoice'),
+                  onChange: (e) => setData('voiceId', e.target.value), onPointerDown: stop,
+                }),
+            h('select', {
+              className: 'dshic-msel', style: { width: 82 }, value: n.data.audioEmotion || 'auto', disabled: running,
+              title: T('audioEmotion'), onChange: (e) => setData('audioEmotion', e.target.value), onPointerDown: stop,
+            }, emoOpts.map(([v, l]) => h('option', { key: v, value: v }, l)))),
+          h('div', { className: 'dshic-node-row' },
+            h('span', { className: 'dshic-hint' }, T('audioSpeechRate')),
+            h('select', {
+              className: 'dshic-msel', style: { width: 68 }, value: n.data.audioSpeechRate || '0', disabled: running,
+              onChange: (e) => setData('audioSpeechRate', e.target.value), onPointerDown: stop,
+            }, rateOpts.map((v) => h('option', { key: v, value: v }, v))),
+            (n.data.audioEmotion && n.data.audioEmotion !== 'auto')
+              ? h('select', {
+                  className: 'dshic-msel', style: { width: 58 }, value: n.data.audioEmotionScale || '4', disabled: running,
+                  title: T('audioEmotionScale'), onChange: (e) => setData('audioEmotionScale', e.target.value), onPointerDown: stop,
+                }, ['1', '2', '3', '4', '5'].map((v) => h('option', { key: v, value: v }, v)))
+              : null,
+            h('div', { className: 'dshic-flex' }),
+            h('button', {
+              type: 'button', className: 'dshic-mini', disabled: running || !cfg,
+              onPointerDown: stop, onClick: () => { setEditing(false); runGenNode(S.graph.nodes[n.id]); },
+            }, Ic('audio', 11), running ? T('audioGenerating') : T('audioGenerate'))),
+          voiceErr ? h('div', { className: 'dshic-hint', title: voiceErr }, T('audioVoiceLoadFail')) : null,
+        ) : null,
+        url
+          ? h('audio', {
+              src: url, controls: true, preload: 'metadata',
+              muted: n.data.audioMute === true,
+              style: { width: '100%', height: 32 },
+              onPointerDown: stop,
+            })
+          : null,
+        (n.data.assetId && !editing) ? h('div', { className: 'dshic-node-row' },
+          h('button', { type: 'button', className: 'dshic-mini is-ghost', onPointerDown: stop, onClick: () => setEditing(true) }, T('audioRegenerate')),
+          h('button', { type: 'button', className: 'dshic-mini is-ghost', onPointerDown: stop, onClick: async () => { const u = await assetUrl(n.data.assetId); if (u) downloadBlobFromUrl(u, await downloadNameForAsset(n.data.assetId, 'audio-' + n.id.slice(-5), 'audio')); } }, Ic('download', 11))) : null,
+        h('div', { className: 'dshic-node-row dshic-audio-ctl' },
+          h('label', {}, h('input', { type: 'checkbox', checked: n.data.audioMute === true, onChange: (e) => setData('audioMute', e.target.checked), onPointerDown: stop }), T('audioMute')),
+          h('label', {}, h('input', { type: 'checkbox', checked: n.data.audioLoop === true, onChange: (e) => setData('audioLoop', e.target.checked), onPointerDown: stop }), T('audioLoop')),
+          h('input', {
+            type: 'range', min: 0, max: 1, step: 0.05,
+            value: Number(n.data.audioGain == null ? 1 : n.data.audioGain), title: T('audioGain'),
+            onChange: (e) => setData('audioGain', Number(e.target.value)),
+            onPointerDown: stop,
+          })));
+    }
+
     function nodeBody(n, edgeSig) {
       // 兜底：文档入口已归一，但历史上存进撤销快照/外部注入的节点类型仍可能是旧名
       const type = normalizeNodeType(n.type);
@@ -16941,6 +19191,7 @@ function queueThumb(assetId) {
       if (type === 'storyboard') return h(StoryboardNodeBody, { n });
       if (type === 'image') return h(MediaNodeBody, { n, kind: 'image', refSig: edgeSig || '', rev: bumpNodeRev(n) });
       if (type === 'video') return h(MediaNodeBody, { n, kind: 'video', refSig: edgeSig || '', rev: bumpNodeRev(n) });
+      if (type === 'audio') return h(AudioNodeBody, { n });
       if (type === 'finalcut') return h(FinalCutNodeBody, { n });
       return null;
     }
@@ -16990,10 +19241,33 @@ function queueThumb(assetId) {
       if (menu.kind === 'node') {
         const n = S.graph.nodes[menu.nodeId];
         if (!n) return null;
-        const canRun = n.type === 'image' || n.type === 'video';
+        const canRun = n.type === 'image' || n.type === 'video' || n.type === 'audio';
+        // 选区/整组批量入口：右键点在已选节点上 → 对整批选区开放；组节点 → 组内成员。
+        const scopeIds = n.type === 'group' ? [n.id] : (S.sel.has(n.id) && S.sel.size >= 2 ? [...S.sel] : [n.id]);
+        const batchTargets = collectBatchTargets(scopeIds);
+        const wfCount = batchExpand(scopeIds).filter((x) => x && x.type !== 'group').length;
+        const groupImages = n.type === 'group' ? batchExpand([n.id]).filter((x) => x.type === 'image' && x.data && x.data.assetId) : [];
+        const downloadable = n.type === 'group'
+          ? batchExpand([n.id]).filter((x) => (x.type === 'finalcut' ? !!(x.data && (x.data.assetId || x.data.fcAssetId)) : !!(x.data && x.data.assetId))).length
+          : 0;
         const items = [
           { label: T('copyNode'), icon: 'plus', fn: () => { update((s) => { s.sel = new Set([n.id]); }); duplicateSelection(); } },
           ...(canRun ? [{ label: T('runNode'), icon: 'play', fn: () => { runGenNode(n); } }] : []),
+          ...(batchTargets.length && (n.type === 'group' || (S.sel.has(n.id) && S.sel.size >= 2))
+            ? [{
+                label: T(n.type === 'group' ? 'batchGroupRun' : 'batchMenu').replace('{n}', String(batchTargets.length)),
+                icon: 'play', fn: () => openBatchConsole(scopeIds, n.type === 'group' ? 'group' : 'selection'),
+              }]
+            : []),
+          ...(groupImages.length
+            ? [{ label: T('batchGroupVideo').replace('{n}', String(groupImages.length)), icon: 'video', fn: () => batchVideosFromImages([n.id]) }]
+            : []),
+          ...(downloadable
+            ? [{ label: T('batchGroupDownload').replace('{n}', String(downloadable)), icon: 'download', fn: () => batchDownloadNodes([n.id]) }]
+            : []),
+          ...(wfCount >= 2 && (n.type === 'group' || (S.sel.has(n.id) && S.sel.size >= 2))
+            ? [{ label: T('wfSave').replace('{n}', String(wfCount)), icon: 'folder', fn: () => { saveWorkflowFromIds(scopeIds); } }]
+            : []),
           ...(S.sel.size >= 2 ? [{ label: T('createGroup'), icon: 'folder', fn: () => createGroupFromSelection() }] : []),
           ...(n.type === 'group' ? [{ label: T('ungroup'), icon: 'folder', fn: () => ungroupNode(n.id) }] : []),
           { label: T('delete'), icon: 'trash', danger: true, fn: () => (n.type === 'group' ? ungroupNode(n.id) : removeNodes([n.id])) },
@@ -17036,14 +19310,17 @@ function queueThumb(assetId) {
     // ============================================================
     // 统一弹窗 / 项目命名弹窗的状态与动作（供图标列、工具栏、测试缝共用）
     // ============================================================
+    function normalizeStudioTab(tab) {
+      return (tab === 'assets' || tab === 'memory' || tab === 'subjects' || tab === 'workflows') ? tab : 'bible';
+    }
     function openStudioModal(tab) {
-      update((s) => { s.panelModal = tab === 'assets' ? 'assets' : (tab === 'memory' ? 'memory' : 'bible'); });
+      update((s) => { s.panelModal = normalizeStudioTab(tab); });
     }
     function setStudioModalTab(tab) {
-      update((s) => { if (s.panelModal) s.panelModal = tab === 'assets' ? 'assets' : (tab === 'memory' ? 'memory' : 'bible'); });
+      update((s) => { if (s.panelModal) s.panelModal = normalizeStudioTab(tab); });
     }
     function closeStudioModal() {
-      update((s) => { s.panelModal = null; });
+      update((s) => { s.panelModal = null; s.subjectTargetNodeId = null; });
     }
     /** Esc 关闭统一弹窗（真实监听器与测试都走这里，保证行为一致）。 */
     function handleStudioModalKey(e) {
@@ -18124,8 +20401,38 @@ function queueThumb(assetId) {
       return E2.registerGltfAsset(id, asset);
     }
 
+    /** 本地/外部导入的 GLB 模型资产：按 assetId 读取 → parseGlb → 注册给引擎。
+     *  与内置模型包共用 gltfAssetOf 缓存；失败明确抛出，交给调用方显示。 */
+    async function loadAssetModel(assetId) {
+      const E2 = directorEngine();
+      if (!E2 || typeof E2.parseGlb !== 'function') return null;
+      const key = String(assetId || '');
+      if (!key) return null;
+      const cached = E2.gltfAssetOf(key);
+      if (cached) return cached;
+      const url = await assetUrl(key);
+      if (!url) throw new Error('模型资产不存在：' + key);
+      const r = await fetch(url);
+      if (!r.ok) throw new Error('模型文件读取失败 HTTP ' + r.status);
+      const asset = E2.parseGlb(await r.arrayBuffer());
+      if (!asset || !asset.positions || !asset.positions.length) throw new Error('GLB 解析失败（没有网格）');
+      // 外部 GLB 常以自身单位导出：按包围盒高度归一，保证放进场景时是米级角色/道具。
+      if (!(Number(asset.rawHeight) > 0)) {
+        let minY = Infinity, maxY = -Infinity;
+        const P = asset.positions;
+        for (let i = 1; i < P.length; i += 3) { const y = Number(P[i]) || 0; if (y < minY) minY = y; if (y > maxY) maxY = y; }
+        asset.rawHeight = Number.isFinite(minY) && maxY > minY ? (maxY - minY) : 1;
+      }
+      return E2.registerGltfAsset(key, asset);
+    }
+
     /** 引擎未就绪时的同步兜底：面板显示加载态，不崩。 */
     function directorEngine() { return ENG; }
+    /** 3D-BOX 预设下拉（库首页与舞台共用；引擎未就绪时返回空数组，UI 仍可渲染）。 */
+    function boxPresetOptions(key) {
+      const E2 = directorEngine();
+      return (E2 && Array.isArray(E2[key])) ? E2[key] : [];
+    }
 
     // 景别 / 运镜下拉（UI 文案走 T()，值与引擎约定一致）
     // 景别取自引擎 SHOT_FILLS（每个景别都有明确的"占画面高度比例"）
@@ -18166,16 +20473,23 @@ function queueThumb(assetId) {
       const list = (E2 && E2.SHOT_FILLS) || [];
       return list.map((x) => ({ id: x.id, label: effLang() === 'en' ? x.en : x.zh, fill: x.fill, targetH: x.targetH }));
     };
-    const DIRECTOR_MOVES = () => [
-      { id: 'static', label: T('dirMoveStatic') },
-      { id: 'push_in', label: T('dirMovePush') },
-      { id: 'pull_out', label: T('dirMovePull') },
-      { id: 'pan_left', label: T('dirMovePanL') },
-      { id: 'pan_right', label: T('dirMovePanR') },
-      { id: 'orbit_left', label: T('dirMoveOrbitL') },
-      { id: 'orbit_right', label: T('dirMoveOrbitR') },
-      { id: 'handheld', label: T('dirMoveHandheld') },
-    ];
+    const DIRECTOR_MOVES = () => {
+      const E2 = directorEngine();
+      if (E2 && Array.isArray(E2.CAMERA_MOVES) && E2.CAMERA_MOVES.length) {
+        const en = effLang() === 'en';
+        return E2.CAMERA_MOVES.map((m) => ({ id: m.id, label: en ? (m.en || m.zh) : (m.zh || m.en) }));
+      }
+      return [
+        { id: 'static', label: T('dirMoveStatic') },
+        { id: 'push_in', label: T('dirMovePush') },
+        { id: 'pull_out', label: T('dirMovePull') },
+        { id: 'pan_left', label: T('dirMovePanL') },
+        { id: 'pan_right', label: T('dirMovePanR') },
+        { id: 'orbit_left', label: T('dirMoveOrbitL') },
+        { id: 'orbit_right', label: T('dirMoveOrbitR') },
+        { id: 'handheld', label: T('dirMoveHandheld') },
+      ];
+    };
     /** 本地化后的角色/几何/建筑/机位预设清单（引擎给 zh/en 双语字段）。 */
     function directorPresetLists() {
       const en = effLang() === 'en';
@@ -18230,7 +20544,7 @@ const DIRECTOR_KEY_HELP = [
       // 引擎过期检测：engine.js 只在整页加载时 import 一次，插件更新后旧页面仍在跑旧引擎——
       // 打开面板时对比 sessionStorage 里记录的版本，不一致就常驻提示「刷新页面」。
       const [staleEngine, setStaleEngine] = useState(false);
-      const [scene, setScene] = useState(() => (directorEngine() ? directorEngine().loadStageDoc(S.activeId, T('directorDefaultTitle')) : null));
+      const [scene, setScene] = useState(() => (directorEngine() ? directorEngine().loadStageDoc(S.activeId, T('directorDefaultTitle'), S.directorStageId) : null));
       const [tick, setTick] = useState(0);
       const [busy, setBusy] = useState(false);
       const [recording, setRecording] = useState(false);
@@ -18274,6 +20588,10 @@ const DIRECTOR_KEY_HELP = [
     const [actionName, setActionName] = useState('');
     const [specText, setSpecText] = useState('');
     const [specOpen, setSpecOpen] = useState(false);
+    // ── 3D-BOX：舞台内只做改景/运镜；搭景入口统一在 3D-BOX 库 ──
+    const [boxBrief, setBoxBrief] = useState('');
+    const [boxBusy, setBoxBusy] = useState(false);
+    const [charPick, setCharPick] = useState('');
       const [boxSel, setBoxSel] = useState(null);   // 框选矩形 {x0,y0,x1,y1}
       const [dirtyState, setDirtyState] = useState(false);  // 有未保存改动
       const [previzMode, setPrevizMode] = useState('static'); // 'static' | 'dynamic' | 'render'（模式，不随暂停改变）
@@ -18322,7 +20640,7 @@ const DIRECTOR_KEY_HELP = [
       const pushUndo = () => pushUndoSnapshot(scene);
       const applyHistoryScene = (text) => {
         const n = JSON.parse(text);
-        setScene(n); markDirty(); directorEngine().saveStageDoc(S.activeId, n); bumpView();
+        setScene(n); markDirty(); directorEngine().saveStageDoc(S.activeId, n, S.directorStageId); bumpView();
       };
       const undo = () => {
         const prev = undoRef.current.pop();
@@ -18344,7 +20662,7 @@ const DIRECTOR_KEY_HELP = [
           applyHistoryScene(next);
         } catch { setMsg({ kind: 'err', text: T('dirUndoFailed') }); }
       };
-      const commit = (next) => { setScene(next); markDirty(); const E2 = directorEngine(); if (E2) E2.saveStageDoc(S.activeId, next); bumpView(); };
+      const commit = (next) => { setScene(next); markDirty(); const E2 = directorEngine(); if (E2) E2.saveStageDoc(S.activeId, next, S.directorStageId); bumpView(); };
       /** 成片场景（实时渲染预览 / 截图 / 视频导出共用）：保留颜色材质灯光，只剥编辑辅助。 */
       const directorFilmScene = (src) => {
         const E2 = directorEngine();
@@ -18363,26 +20681,133 @@ const DIRECTOR_KEY_HELP = [
         return (E2 && E2.buildStudioScene) ? E2.buildStudioScene(src) : src;
       };
       const patch = (fn) => { pushUndo(); const n = JSON.parse(JSON.stringify(scene)); fn(n); n.updatedAt = Date.now(); commit(n); };
-      const pickSave = (next) => { markDirty(); const E2 = directorEngine(); if (E2) E2.saveStageDoc(S.activeId, next); };
+      /** 手绘运镜：在地面连续点路径点，结束后转成当前机位的关键帧。 */
+      const toggleCamPath = () => {
+        if (!S.directorCamPathPick) {
+          S.directorCamPathPick = true;
+          S.directorCamPath = [];
+          setMsg({ kind: 'ok', text: T('dirCamPathHint') });
+          bumpView();
+          return;
+        }
+        S.directorCamPathPick = false;
+        const pts = Array.isArray(S.directorCamPath) ? S.directorCamPath.slice() : [];
+        S.directorCamPath = [];
+        if (pts.length < 2) { setMsg({ kind: 'err', text: T('dirCamPathNeed') }); bumpView(); return; }
+        const cam2 = (scene.cameras || []).find((x) => x.id === scene.activeCameraId) || (scene.cameras || [])[0];
+        if (!cam2) { setMsg({ kind: 'err', text: T('dirLastCamera') }); bumpView(); return; }
+        const E2 = directorEngine();
+        if (!E2 || typeof E2.cameraPathKeys !== 'function') { setMsg({ kind: 'err', text: T('dirEngineFail') }); bumpView(); return; }
+        const dur = Math.max(0.5, (E2.sequenceDuration ? E2.sequenceDuration(scene) : 0) || Number(scene.shot && scene.shot.duration) || 5);
+        const r = E2.cameraPathKeys(pts, {
+          duration: dur,
+          posY: Number(cam2.pos && cam2.pos.y) || 1.6,
+          targetY: Number(cam2.target && cam2.target.y) || 1.0,
+          fov: Number(cam2.fov) || 42,
+        });
+        patch((n) => {
+          const c2 = (n.cameras || []).find((x) => x.id === n.activeCameraId);
+          if (c2) c2.keys = r.keys;
+          n.shot = n.shot || {};
+          n.shot.cameraMove = 'path';
+        });
+        setMsg({ kind: 'ok', text: T('dirCamPathDone').replace('{n}', String(r.keys.length)) });
+        bumpView();
+      };
+      /** 角色库：当前项目设定集里的角色（名字/描述/参考图数量）。 */
+      const bibleChars = (() => {
+        try { return (loadBible(S.activeId).characters || []).filter((c) => c && String(c.name || '').trim()); } catch { return []; }
+      })();
+      /** 从设定集添加一个 3D 角色；同名已在场景则只选中，不重复添加。 */
+      const addBibleChar = () => {
+        const c = bibleChars.find((x) => String(x.name).trim() === String(charPick || '').trim());
+        if (!c) { setMsg({ kind: 'err', text: T('dirCharPick') }); return; }
+        const hit = (scene.objects || []).find((o) => String(o.name || '').trim() === String(c.name).trim() && (o.kind === 'model' || o.kind === 'actor' || o.kind === 'body'));
+        if (hit) {
+          S.directorSel = hit.id;
+          setMsg({ kind: 'ok', text: T('dirCharExists').replace('{name}', c.name) });
+          bumpView();
+          return;
+        }
+        const E2 = directorEngine();
+        if (!E2 || typeof E2.addBibleCharacter !== 'function') { setMsg({ kind: 'err', text: T('dirEngineFail') }); return; }
+        const idx = (scene.objects || []).length;
+        const x = (idx % 2 ? 1 : -1) * 0.9;
+        const z = Math.floor(idx / 2) * 0.8;
+        const r = E2.addBibleCharacter(scene, c, { x, z, pose: 'stand' });
+        if (!r || !r.added || !r.scene) { setMsg({ kind: 'err', text: T('dirCharExists').replace('{name}', c.name) }); return; }
+        pushUndo();
+        commit(r.scene);
+        S.directorSel = r.id;
+        setMsg({ kind: 'ok', text: T('dirCharAdded').replace('{name}', c.name) });
+        bumpView();
+      };
+      const pickSave = (next) => { markDirty(); const E2 = directorEngine(); if (E2) E2.saveStageDoc(S.activeId, next, S.directorStageId); };
+      /** 自然语言改景：Host 用用户已配置的模型改 spec → 本地构场景 → 可撤销。 */
+      const editBox = () => {
+        const E2 = directorEngine();
+        if (!E2 || typeof E2.buildStageFromSpec !== 'function') { setMsg({ kind: 'err', text: T('boxFailed') + 'engine' }); return; }
+        const instruction = String(boxBrief || '').trim();
+        if (!instruction) { setMsg({ kind: 'err', text: T('boxFailed') + T('boxBriefPh') }); return; }
+        if (!scene) { setMsg({ kind: 'err', text: T('boxFailed') + T('boxBriefPh') }); return; }
+        setBoxBusy(true);
+        hostRpc('directorStageEdit', { projectId: S.activeId, stageId: S.directorStageId, instruction }).then((r) => {
+          if (!r || !r.ok) throw new Error((r && r.error) || 'edit failed');
+          const built = E2.buildStageFromSpec(r.spec);
+          if (!built) throw new Error('buildStageFromSpec returned null');
+          built.updatedAt = Date.now();
+          pushUndo();
+          E2.saveStageDoc(S.activeId, built, S.directorStageId);
+          setScene(built);
+          markDirty();
+          bumpView();
+          setMsg({ kind: 'ok', text: T('boxEdited') });
+        }).catch((e) => {
+          setMsg({ kind: 'err', text: T('boxFailed') + hostRpcErrText(e, '') });
+        }).finally(() => setBoxBusy(false));
+      };
+      /** AI 运镜：把当前输入框当运镜提示词，Host 生成可编辑机位关键帧。 */
+      const aiCamera = () => {
+        const E2 = directorEngine();
+        if (!E2 || typeof E2.buildStageFromSpec !== 'function') { setMsg({ kind: 'err', text: T('boxFailed') + 'engine' }); return; }
+        const prompt = String(boxBrief || '').trim();
+        if (!prompt) { setMsg({ kind: 'err', text: T('boxFailed') + T('boxBriefPh') }); return; }
+        if (!scene) { setMsg({ kind: 'err', text: T('boxFailed') + T('boxBriefPh') }); return; }
+        setBoxBusy(true);
+        hostRpc('directorStageCamera', { projectId: S.activeId, stageId: S.directorStageId, prompt }).then((r) => {
+          if (!r || !r.ok) throw new Error((r && r.error) || 'camera failed');
+          const built = E2.buildStageFromSpec(r.spec);
+          if (!built) throw new Error('buildStageFromSpec returned null');
+          built.updatedAt = Date.now();
+          pushUndo();
+          E2.saveStageDoc(S.activeId, built, S.directorStageId);
+          setScene(built);
+          markDirty();
+          bumpView();
+          setMsg({ kind: 'ok', text: T('boxAiCamDone') + (r.keys ? ' · ' + r.keys + ' keyframes' : '') });
+        }).catch((e) => {
+          setMsg({ kind: 'err', text: T('boxFailed') + hostRpcErrText(e, '') });
+        }).finally(() => setBoxBusy(false));
+      };
 
       // 引擎 + 模型清单
       useEffect(() => {
         if (!open) return;
         loadDirectorEngine().then(() => {
           setEngReady(true);
-          const localStage = ENG.loadStageDoc(S.activeId, T('directorDefaultTitle'));
+          const localStage = ENG.loadStageDoc(S.activeId, T('directorDefaultTitle'), S.directorStageId);
           setScene(localStage);
         // ── AI 规格自动套用：仅当 Host 规格比本地场景更新（或本地尚无修改）时应用 ──
         (async () => {
           try {
-            const r = await hostRpc('directorStageLoad', { projectId: S.activeId });
+            const r = await hostRpc('directorStageLoad', { projectId: S.activeId, stageId: S.directorStageId });
             const localUpdated = Number(localStage && localStage.updatedAt) || 0;
             const hostUpdated = Number(r && r.savedAt) || 0;
             if (r && r.ok && r.found && r.spec && (!localUpdated || hostUpdated > localUpdated)) {
               const built = ENG.buildStageFromSpec ? ENG.buildStageFromSpec(r.spec) : null;
               if (built) {
                 built.updatedAt = hostUpdated || Date.now();
-                ENG.saveStageDoc(S.activeId, built);
+                ENG.saveStageDoc(S.activeId, built, S.directorStageId);
                 setScene(built);
                 setMsg({ kind: 'ok', text: T('dirSpecApplied') });
                 // AI 全自动出片：规格里带 autoExport:true 时，套用后直接走「导出视频」
@@ -18397,17 +20822,19 @@ const DIRECTOR_KEY_HELP = [
           // 场景里引用到的模型必须全部预加载：否则 tree/furniture/building 等资产在重开后会退化成方块
           const preloadSceneAssets = async () => {
             try {
-              const sc = ENG.loadStageDoc(S.activeId, T('directorDefaultTitle'));
+              const sc = ENG.loadStageDoc(S.activeId, T('directorDefaultTitle'), S.directorStageId);
               const ids = [...new Set((sc.objects || [])
                 .filter((o) => o && (o.kind === 'model' || o.kind === 'gltf') && o.assetId)
                 .map((o) => String(o.assetId)))];
-              await Promise.all(ids.map((id) => loadModel(id).catch(() => null)));
+              await Promise.all(ids.map(async (id) => {
+                try { await loadAssetModel(id); } catch { await loadModel(id).catch(() => null); }
+              }));
             } catch { /* 预加载失败不阻塞打开 */ }
             bumpView();
           };
           loadModelIndex().then(async (l) => { if (l && l.length) bumpView(); await loadModel('xbot').catch(() => {}); await preloadSceneAssets(); bumpView(); }).catch(() => {});
         }).catch((e) => setMsg({ kind: 'err', text: T('dirEngineFail') + ' ' + String((e && e.message) || e) }));
-      }, [open, S.activeId]);
+      }, [open, S.activeId, S.directorStageId]);
 
       // 播放循环（只依赖 playing/open；不依赖 scene，否则每帧重渲染都重启 rAF → 暂停失灵）
       useEffect(() => {
@@ -18526,7 +20953,7 @@ const DIRECTOR_KEY_HELP = [
           markDirty();
           setScene((s2) => {
             const E2 = directorEngine();
-            if (E2) E2.saveStageDoc(S.activeId, s2);
+            if (E2) E2.saveStageDoc(S.activeId, s2, S.directorStageId);
             return s2;
           });
         }
@@ -18959,11 +21386,41 @@ const DIRECTOR_KEY_HELP = [
 
         bumpView();
       };
+      /** 本地 GLB 导入：校验 → 落项目资产库 → 注册引擎 → 建 gltf 对象（不接第三方）。 */
+      const importGlbFile = async (f) => {
+        if (Number(f.size) > 20 * 1024 * 1024) { setMsg({ kind: 'err', text: T('dirGlbTooLarge') }); return; }
+        const ab = await f.arrayBuffer();
+        const E2 = directorEngine();
+        if (!E2 || typeof E2.parseGlb !== 'function') throw new Error(T('dirObjReadFail'));
+        E2.parseGlb(ab);   // 先验证，坏文件不落库
+        const blob = new Blob([ab], { type: 'model/gltf-binary' });
+        const rec = await saveAssetRecord(S.activeId, 'model', blob, {
+          name: f.name.replace(/\.glb$/i, ''), source: 'import', category: 'model',
+        });
+        const asset = await loadAssetModel(rec.id);
+        if (!asset) throw new Error(T('dirObjReadFail'));
+        const clip = asset.animations && asset.animations[0] ? String(asset.animations[0].name || '') : '';
+        patch((n) => {
+          const id = 'glb_' + Date.now().toString(36);
+          n.objects.push({
+            id, kind: 'gltf', assetId: rec.id, name: rec.name || f.name.replace(/\.glb$/i, ''),
+            pos: E.v3(0, 0, 0), rotY: 0, h: Number(asset.rawHeight) > 0 ? Number(asset.rawHeight) : 1.7,
+            scale: E.v3(1, 1, 1), visible: true, color: '', clip, animTime: 0,
+          });
+          S.directorSel = id;
+        });
+        setMsg({ kind: 'ok', text: T('dirObjLoaded') + ' (GLB)' });
+      };
       const onUpload = (ev) => {
         const f = ev && ev.target && ev.target.files && ev.target.files[0];
         if (!f) return;
+        ev.target.value = '';
+        if (/\.glb$/i.test(f.name)) {
+          importGlbFile(f).catch((err) => setMsg({ kind: 'err', text: String((err && err.message) || err) }));
+          return;
+        }
         if (!/\.obj$/i.test(f.name)) { setMsg({ kind: 'err', text: T('dirObjOnly') }); return; }
-        if (Number(f.size) > 900000) { setMsg({ kind: 'err', text: T('dirObjTooLarge') }); ev.target.value = ''; return; }
+        if (Number(f.size) > 900000) { setMsg({ kind: 'err', text: T('dirObjTooLarge') }); return; }
         const rd = new FileReader();
         rd.onload = () => {
           try {
@@ -18977,10 +21434,37 @@ const DIRECTOR_KEY_HELP = [
           } catch (err) { setMsg({ kind: 'err', text: String((err && err.message) || err) }); }
         };
         rd.readAsText(f);
-        ev.target.value = '';
       };
       const dupSel = () => { if (!sel) return; patch((n) => { const c = JSON.parse(JSON.stringify(sel)); c.id = 'obj_' + Date.now().toString(36); c.pos = E.v3(c.pos.x + 0.8, c.pos.y, c.pos.z); n.objects.push(c); S.directorSel = c.id; }); };
       const delSel = () => { if (!sel) return; patch((n) => { n.objects = n.objects.filter((x) => x.id !== sel.id); }); S.directorSel = null; bumpView(); };
+      /** 导出当前对象为 GLB：角色/导入 GLB 带骨架与全部动画；几何/组合/OBJ 导静态网格。 */
+      const exportGlb = async () => {
+        if (!sel) return;
+        const E2 = directorEngine();
+        if (!E2 || typeof E2.encodeDirectorGlb !== 'function') { setMsg({ kind: 'err', text: T('dirObjReadFail') }); return; }
+        try {
+          let buf = null;
+          if ((sel.kind === 'model' || sel.kind === 'gltf') && typeof E2.encodeGltfAssetGlb === 'function') {
+            let asset = E2.gltfAssetOf(sel.assetId);
+            if (!asset && typeof loadAssetModel === 'function') asset = await loadAssetModel(sel.assetId).catch(() => null);
+            if (asset) buf = E2.encodeGltfAssetGlb(asset, { name: sel.name || sel.id });
+          }
+          if (!buf) {
+            const faces = E2.directorObjectFaces(sel);
+            if (!faces.length) throw new Error(T('dirObjReadFail'));
+            buf = E2.encodeDirectorGlb(faces, { name: sel.name || sel.id });
+          }
+          const blob = new Blob([buf], { type: 'model/gltf-binary' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = String(sel.name || 'model').replace(/[\\/:*?"<>|]/g, '_') + '.glb';
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(() => { try { URL.revokeObjectURL(a.href); } catch { /* 忽略 */ } }, 30000);
+          setMsg({ kind: 'ok', text: T('dirExportGlb') + ' ✓' });
+        } catch (err) { setMsg({ kind: 'err', text: String((err && err.message) || err) }); }
+      };
 
       // 机位 / 关键帧
       const addCamera = () => patch((n) => {
@@ -19030,7 +21514,7 @@ const DIRECTOR_KEY_HELP = [
         S.directorCamFollow = false;
         setScene(fresh);
         const E2 = directorEngine();
-        if (E2) E2.saveStageDoc(S.activeId, fresh);
+        if (E2) E2.saveStageDoc(S.activeId, fresh, S.directorStageId);
         markDirty();
         bumpView();
         setMsg({ kind: 'ok', text: T('dirWsCleared') + ' (' + n + ')' });
@@ -19088,6 +21572,84 @@ const DIRECTOR_KEY_HELP = [
           });
           setMsg({ kind: 'ok', text: T('directorExported') + ' · ' + (used === 'webgl' ? T('dirRendererGL') : T('dirRendererFallback')) });
         } catch (e2) { setMsg({ kind: 'err', text: String((e2 && e2.message) || e2) }); } finally { setBusy(false); }
+      };
+      /** B 路线：把当前机位导成参考帧 + 视频节点（首帧 hard），由视频模型生成成片级细节。 */
+      const toVideoShot = async () => {
+        if (busy) return;
+        setBusy(true); setMsg(null);
+        try {
+          const w = 1280, h = 720;
+          const cv = document.createElement('canvas');
+          cv.width = w; cv.height = h;
+          const glOut = E.createDirectorGlRenderer(cv);
+          if (glOut) {
+            glOut.resize(w, h, 1);
+            glOut.draw(E.applyPlayhead(directorFilmScene(scene), playT), { selectedId: null, renderGround: true, renderOnly: true });
+            try { glOut.dispose(); } catch { /* 忽略 */ }
+          } else E.directorRenderScene(cv.getContext('2d'), w, h, E.applyPlayhead(directorFilmScene(scene), playT), { selectedId: null });
+          const blob = await new Promise((res2, rej) => { try { cv.toBlob((b) => (b ? res2(b) : rej(new Error('blob'))), 'image/png'); } catch (e2) { rej(e2); } });
+          const prompt = E.compileDirectorPrompt(scene, { zh: effLang() !== 'en' });
+          const saved = await saveAssetRecord(S.activeId, 'image', blob, { name: T('boxShotName') + ' ' + nowStamp(), prompt, source: 'director', category: 'shot', nodeLabel: T('boxTitle') });
+          const c = worldCenter();
+          const img = addNodeAt('image', { x: c.x - 220, y: c.y - 160 });
+          update((st) => { const g = st.graph.nodes[img.id]; if (g) g.data = Object.assign({}, g.data, { assetId: saved.id, prompt, label: saved.name || T('boxShotName'), status: 'done' }); st.assetsTick++; });
+          const v = addNodeAt('video', { x: c.x + 240, y: c.y - 140 });
+          update((st) => {
+            const g = st.graph.nodes[v.id];
+            if (g) g.data = Object.assign({}, g.data, {
+              prompt, label: T('boxToVideo'), duration: Math.max(2, Math.min(15, Number(scene.shot && scene.shot.duration) || 5)),
+              ratio: '16:9', frameMode: 'hard', status: 'idle',
+            });
+          });
+          connect(S.graph.nodes[img.id], 'out', S.graph.nodes[v.id], 'frame');
+          setMsg({ kind: 'ok', text: T('boxToVideoDone') });
+        } catch (e2) { setMsg({ kind: 'err', text: String((e2 && e2.message) || e2) }); } finally { setBusy(false); }
+      };
+      /** 3D-BOX 四/十二方位截图：围绕当前主体渲染多机位，直接落 image 节点。 */
+      const exportViews = async (count) => {
+        if (busy) return;
+        const views = E.viewCamerasAround(scene, { count: Number(count) === 12 ? 12 : 4 });
+        if (!views.length) { setMsg({ kind: 'err', text: T('dirEngineFail') }); return; }
+        setBusy(true); setMsg({ kind: 'ok', text: T('boxShotBusy') });
+        try {
+          const w = 1280, h = 720;
+          const cv = document.createElement('canvas');
+          cv.width = w; cv.height = h;
+          const glOut = E.createDirectorGlRenderer(cv);
+          if (glOut) glOut.resize(w, h, 1);
+          const base = worldCenter();
+          const dur = Math.max(0.5, Number(scene.shot && scene.shot.duration) || Number(durS) || 5);
+          const t = Math.min(Math.max(0, playT), dur);
+          const made = [];
+          for (let i = 0; i < views.length; i++) {
+            const v = views[i];
+            const viewScene = JSON.parse(JSON.stringify(scene));
+            viewScene.cameras = [{ id: 'viewcam', name: v.name, pos: v.pos, target: v.target, fov: v.fov, roll: 0, keys: [] }];
+            viewScene.activeCameraId = 'viewcam';
+            viewScene.shots = [{ id: 'viewshot', cameraId: 'viewcam', start: 0, end: dur }];
+            const film = directorFilmScene(viewScene);
+            if (glOut) glOut.draw(E.applyPlayhead(film, t), { selectedId: null, renderGround: true, renderOnly: true });
+            else E.directorRenderScene(cv.getContext('2d'), w, h, E.applyPlayhead(film, t), { selectedId: null });
+            const blob = await new Promise((res2, rej) => { try { cv.toBlob((b) => (b ? res2(b) : rej(new Error('blob'))), 'image/png'); } catch (e2) { rej(e2); } });
+            const name = T('boxShotName') + ' ' + v.name + ' ' + nowStamp();
+            const saved = await saveAssetRecord(S.activeId, 'image', blob, {
+              name, prompt: E.compileDirectorPrompt(viewScene, { zh: effLang() !== 'en' }),
+              source: 'director', category: 'shot', nodeLabel: T('boxTitle'),
+            });
+            const col = i % 4, row = Math.floor(i / 4);
+            const node = addNodeAt('image', { x: base.x + 520 + col * 380, y: base.y - 200 + row * 380 });
+            update((st) => {
+              const g = st.graph.nodes[node.id];
+              if (g) g.data = Object.assign({}, g.data, { assetId: saved.id, prompt: saved.prompt || '', label: name, status: 'done' });
+              st.assetsTick++;
+            });
+            made.push(saved.id);
+          }
+          try { if (glOut) glOut.dispose(); } catch { /* 忽略 */ }
+          setMsg({ kind: 'ok', text: T('boxShotDone').replace('{n}', String(made.length)) });
+        } catch (e2) {
+          setMsg({ kind: 'err', text: String((e2 && e2.message) || e2) });
+        } finally { setBusy(false); }
       };
       /** 导出预演视频：离屏 GL 逐帧渲染 + MediaRecorder 录制。
        *  不用主视口 captureStream —— WebGL context 未开 preserveDrawingBuffer 会录出黑屏。 */
@@ -19243,6 +21805,17 @@ const DIRECTOR_KEY_HELP = [
         if (!cam) return;
         const p = trackPointer(ev);
         const w = sizeRef.current.w, h = sizeRef.current.h;
+        // 手绘运镜：左键在地面连续点路径点；右键/中键/Alt 仍可环绕/平移
+        if (S.directorCamPathPick && ev.button === 0 && !ev.altKey) {
+          const gp0 = E.groundPointFromScreen(cam, w, h, p.x, p.y);
+          if (gp0) {
+            if (!Array.isArray(S.directorCamPath)) S.directorCamPath = [];
+            S.directorCamPath.push({ x: Math.round(gp0.x * 100) / 100, z: Math.round(gp0.z * 100) / 100 });
+            setMsg({ kind: 'ok', text: T('dirCamPathDrawing') + ' ' + S.directorCamPath.length });
+            bumpView();
+          }
+          return;
+        }
         // 路径绘制模式：只拦「左键」（右键/中键/Alt+左键 仍可环绕·平移，滚轮仍可缩放，
         // 这样才能把相机移到 100 米外继续点第二个路径点）
         if (S.directorPathPick && S.directorSel && ev.button === 0 && !ev.altKey) {
@@ -19526,7 +22099,7 @@ const DIRECTOR_KEY_HELP = [
         // 路径点拖拽收口：写入舞台文档并提示
         if (d && d.mode === 'pathpoint') {
           if (d.before) pushUndoSnapshot(d.before);
-          setScene((s2) => { const n = JSON.parse(JSON.stringify(s2)); n.updatedAt = Date.now(); E.saveStageDoc(S.activeId, n); return n; });
+          setScene((s2) => { const n = JSON.parse(JSON.stringify(s2)); n.updatedAt = Date.now(); E.saveStageDoc(S.activeId, n, S.directorStageId); return n; });
           markDirty();
           const ob2 = (scene.objects || []).find((x2) => x2.id === d.objId);
           const pt = ob2 && Array.isArray(ob2.path) ? ob2.path[d.index] : null;
@@ -19559,7 +22132,7 @@ const DIRECTOR_KEY_HELP = [
               }
             }
             n.updatedAt = Date.now();
-            if (isObjDrag || isCamDrag) E.saveStageDoc(S.activeId, n);
+            if (isObjDrag || isCamDrag) E.saveStageDoc(S.activeId, n, S.directorStageId);
             return n;
           });
           if (isObjDrag || isCamDrag) { markDirty(); bumpView(); }
@@ -19600,7 +22173,7 @@ const DIRECTOR_KEY_HELP = [
           if (wheelBeforeRef.current) pushUndoSnapshot(wheelBeforeRef.current);
           wheelBeforeRef.current = null;
           wheelGestureOpenRef.current = false;
-          setScene((s2) => { const n = JSON.parse(JSON.stringify(s2)); n.updatedAt = Date.now(); E.saveStageDoc(S.activeId, n); return n; });
+          setScene((s2) => { const n = JSON.parse(JSON.stringify(s2)); n.updatedAt = Date.now(); E.saveStageDoc(S.activeId, n, S.directorStageId); return n; });
           markDirty(); bumpView();
         }, 180);
         S.directorWheelTick = Date.now();   // 标记「刚滚过轮」，渲染时显示实时相机
@@ -19705,7 +22278,12 @@ const DIRECTOR_KEY_HELP = [
         h('div', { className: cls('dshic-dir-win', S.directorFull && 'is-full') },
           h('div', { className: 'dshic-dir-top' },
             h('div', { className: 'dshic-dir-top-l' },
-              h('span', { className: 'dshic-dir-title' }, T('directorTitle')),
+              h('button', {
+                type: 'button', className: 'dshic-dir-mini', 'data-action': 'dir-home',
+                title: T('boxHomeTitle'),
+                onClick: () => update((st) => { st.directorOpen = false; st.boxHomeOpen = true; st.directorSel = null; }),
+              }, '← ' + T('boxHomeTitle')),
+              h('span', { className: 'dshic-dir-title', title: T('boxSubtitle') }, T('boxTitle')),
               h('span', { className: 'dshic-dir-saved' }, dirtyState ? T('dirUnsaved') : T('dirSaved'))),
             h('div', { className: 'dshic-dir-top-c' },
               h('div', { className: 'dshic-dir-seg' },
@@ -19757,7 +22335,7 @@ const DIRECTOR_KEY_HELP = [
                         if (!next.env) next.env = {};
                         pushUndo();
                         setScene(next);
-                        if (E2) E2.saveStageDoc(S.activeId, next);
+                        if (E2) E2.saveStageDoc(S.activeId, next, S.directorStageId);
                         S.directorSel = null; S.directorSelSet = null;
                         S.directorDirty = false; setDirtyState(false);
                         setMsg({ kind: 'ok', text: T('dirWsLoaded') + ' ' + String((doc && doc.name) || f.name) });
@@ -19777,6 +22355,36 @@ const DIRECTOR_KEY_HELP = [
               h('button', { type: 'button', className: 'dshic-dir-icobtn', title: T('redo'), disabled: redoDepth === 0, onClick: redo, 'aria-label': T('redo') }, miniIcon(ICON_REDO)),
               h('button', { type: 'button', className: 'dshic-dir-icobtn', title: T('dirFullscreen'), onClick: () => update((st) => { st.directorFull = !st.directorFull; }) }, miniIcon(ICON_FULL)),
               h('button', { type: 'button', className: 'dshic-dir-icobtn', title: T('cancel'), onClick: () => update((st) => { st.directorOpen = false; st.directorSel = null; }) }, miniIcon(ICON_EXIT)))),
+          // 3D-BOX 舞台：只做改景/运镜/截图；一句话搭景统一在「3D-BOX 库」。
+          h('div', { className: 'dshic-dir-boxbar', 'data-role': '3dbox-bar' },
+            h('span', { className: 'dshic-dir-boxtitle', title: T('boxSubtitle') }, T('boxTitle')),
+            h('input', {
+              className: 'dshic-dir-input dshic-dir-boxbrief', 'data-action': 'box-edit-input',
+              value: boxBrief, placeholder: T('boxEditPh'),
+              onChange: (e2) => setBoxBrief(e2.target.value),
+              onKeyDown: (e2) => { if (e2.key === 'Enter' && !e2.nativeEvent?.isComposing) editBox(); },
+            }),
+            h('button', {
+              type: 'button', className: 'dshic-dir-cta', 'data-action': 'box-edit',
+              disabled: boxBusy, title: T('boxEdit'), onClick: editBox,
+            }, boxBusy ? T('boxEditing') : T('boxEdit')),
+            h('button', {
+              type: 'button', className: 'dshic-dir-mini', 'data-action': 'box-ai-cam',
+              disabled: boxBusy, title: T('boxAiCam'), onClick: aiCamera,
+            }, boxBusy ? T('boxAiCamBusy') : T('boxAiCam')),
+            h('button', {
+              type: 'button', className: 'dshic-dir-mini', 'data-action': 'box-shot-4',
+              disabled: boxBusy, title: T('boxShot4'), onClick: () => exportViews(4),
+            }, '4向'),
+            h('button', {
+              type: 'button', className: 'dshic-dir-mini', 'data-action': 'box-shot-12',
+              disabled: boxBusy, title: T('boxShot12'), onClick: () => exportViews(12),
+            }, '12向'),
+            h('button', {
+              type: 'button', className: 'dshic-dir-mini', 'data-action': 'box-to-video',
+              disabled: boxBusy, title: T('boxToVideoHint'), onClick: toVideoShot,
+            }, T('boxToVideo')),
+          ),
           h('div', { className: 'dshic-dir-body' },
             h('aside', { className: 'dshic-dir-side dshic-dir-side-l' },
               h('div', { className: 'dshic-dir-sidehead' }, T('dirAssets')),
@@ -19808,7 +22416,7 @@ const DIRECTOR_KEY_HELP = [
                   return cardBtn('g-' + p.id, '\u25c7', p.label, () => addPreset('geom', p), url);
                 }),
                 tab === 'cams' && fil(lists.cams).map((p) => cardBtn('c-' + p.id, '\u2317', p.label, () => applyCamPreset(p.id)))),
-              h('input', { ref: fileRef, type: 'file', style: { display: 'none' }, onChange: onUpload })),
+              h('input', { ref: fileRef, type: 'file', accept: '.obj,.glb', style: { display: 'none' }, onChange: onUpload })),
             h('main', { className: 'dshic-dir-stage' },
               staleEngine && h('div', { className: 'dshic-dir-stalebar', 'data-role': 'dir-stalebar' },
                 h('span', null, T('dirEngineUpdated')),
@@ -19884,7 +22492,7 @@ const DIRECTOR_KEY_HELP = [
                 }, '\u2715 ' + T('dirExitFull')) : null,
                 h('div', { className: 'dshic-dir-pillgroup' },
                   h('div', { className: cls('dshic-dir-pill', S.directorKeysOpen && 'is-on'), 'data-action': 'dir-keys-toggle', onClick: () => { S.directorKeysOpen = !S.directorKeysOpen; bumpView(); } }, T('dirKeys')),
-                  isRenderMode ? null : isRenderMode ? null : h('div', { className: 'dshic-dir-pill dshic-dir-pill-r', 'data-action': 'dir-reset-view', onClick: () => { pushUndo(); const n = JSON.parse(JSON.stringify(scene)); E.resetView(n); E.saveStageDoc(S.activeId, n); S.directorCamFollow = false; setScene(n); bumpView(); } }, T('dirResetView')),
+                  isRenderMode ? null : isRenderMode ? null : h('div', { className: 'dshic-dir-pill dshic-dir-pill-r', 'data-action': 'dir-reset-view', onClick: () => { pushUndo(); const n = JSON.parse(JSON.stringify(scene)); E.resetView(n); E.saveStageDoc(S.activeId, n, S.directorStageId); S.directorCamFollow = false; setScene(n); bumpView(); } }, T('dirResetView')),
                 ),
                 S.directorKeysOpen ? h('div', { className: 'dshic-dir-keys', 'data-action': 'dir-keys' },
                   DIRECTOR_KEY_HELP.map((row) => h('div', { key: row.k, className: 'dshic-dir-keys-row' }, row.k + '  ' + (effLang() === 'en' ? row.en : row.zh)))) : null,
@@ -19911,6 +22519,18 @@ const DIRECTOR_KEY_HELP = [
                 h('div', { className: 'dshic-dir-treegroup' },
                   h('span', { className: 'dshic-dir-treekey' }, T('dirObjects')),
                   h('span', { className: 'dshic-dir-treecount' }, String((scene.objects || []).length))),
+                h('div', { className: 'dshic-dir-charpick' },
+                  h('select', {
+                    className: 'dshic-dir-input', 'data-action': 'dir-char-pick', value: charPick,
+                    title: T('dirCharLib'), onChange: (e2) => setCharPick(e2.target.value),
+                  }, [
+                    h('option', { key: '', value: '' }, bibleChars.length ? T('dirCharPick') : T('dirCharEmpty')),
+                    ...bibleChars.map((c) => h('option', { key: c.name, value: c.name }, String(c.name) + (Array.isArray(c.assetIds) && c.assetIds.length ? ' · ' + T('dirCharRefs').replace('{n}', String(c.assetIds.length)) : ''))),
+                  ]),
+                  h('button', {
+                    type: 'button', className: 'dshic-dir-mini', 'data-action': 'dir-char-add',
+                    disabled: !bibleChars.length || !charPick, onClick: addBibleChar,
+                  }, T('dirCharAdd'))),
                 (scene.objects || []).map((ob) => h('div', { key: ob.id, className: 'dshic-dir-treerow' },
                   h('button', {
                     type: 'button', className: 'dshic-dir-mini', 'data-action': 'dir-obj-vis', title: T('dirToggleVisible'),
@@ -20219,6 +22839,47 @@ const DIRECTOR_KEY_HELP = [
                 ] : []),
                 sel ? h('div', null,
                   h('div', { className: 'dshic-dir-subhead' }, T('dirSelObject')),
+                  (sel.kind === 'compound' || sel.kind === 'geom' || sel.kind === 'obj' || sel.kind === 'model' || sel.kind === 'gltf')
+                    ? h('div', { className: 'dshic-dir-row' },
+                        h('button', { type: 'button', className: 'dshic-dir-mini', 'data-action': 'dir-export-glb', onClick: exportGlb, title: T('dirExportGlb') }, T('dirExportGlb')))
+                    : null,
+                  // 导入 GLB 的动作切换：多 clip 资产不必停在第一条动画
+                  (sel.kind === 'gltf' && ((E.gltfAssetOf(sel.assetId) || {}).animations || []).length)
+                    ? h('div', { className: 'dshic-dir-row' }, h('span', null, T('dirAction')), h('select', {
+                        className: 'dshic-dir-input', 'data-action': 'dir-gltf-clip',
+                        value: String(sel.clip || ((((E.gltfAssetOf(sel.assetId) || {}).animations || [])[0] || {}).name || '')),
+                        onChange: (e2) => patch((n) => { const t2 = n.objects.find((x) => x.id === sel.id); if (t2) { t2.clip = String(e2.target.value || ''); t2.animTime = 0; } }),
+                      }, ((E.gltfAssetOf(sel.assetId) || {}).animations || []).map((a2) => h('option', { key: a2.name, value: a2.name }, clipLabel(a2.name)))))
+                    : null,
+                  // 骨骼附件：道具/模型手动绑定到角色骨骼（AI 生成的 attach 也可在此改绑/解绑）
+                  (sel.kind !== 'model' && sel.kind !== 'actor')
+                    ? (() => {
+                        const chars = (scene.objects || []).filter((o) => o.kind === 'model');
+                        const bound = sel.attach || null;
+                        const boundTarget = bound ? chars.find((c) => c.id === bound.to || c.name === bound.to) : null;
+                        const boundId = boundTarget ? String(boundTarget.id) : '';
+                        const boneSource = boundTarget ? String(boundTarget.assetId || 'xbot') : (chars[0] ? String(chars[0].assetId || 'xbot') : 'xbot');
+                        const boneOpts = [...new Set(['RightHand', 'LeftHand', 'Head', 'Hips', 'Spine', 'Spine1', 'Spine2', 'RightForeArm', 'LeftForeArm', 'RightFoot'].concat(E.directorBoneNames ? E.directorBoneNames(boneSource) : []))];
+                        return h('div', { className: 'dshic-dir-row' }, h('span', null, T('dirAttach')),
+                          chars.length ? h('select', {
+                            className: 'dshic-dir-input', style: { maxWidth: 96 }, 'data-action': 'dir-attach-target',
+                            value: boundId,
+                            onChange: (e2) => patch((n) => {
+                              const t2 = n.objects.find((x) => x.id === sel.id);
+                              if (!t2) return;
+                              const v = String(e2.target.value || '');
+                              if (!v) { delete t2.attach; delete t2.attachBone; }
+                              else t2.attach = Object.assign({}, t2.attach || {}, { to: v });
+                            }),
+                          }, [h('option', { key: 'none', value: '' }, T('dirAttachNone'))].concat(chars.map((c) => h('option', { key: c.id, value: c.id }, String(c.name || c.id)))))
+                            : h('span', { className: 'dshic-dir-time' }, T('dirAttachNone')),
+                          bound ? h('select', {
+                            className: 'dshic-dir-input', style: { maxWidth: 118 }, 'data-action': 'dir-attach-bone',
+                            value: String(bound.bone || 'RightHand'),
+                            onChange: (e2) => patch((n) => { const t2 = n.objects.find((x) => x.id === sel.id); if (t2 && t2.attach) t2.attach = Object.assign({}, t2.attach, { bone: String(e2.target.value || 'RightHand') }); }),
+                          }, boneOpts.map((b) => h('option', { key: b, value: b }, b))) : null);
+                      })()
+                    : null,
                   h('div', { className: 'dshic-dir-row' }, h('span', null, T('dirPos')), num3([sel.pos.x, sel.pos.y, sel.pos.z], (v, i) => patch((n) => { const t2 = n.objects.find((x) => x.id === sel.id); if (t2) t2.pos[i === 0 ? 'x' : i === 1 ? 'y' : 'z'] = i === 1 ? Math.max(0, v) : v; }))),
                   // 身高：直接改对象自己的 h（米）。体型表的 h 只在新建时写入，已有对象靠这里改。
                   (sel.kind === 'model')
@@ -20512,6 +23173,10 @@ const DIRECTOR_KEY_HELP = [
                   },
                 }, DIRECTOR_SHOT_SIZES().map((x) => h('option', { key: x.id, value: x.id }, x.label)))),
                 envRow(T('dirMove'), h('select', { className: 'dshic-dir-input', value: String(scene.shot.cameraMove || 'static'), onChange: (e2) => patch((n) => { n.shot.cameraMove = e2.target.value; }) }, DIRECTOR_MOVES().map((x) => h('option', { key: x.id, value: x.id }, x.label)))),
+                envRow(T('dirCamPath'), h('button', {
+                  type: 'button', className: 'dshic-dir-mini', 'data-action': 'dir-cam-path-draw',
+                  onClick: toggleCamPath,
+                }, S.directorCamPathPick ? '● ' + T('dirCamPathDrawing') : '✎ ' + T('dirCamPath'))),
                 // ── 机位管理：新建自由机位（复制当前视角）/ 删除 ──
                 envRow(T('dirCameraMgr'), h('div', { style: { display: 'flex', gap: '4px' } },
                   h('button', { type: 'button', className: 'dshic-dir-mini', 'data-action': 'dir-cam-add', onClick: () => {
@@ -20585,7 +23250,7 @@ const DIRECTOR_KEY_HELP = [
                 h('div', { className: 'dshic-dir-keyrow' },
                   h('button', { type: 'button', className: 'dshic-dir-mini', 'data-action': 'dir-spec-toggle', onClick: () => setSpecOpen((v) => !v) }, (specOpen ? '▾ ' : '▸ ') + T('dirSpecShow')),
                   h('button', { type: 'button', className: 'dshic-dir-mini', 'data-action': 'dir-spec-copy', onClick: () => { try { const txt = JSON.stringify(ENG.compileStageSpec(scene), null, 2); setSpecText(txt); if (navigator.clipboard) navigator.clipboard.writeText(txt).catch(() => {}); setMsg({ kind: 'ok', text: T('dirSpecCopied') }); } catch (e2) { setMsg({ kind: 'err', text: String(e2 && e2.message || e2) }); } } }, '⧉ ' + T('dirSpecCopy')),
-                  h('button', { type: 'button', className: 'dshic-dir-mini', 'data-action': 'dir-spec-save', onClick: async () => { try { const spec = ENG.compileStageSpec(scene); const r = await hostRpc('directorStageSave', { projectId: S.activeId, spec }); if (r && r.ok) setMsg({ kind: 'ok', text: T('dirSpecSaved') }); else setMsg({ kind: 'err', text: String((r && r.error) || '保存失败') }); } catch (e2) { setMsg({ kind: 'err', text: String(e2 && e2.message || e2) }); } } }, '⇪ ' + T('dirSpecSaveHost'))),
+                  h('button', { type: 'button', className: 'dshic-dir-mini', 'data-action': 'dir-spec-save', onClick: async () => { try { const spec = ENG.compileStageSpec(scene); const r = await hostRpc('directorStageSave', { projectId: S.activeId, stageId: S.directorStageId, spec }); if (r && r.ok) setMsg({ kind: 'ok', text: T('dirSpecSaved') }); else setMsg({ kind: 'err', text: String((r && r.error) || '保存失败') }); } catch (e2) { setMsg({ kind: 'err', text: String(e2 && e2.message || e2) }); } } }, '⇪ ' + T('dirSpecSaveHost'))),
                 specOpen ? h('textarea', {
                   className: 'dshic-dir-prompt', style: { minHeight: '120px' }, 'data-action': 'dir-spec-text',
                   placeholder: T('dirSpecPlaceholder'),
@@ -20620,6 +23285,7 @@ const DIRECTOR_KEY_HELP = [
       { type: 'storyboard', icon: 'board' },
       { type: 'image', icon: 'image' },
       { type: 'video', icon: 'video' },
+      { type: 'audio', icon: 'audio' },
       { type: 'finalcut', icon: 'film' },
     ];
     function IconRail() {
@@ -20654,6 +23320,26 @@ const DIRECTOR_KEY_HELP = [
           'data-action': 'open-bible', title: T('bibleTab'),
           onClick: () => openStudioModal('bible'),
         }, Ic('script', 16)),
+        // 跨项目角色库：打开时若恰好选中一个图片/视频节点，直接把它作为「应用」目标
+        h('button', {
+          key: 'subjects', type: 'button',
+          className: cls('dshic-rail-btn', S.panelModal === 'subjects' && 'is-active'),
+          'data-action': 'open-subjects', title: T('subjTab'),
+          onClick: () => update((s) => {
+            const ids = [...s.sel].filter((id) => {
+              const nd = s.graph.nodes[id];
+              return nd && (nd.type === 'image' || nd.type === 'video');
+            });
+            s.subjectTargetNodeId = ids.length === 1 ? ids[0] : null;
+            s.panelModal = 'subjects';
+          }),
+        }, Ic('users', 16)),
+        h('button', {
+          key: 'workflows', type: 'button',
+          className: cls('dshic-rail-btn', S.panelModal === 'workflows' && 'is-active'),
+          'data-action': 'open-workflows', title: T('wfTab'),
+          onClick: () => openStudioModal('workflows'),
+        }, Ic('board', 16)),
         // 记忆查看器：项目级每集记忆索引 + 全文（只读；agent 经 canvas_write_memory 维护）
         h('button', {
           key: 'memory', type: 'button',
@@ -20662,12 +23348,19 @@ const DIRECTOR_KEY_HELP = [
           onClick: () => openStudioModal('memory'),
         }, Ic('memory', 16)),
         h('div', { key: 'sep-actions', className: 'dshic-rail-sep' }),
-        // 3D 导演台：摆位 + 取景 + 导出镜头首帧（参考项目 BeefTV 的导演台能力，只借鉴设计、独立实现）
+        // 创作台：自动创作 + 批量执行 统一面板（自动任务在跑时图标带运行点；重开面板继续查看/中止）
         h('button', {
-          key: 'director', type: 'button',
-          className: cls('dshic-rail-btn', S.directorOpen && 'is-active'),
-          'data-action': 'open-director', title: T('directorTitle'),
-          onClick: () => update((s) => { s.directorOpen = true; }),
+          key: 'console', type: 'button',
+          className: cls('dshic-rail-btn', S.consoleOpen && 'is-active', AUTO_LIVE.running && 'is-run'),
+          'data-action': 'open-console', title: T('consoleTitle'),
+          onClick: () => openProdConsole('auto'),
+        }, Ic('spark', 16)),
+        // 3D-BOX：单入口 → 库首页（新建/我的 3D-BOX）；舞台由库打开。
+        h('button', {
+          key: 'boxhome', type: 'button',
+          className: cls('dshic-rail-btn', (S.boxHomeOpen || S.directorOpen) && 'is-active'),
+          'data-action': 'open-3dbox-home', title: T('boxTitle'),
+          onClick: () => update((s) => { s.boxHomeOpen = true; s.directorOpen = false; }),
         }, Ic('camera', 16)),
         S.running
           ? h('button', {
@@ -20683,7 +23376,321 @@ const DIRECTOR_KEY_HELP = [
     }
 
     // ============================================================
-    // 统一弹窗（资产 + 设定集）：右侧面板不再有这两个页签
+    // 3D-BOX 库：一句话新建 + 我的 3D-BOX 列表
+    // ============================================================
+    function BoxHome() {
+      const open = S.boxHomeOpen;
+      const [items, setItems] = useState([]);
+      const [loading, setLoading] = useState(false);
+      const [brief, setBrief] = useState('');
+      const [scene, setScene] = useState('auto');
+      const [style, setStyle] = useState('auto');
+      const [move, setMove] = useState('auto');
+      const [engineTick, setEngineTick] = useState(0);
+      const [busy, setBusy] = useState(false);
+      const [err, setErr] = useState('');
+      useEffect(() => {
+        if (!open) return;
+        loadDirectorEngine().then(() => setEngineTick((x) => x + 1)).catch(() => {});
+        setLoading(true); setErr('');
+        hostRpc('directorStageList', {}).then((r) => {
+          if (!r || !r.ok) throw new Error((r && r.error) || 'list failed');
+          if (!r.multiStage) throw new Error(T('hostStaleHint'));
+          setItems(Array.isArray(r.items) ? r.items : []);
+        }).catch((e) => setErr(T('boxHomeFailed') + hostRpcErrText(e, ''))).finally(() => setLoading(false));
+      }, [open]);
+      void engineTick;
+      if (!open) return null;
+      const openStage = (projectId, stageId, title) => {
+        if (projectId && projectId !== S.activeId) switchProject(projectId);
+        update((s) => {
+          s.boxHomeOpen = false; s.directorOpen = true;
+          s.directorStageId = stageId || null;
+          s.directorStageTitle = String(title || '');
+        });
+      };
+      const current = items.find((it) => it && it.projectId === S.activeId) || null;
+      const create = (blank) => {
+        const text = blank ? '空白场景' : String(brief || '').trim();
+        if (!text) { setErr(T('boxBriefPh')); return; }
+        setBusy(true); setErr('');
+        const args = { projectId: S.activeId, brief: text };
+        if (blank) args.scene = 'blank';
+        else {
+          if (scene !== 'auto') args.scene = scene;
+          if (style !== 'auto') args.style = style;
+          if (move !== 'auto') args.cameraMove = move;
+        }
+        hostRpc('directorStageBrief', args).then((r) => {
+          if (!r || !r.ok) throw new Error((r && r.error) || 'brief failed');
+          if (r.briefVersion !== 2) throw new Error(T('hostStaleHint'));
+          setBrief('');
+          if (r.warning) toast(String(r.warning));
+          else if (r.source === 'llm') toast(T('boxAiBuilt'));
+          openStage(S.activeId, r.stageId, (r.spec && r.spec.title) || text);
+        }).catch((e) => setErr(T('boxFailed') + hostRpcErrText(e, ''))).finally(() => setBusy(false));
+      };
+      return h('div', {
+        className: 'dshic-boxhome-overlay', 'data-role': '3dbox-home',
+        onPointerDown: (e) => { if (e.target === e.currentTarget) update((s) => { s.boxHomeOpen = false; }); },
+      },
+        h('div', { className: 'dshic-boxhome', onPointerDown: (e) => e.stopPropagation() },
+          h('div', { className: 'dshic-boxhome-head' },
+            h('span', { className: 'dshic-boxhome-title' }, T('boxTitle')),
+            h('span', { className: 'dshic-boxhome-sub' }, T('boxHomeSub')),
+            h('span', { className: 'dshic-boxhome-spacer' }),
+            h('button', { type: 'button', className: 'dshic-dir-icobtn', 'data-action': 'boxhome-close', onClick: () => update((s) => { s.boxHomeOpen = false; }) }, '✕')),
+          h('div', { className: 'dshic-boxhome-hero' },
+            h('div', { className: 'dshic-boxhome-row' },
+              h('input', {
+                className: 'dshic-boxhome-input', 'data-action': 'boxhome-brief', value: brief,
+                placeholder: T('boxBriefPh'), onChange: (e) => setBrief(e.target.value),
+                onKeyDown: (e) => { if (e.key === 'Enter') create(false); },
+              }),
+              h('button', { type: 'button', className: 'dshic-boxhome-btn is-primary', 'data-action': 'boxhome-create', disabled: busy, onClick: () => create(false) }, busy ? T('boxBuilding') : T('boxHomeNew')),
+              current ? h('button', { type: 'button', className: 'dshic-boxhome-btn', 'data-action': 'boxhome-continue', disabled: busy, onClick: () => openStage(S.activeId, current.stageId, current.title) }, T('boxHomeContinue')) : null,
+              h('button', { type: 'button', className: 'dshic-boxhome-btn', 'data-action': 'boxhome-blank', disabled: busy, onClick: () => create(true) }, T('boxHomeBlank'))),
+            h('div', { className: 'dshic-boxhome-examples' },
+              [T('boxEx1'), T('boxEx2'), T('boxEx3')].map((x) => h('button', { key: x, type: 'button', className: 'dshic-boxhome-chip', onClick: () => setBrief(x) }, x))),
+            h('div', { className: 'dshic-boxhome-presets' },
+              h('select', { className: 'dshic-boxhome-select', value: scene, title: T('boxSceneAuto'), onChange: (e) => setScene(e.target.value), onPointerDown: (e) => e.stopPropagation() },
+                [h('option', { key: 'auto', value: 'auto' }, T('boxSceneAuto')), ...boxPresetOptions('SCENE_PRESETS').map((p) => h('option', { key: p.id, value: p.id }, effLang() === 'en' ? p.en : p.zh))]),
+              h('select', { className: 'dshic-boxhome-select', value: style, title: T('boxStyleAuto'), onChange: (e) => setStyle(e.target.value), onPointerDown: (e) => e.stopPropagation() },
+                [h('option', { key: 'auto', value: 'auto' }, T('boxStyleAuto')), ...boxPresetOptions('DIRECTOR_STYLES').map((p) => h('option', { key: p.id, value: p.id }, effLang() === 'en' ? p.en : p.zh))]),
+              h('select', { className: 'dshic-boxhome-select', value: move, title: T('boxMoveAuto'), onChange: (e) => setMove(e.target.value), onPointerDown: (e) => e.stopPropagation() },
+                [h('option', { key: 'auto', value: 'auto' }, T('boxMoveAuto')), ...boxPresetOptions('CAMERA_MOVES').map((p) => h('option', { key: p.id, value: p.id }, effLang() === 'en' ? p.en : p.zh))])),
+            err ? h('div', { className: 'dshic-boxhome-card-m', 'data-role': 'boxhome-error' }, err) : null),
+          h('div', { className: 'dshic-boxhome-list' },
+            loading ? h('div', { className: 'dshic-boxhome-loading' }, T('boxHomeLoading'))
+              : (items.length
+                ? items.map((it) => h('button', {
+                    key: it.projectId + '::' + (it.stageId || 'legacy'), type: 'button', className: 'dshic-boxhome-card', 'data-action': 'boxhome-open',
+                    'data-stage-id': it.stageId || '',
+                    onClick: () => openStage(it.projectId, it.stageId, it.title),
+                  },
+                    h('span', { className: 'dshic-boxhome-card-t' }, it.title || '3D-BOX'),
+                    h('span', { className: 'dshic-boxhome-card-m' }, (it.projectId === S.activeId ? T('boxHomeCurrent') + ' · ' : '') + (it.projectName || it.projectId)),
+                    h('span', { className: 'dshic-boxhome-card-m' }, T('boxHomeMeta').replace('{c}', String(it.cameras || 0)).replace('{s}', String(it.shots || 0)).replace('{d}', String(it.duration || 0)))))
+                : h('div', { className: 'dshic-boxhome-empty' }, T('boxHomeEmpty'))))));
+    }
+
+    // ============================================================
+    // 跨项目角色库（统一弹窗「角色库」页签）
+    // ============================================================
+    function SubjectThumb({ assetId, name }) {
+      const [coverId, setCoverId] = useState(assetId || null);
+      useEffect(() => {
+        let ok = true;
+        setCoverId(assetId || null);
+        if (!assetId) return () => { ok = false; };
+        idbGet(assetId).then((r) => { if (ok && (!r || r.kind !== 'image')) setCoverId(null); }).catch(() => { if (ok) setCoverId(null); });
+        return () => { ok = false; };
+      }, [assetId]);
+      const url = useAssetUrl(coverId);
+      return h('div', { className: 'dshic-subj-thumb' },
+        url
+          ? h('img', { src: url, alt: name || '', loading: 'lazy', draggable: false })
+          : h('span', { className: 'dshic-subj-initial' }, String(name || '?').slice(0, 1)));
+    }
+    function SubjectsTab({ targetNodeId }) {
+      const [tab, setTab] = useState('mine');
+      const [q, setQ] = useState('');
+      const [gender, setGender] = useState('');
+      const [age, setAge] = useState('');
+      const [culture, setCulture] = useState('');
+      const [editing, setEditing] = useState(null);
+      const [linkFor, setLinkFor] = useState(null);
+      const [busy, setBusy] = useState(false);
+      const zh = effLang() !== 'en';
+      const bible = loadBible(S.activeId);
+      const series = (bible.characters || []).filter((c) => c && String(c.name || '').trim()).map((c) => normalizeSubject({
+        id: 'bible:' + String(c.name).trim(), name: c.name, desc: c.desc || '',
+        assetIds: Array.isArray(c.assetIds) ? c.assetIds : [], createdAt: 0, updatedAt: 0,
+      }));
+      const official = OFFICIAL_SUBJECTS.map((t) => normalizeSubject({
+        id: t.id, name: zh ? t.nameZh : t.nameEn, desc: zh ? t.descZh : t.descEn,
+        gender: t.gender, age: t.age, culture: t.culture, tags: zh ? t.tagsZh : t.tagsEn,
+        assetIds: [], createdAt: 0, updatedAt: 0,
+      }));
+      const source = tab === 'mine' ? loadSubjects() : tab === 'series' ? series : official;
+      const ql = q.trim().toLowerCase();
+      const list = source.filter((s) => {
+        if (gender && s.gender !== gender) return false;
+        if (age && s.age !== age) return false;
+        if (culture && s.culture !== culture) return false;
+        if (!ql) return true;
+        return [s.name, s.desc, (s.tags || []).join(' ')].some((v) => String(v || '').toLowerCase().includes(ql));
+      });
+      const target = targetNodeId ? S.graph.nodes[targetNodeId] : null;
+      const opt = (value, label) => ({ value, label });
+      const filterRow = h('div', { className: 'dshic-subj-filters' },
+        h('input', { className: 'dshic-input', value: q, placeholder: T('subjSearch'), onChange: (e) => setQ(e.target.value), onPointerDown: (e) => e.stopPropagation() }),
+        h('select', { className: 'dshic-select', value: gender, onChange: (e) => setGender(e.target.value), onPointerDown: (e) => e.stopPropagation() },
+          h('option', { value: '' }, T('subjFilterAll')), h('option', { value: 'male' }, T('subjMale')), h('option', { value: 'female' }, T('subjFemale')), h('option', { value: 'other' }, T('subjOther'))),
+        h('select', { className: 'dshic-select', value: age, onChange: (e) => setAge(e.target.value), onPointerDown: (e) => e.stopPropagation() },
+          h('option', { value: '' }, T('subjFilterAll')), h('option', { value: 'child' }, T('subjChild')), h('option', { value: 'youth' }, T('subjYouth')), h('option', { value: 'middle' }, T('subjMiddle')), h('option', { value: 'elder' }, T('subjElder'))),
+        h('select', { className: 'dshic-select', value: culture, onChange: (e) => setCulture(e.target.value), onPointerDown: (e) => e.stopPropagation() },
+          h('option', { value: '' }, T('subjFilterAll')), h('option', { value: 'asia' }, T('subjAsia')), h('option', { value: 'west' }, T('subjWest')), h('option', { value: 'other' }, T('subjOtherCulture'))),
+        h('div', { className: 'dshic-flex' }),
+        tab === 'mine' ? h('button', { type: 'button', className: 'dshic-btn dshic-primary', onClick: () => setEditing(emptySubject()), onPointerDown: (e) => e.stopPropagation() }, T('subjNew')) : null,
+        tab === 'series' && series.length ? h('button', {
+          type: 'button', className: 'dshic-btn dshic-primary', disabled: busy,
+          onClick: () => importAllFromSeries(),
+          onPointerDown: (e) => e.stopPropagation(),
+        }, busy ? h('span', { className: 'dshic-spin' }) : T('subjImportAll').replace('{n}', String(series.length))) : null);
+      const importOne = (s) => {
+        const existing = loadSubjects().find((x) => x.name === s.name);
+        return (async () => {
+          const copied = existing ? existing.assetIds : await copySubjectAssetsToGeneral(s.assetIds);
+          const merged = [...new Set([...(existing ? existing.assetIds : []), ...copied])].slice(0, 16);
+          upsertSubject({
+            ...(existing || {}), id: existing ? existing.id : '', name: s.name,
+            desc: (existing && existing.desc) || s.desc, assetIds: merged,
+          });
+        })();
+      };
+      async function importAllFromSeries() {
+        if (busy) return;
+        setBusy(true);
+        try {
+          for (const s of series) await importOne(s);
+          toast(T('subjImportDone').replace('{n}', String(series.length)));
+          setTab('mine');
+        } finally { setBusy(false); }
+      }
+      const apply = async (s) => {
+        const n = await applySubjectToCanvas(s, targetNodeId || '');
+        if (n && targetNodeId) closeStudioModal();
+      };
+      const saveDraft = () => {
+        if (!editing || !String(editing.name || '').trim()) return;
+        upsertSubject(editing);
+        setEditing(null);
+        toast(T('subjSaved'));
+      };
+      return h('div', { className: 'dshic-subjects' },
+        h('div', { className: 'dshic-studio-subtabs' },
+          h('button', { type: 'button', className: cls('dshic-studio-tab', tab === 'mine' && 'is-active'), 'data-subtab': 'mine', onClick: () => setTab('mine') }, T('subjMine')),
+          h('button', { type: 'button', className: cls('dshic-studio-tab', tab === 'series' && 'is-active'), 'data-subtab': 'series', onClick: () => setTab('series') }, T('subjSeries')),
+          h('button', { type: 'button', className: cls('dshic-studio-tab', tab === 'official' && 'is-active'), 'data-subtab': 'official', onClick: () => setTab('official') }, T('subjOfficial'))),
+        h('div', { className: 'dshic-hint' }, tab === 'series' ? T('subjFromBibleHint') : tab === 'official' ? T('subjOfficialHint') : (target ? T('subjTargetHint') : T('subjNoTargetHint'))),
+        filterRow,
+        list.length === 0
+          ? h('div', { className: 'dshic-subj-empty' }, T(tab === 'mine' ? 'subjEmpty' : 'subjNoMatch'))
+          : h('div', { className: 'dshic-subj-grid' },
+              list.map((s) => h('div', { key: s.id, className: 'dshic-subj-card', 'data-subject': s.id },
+                h(SubjectThumb, { assetId: (s.assetIds || [])[0], name: s.name }),
+                h('div', { className: 'dshic-subj-body' },
+                  h('div', { className: 'dshic-subj-name', title: s.name }, s.name),
+                  h('div', { className: 'dshic-subj-meta' },
+                    [s.gender === 'male' ? T('subjMale') : s.gender === 'female' ? T('subjFemale') : s.gender === 'other' ? T('subjOther') : '',
+                      s.age === 'child' ? T('subjChild') : s.age === 'youth' ? T('subjYouth') : s.age === 'middle' ? T('subjMiddle') : s.age === 'elder' ? T('subjElder') : '',
+                      s.culture === 'asia' ? T('subjAsia') : s.culture === 'west' ? T('subjWest') : s.culture === 'other' ? T('subjOtherCulture') : '']
+                      .filter(Boolean).join(' · '),
+                    (s.assetIds || []).length ? ' · ' + T('subjAssetsN').replace('{n}', String((s.assetIds || []).length)) : '',
+                    s.voiceAssetId ? ' · ' + T('subjVoice') : ''),
+                  s.desc ? h('div', { className: 'dshic-subj-desc', title: s.desc }, s.desc) : null,
+                  (s.tags || []).length ? h('div', { className: 'dshic-subj-tags' }, s.tags.slice(0, 4).map((t) => h('span', { key: t, className: 'dshic-tag' }, t))) : null,
+                  h('div', { className: 'dshic-subj-actions' },
+                    tab === 'mine'
+                      ? [
+                          h('button', { key: 'apply', type: 'button', className: 'dshic-mini is-ghost', onClick: () => apply(s) }, Ic('image', 11), T('subjApply')),
+                          h('button', { key: 'edit', type: 'button', className: 'dshic-mini is-ghost', onClick: () => setEditing(s) }, T('subjEdit')),
+                          h('button', { key: 'bind', type: 'button', className: 'dshic-mini is-ghost', onClick: () => setLinkFor(s) }, T('subjBindAssets')),
+                          h('button', { key: 'sheet', type: 'button', className: 'dshic-mini is-ghost', onClick: () => { createSubjectSheetNode(s); closeStudioModal(); } }, T('subjGenerateSheet')),
+                          h('button', { key: 'del', type: 'button', className: 'dshic-mini is-ghost', style: { color: 'var(--dsw-alias-state-error-primary)' }, onClick: () => { if (window.confirm(T('subjDeleteConfirm').replace('{name}', s.name))) removeSubject(s.id); } }, Ic('trash', 11)),
+                        ]
+                      : tab === 'series'
+                        ? h('button', { type: 'button', className: 'dshic-mini is-ghost', disabled: busy, onClick: async () => { await importOne(s); toast(T('subjSaved')); } }, Ic('plus', 11), T('subjImport'))
+                        : h('button', { type: 'button', className: 'dshic-mini is-ghost', onClick: () => setEditing({ ...s, id: '' }) }, Ic('plus', 11), T('subjUseTemplate'))))))),
+        editing
+          ? h('div', { className: 'dshic-modal-overlay', onPointerDown: (e) => { if (e.target === e.currentTarget) setEditing(null); } },
+              h('div', { className: 'dshic-modal', style: { width: 460 } },
+                h('div', { className: 'dshic-modal-title' }, (editing.id ? T('subjEdit') : T('subjNew')) + ' — ' + (editing.name || '')),
+                h(Field, { label: T('subjName'), value: editing.name, onChange: (v) => setEditing({ ...editing, name: v }) }),
+                h(Field, { label: T('subjDesc'), value: editing.desc, onChange: (v) => setEditing({ ...editing, desc: v }) }),
+                h('div', { className: 'dshic-node-row' },
+                  h('label', { className: 'dshic-field', style: { flex: 1 } }, h('span', { className: 'dshic-field-label' }, T('subjGender')),
+                    h('select', { className: 'dshic-select', value: editing.gender, onChange: (e) => setEditing({ ...editing, gender: e.target.value }) },
+                      h('option', { value: '' }, T('subjFilterAll')), h('option', { value: 'male' }, T('subjMale')), h('option', { value: 'female' }, T('subjFemale')), h('option', { value: 'other' }, T('subjOther')))),
+                  h('label', { className: 'dshic-field', style: { flex: 1 } }, h('span', { className: 'dshic-field-label' }, T('subjAge')),
+                    h('select', { className: 'dshic-select', value: editing.age, onChange: (e) => setEditing({ ...editing, age: e.target.value }) },
+                      h('option', { value: '' }, T('subjFilterAll')), h('option', { value: 'child' }, T('subjChild')), h('option', { value: 'youth' }, T('subjYouth')), h('option', { value: 'middle' }, T('subjMiddle')), h('option', { value: 'elder' }, T('subjElder')))),
+                  h('label', { className: 'dshic-field', style: { flex: 1 } }, h('span', { className: 'dshic-field-label' }, T('subjCulture')),
+                    h('select', { className: 'dshic-select', value: editing.culture, onChange: (e) => setEditing({ ...editing, culture: e.target.value }) },
+                      h('option', { value: '' }, T('subjFilterAll')), h('option', { value: 'asia' }, T('subjAsia')), h('option', { value: 'west' }, T('subjWest')), h('option', { value: 'other' }, T('subjOtherCulture'))))),
+                h(Field, { label: T('subjTags'), value: (editing.tags || []).join(', '), onChange: (v) => setEditing({ ...editing, tags: v.split(',').map((x) => x.trim()).filter(Boolean) }) }),
+                h('div', { className: 'dshic-modal-actions' },
+                  h('button', { type: 'button', className: 'dshic-btn dshic-btn-outline', onClick: () => setEditing(null) }, T('subjCancel')),
+                  h('button', { type: 'button', className: 'dshic-btn dshic-primary', disabled: !String(editing.name || '').trim(), onClick: saveDraft }, T('subjSave')))))
+          : null,
+        linkFor ? h(BibleLinkDialog, {
+          entry: linkFor,
+          onApply: async (assetIds) => {
+            // 绑定时复制到通用项目：角色库跨项目可用，源项目删除后参考图仍在
+            const copied = await copySubjectAssetsToGeneral(assetIds || []);
+            const recs = await Promise.all(copied.map((id) => idbGet(id).catch(() => null)));
+            const voice = recs.find((r) => r && r.kind === 'audio');
+            upsertSubject({ ...linkFor, assetIds: copied, voiceAssetId: voice ? voice.id : linkFor.voiceAssetId || null });
+            setLinkFor(null);
+          },
+          onClose: () => setLinkFor(null),
+        }) : null,
+      );
+    }
+
+    // ============================================================
+    // 工作流工具箱页签
+    // ============================================================
+    function WorkflowsTab() {
+      const list = loadWorkflows();
+      const [busy, setBusy] = useState(false);
+      const [err, setErr] = useState(null);
+      const insert = async (wf) => {
+        if (busy) return;
+        setBusy(true); setErr(null);
+        try {
+          await insertWorkflow(wf);
+          closeStudioModal();
+        } catch (e) { setErr(String((e && e.message) || e)); } finally { setBusy(false); }
+      };
+      const rename = (wf) => {
+        let v = null;
+        try { v = window.prompt(T('wfRename'), wf.name); } catch { v = null; }
+        if (v === null) return;
+        const name = String(v || '').trim();
+        if (name) upsertWorkflow({ ...wf, name });
+      };
+      const del = (wf) => {
+        let ok2 = false;
+        try { ok2 = window.confirm(T('wfDeleteConfirm').replace('{name}', wf.name)); } catch { ok2 = false; }
+        if (ok2) removeWorkflow(wf.id);
+      };
+      return h('div', { className: 'dshic-workflows' },
+        h('div', { className: 'dshic-hint' }, T('wfEmpty')),
+        busy ? h('div', { className: 'dshic-modal-warn', style: { display: 'flex', alignItems: 'center', gap: 6 } }, h('span', { className: 'dshic-spin' }), T('wfInsert' ) + '…') : null,
+        err ? h('div', { className: 'dshic-err' }, err) : null,
+        list.length
+          ? h('div', { className: 'dshic-wf-list' },
+              list.map((wf) => h('div', { key: wf.id, className: 'dshic-wf-card', 'data-workflow': wf.id },
+                h('div', { className: 'dshic-wf-head' },
+                  Ic('folder', 13),
+                  h('span', { className: 'dshic-wf-name', title: wf.name }, wf.name),
+                  h('span', { className: 'dshic-tag' }, T('wfBadge'))),
+                h('div', { className: 'dshic-wf-meta' }, T('wfMeta')
+                  .replace('{n}', String(wf.nodes.length))
+                  .replace('{e}', String(wf.edges.length))
+                  .replace('{a}', String((wf.assets || []).length))),
+                h('div', { className: 'dshic-wf-actions' },
+                  h('button', { type: 'button', className: 'dshic-mini is-ghost', disabled: busy, onClick: () => insert(wf), onPointerDown: (e) => e.stopPropagation() }, Ic('plus', 11), T('wfInsert')),
+                  h('button', { type: 'button', className: 'dshic-mini is-ghost', onClick: () => rename(wf), onPointerDown: (e) => e.stopPropagation() }, T('wfRename')),
+                  h('button', { type: 'button', className: 'dshic-mini is-ghost', style: { color: 'var(--dsw-alias-state-error-primary)' }, onClick: () => del(wf), onPointerDown: (e) => e.stopPropagation() }, Ic('trash', 11))))))
+          : null,
+      );
+    }
+
+    // ============================================================
+    // 统一弹窗（资产 + 设定集 + 角色库 + 工作流）：右侧面板不再有这些页签
     // ============================================================
     function StudioModal() {
       const tab = S.panelModal;
@@ -20709,6 +23716,8 @@ const DIRECTOR_KEY_HELP = [
             h('div', { className: 'dshic-studio-tabs' },
               tabBtn('bible', T('bibleTab')),
               tabBtn('assets', T('assets')),
+              tabBtn('subjects', T('subjTab')),
+              tabBtn('workflows', T('wfTab')),
               tabBtn('memory', T('memViewerTab'))),
             h('span', { className: 'dshic-studio-title' }, proj ? proj.name : ''),
             h('button', {
@@ -20720,7 +23729,11 @@ const DIRECTOR_KEY_HELP = [
               ? h('div', { className: 'dshic-studio-bible' }, h(BibleTab))
               : (tab === 'memory'
                 ? h('div', { className: 'dshic-studio-memory' }, h(MemoryTab))
-                : h('div', { className: 'dshic-modal-assets' }, h(AssetsTab, { variant: 'modal' })))),
+                : tab === 'subjects'
+                  ? h('div', { className: 'dshic-studio-subjects' }, h(SubjectsTab, { targetNodeId: S.subjectTargetNodeId }))
+                  : tab === 'workflows'
+                    ? h('div', { className: 'dshic-studio-workflows' }, h(WorkflowsTab))
+                    : h('div', { className: 'dshic-modal-assets' }, h(AssetsTab, { variant: 'modal' })))),
         ));
     }
 
@@ -21387,6 +24400,11 @@ const DIRECTOR_KEY_HELP = [
       }, [S.activeId]);
       const [search, setSearch] = useState('');
       const [qDeb, setQDeb] = useState('');
+      const [tagFilter, setTagFilter] = useState('');
+      const [folderFilter, setFolderFilter] = useState('');
+      const [sourceFilter, setSourceFilter] = useState('');
+      const [daysFilter, setDaysFilter] = useState('');
+      const [showMerged, setShowMerged] = useState(false);
       const [craftFor, setCraftFor] = useState(null);
       const [delTarget, setDelTarget] = useState(null); // 待确认删除的资产（确认框见 DeleteAssetModal）
       const [assetName, setAssetName] = useState(''); // 删除确认框的输入内容
@@ -21399,7 +24417,7 @@ const DIRECTOR_KEY_HELP = [
         const t = setTimeout(() => setQDeb(search), 300);
         return () => clearTimeout(t);
       }, [search]);
-      useEffect(() => { setPage(0); setPageDraft(null); }, [filter, qDeb, scope]);
+      useEffect(() => { setPage(0); setPageDraft(null); }, [filter, qDeb, scope, tagFilter, folderFilter, sourceFilter, daysFilter, showMerged]);
       useEffect(() => {
         probeCraft();
         let ok = true;
@@ -21440,7 +24458,6 @@ const DIRECTOR_KEY_HELP = [
         toast(T('moved'));
       };
       const addNodeFor = (a) => {
-        if (a.kind === 'audio') return; // 音频资产在卡片内直接试听
         if (a.kind === 'text') {
           const c = worldCenter();
           const nd = addNodeAt('text', { x: c.x - 120, y: c.y - 60 });
@@ -21451,7 +24468,7 @@ const DIRECTOR_KEY_HELP = [
           return;
         }
         const c = worldCenter();
-        const type = a.kind === 'image' ? 'image' : 'video';
+        const type = a.kind === 'image' ? 'image' : a.kind === 'audio' ? 'audio' : 'video';
         const n = addNodeAt(type, { x: c.x + (Math.random() * 60 - 30), y: c.y + (Math.random() * 60 - 30) });
         update((s) => {
           const nd = s.graph.nodes[n.id];
@@ -21464,6 +24481,18 @@ const DIRECTOR_KEY_HELP = [
         else idbPut(a).catch(() => {});
         update((s) => { s.assetsTick++; });
       };
+      /** DAM 元数据（标签/文件夹）：本地立即生效 + 服务端写回；失败不影响继续打标签。 */
+      const updateAssetMeta = (a, patch) => {
+        Object.assign(a, patch);
+        setAssets((prev) => prev.map((x) => (x.id === a.id ? { ...x, ...patch } : x)));
+        if (S.store) hostRpc('assetUpdate', { id: a.id, patch }).catch(() => {});
+        else idbPut(a).catch(() => {});
+        update((s) => { s.assetsTick++; });
+      };
+      const allTags = [...new Set(assets.flatMap((a) => (Array.isArray(a.tags) ? a.tags : [])))].sort();
+      const allFolders = [...new Set(assets.map((a) => String(a.folder || '').trim()).filter(Boolean))].sort();
+      const allSources = [...new Set(assets.map((a) => String(a.source || '').trim()).filter(Boolean))].sort();
+      const mergedCount = assets.filter((a) => a.mergedInto).length;
       const onImport = async (e) => {
         const files = [...((e.target.files) || [])];
         e.target.value = '';
@@ -21532,11 +24561,10 @@ const DIRECTOR_KEY_HELP = [
         bumpView();
       };
       // ---------- 批量选择：一键按列导入画布 / 批量删除 ----------
-      // 落点由 layoutBatchColumns 决定（现有节点最右侧之外按列铺开，一列 ≤5，零重叠），
-      // 音频资产不成节点（与单个添加同一口径），导入时跳过并提示数量。
+      // 落点由 layoutBatchColumns 决定（现有节点最右侧之外按列铺开，一列 ≤5，零重叠）。
       const selList = assets.filter((a) => selIds.has(a.id));
-      const addableList = selList.filter((a) => a.kind !== 'audio');
-      const audioN = selList.length - addableList.length;
+      const mergeGroups = findDuplicateAssetGroups(selList);
+      const addableList = selList;
       const allPageSel = () => shown.length > 0 && shown.every((a) => selIds.has(a.id));
       const toggleSel = (a) => setSelIds((prev) => { const n = new Set(prev); if (n.has(a.id)) n.delete(a.id); else n.add(a.id); return n; });
       const selectAllPage = () => setSelIds((prev) => {
@@ -21552,7 +24580,7 @@ const DIRECTOR_KEY_HELP = [
         const rects = Object.values(S.graph.nodes)
           .filter((nd) => nd.type !== 'group' && !(nd.data && nd.data.hidden))
           .map((nd) => ({ x: Number(nd.x) || 0, y: Number(nd.y) || 0, w: Number(nd.w) || 280, h: Number(nd.h) || 160 }));
-        const items = addableList.map((a) => (a.kind === 'text' ? { w: 360, h: 220 } : nodeSizeForRatio('16:9', { hasFooter: false })));
+        const items = addableList.map((a) => (a.kind === 'text' ? { w: 360, h: 220 } : a.kind === 'audio' ? { w: 360, h: 180 } : nodeSizeForRatio('16:9', { hasFooter: false })));
         const pts = layoutBatchColumns(rects, items);
         const newIds = [];
         update((s) => {
@@ -21569,7 +24597,7 @@ const DIRECTOR_KEY_HELP = [
         pushHistory();
         flushSave();
         setSelIds(new Set());
-        toast(T('assetsAdded').replace('{n}', String(addable.length)) + (audioN ? '，' + T('assetsAudioSkip').replace('{n}', String(audioN)) : ''));
+        toast(T('assetsAdded').replace('{n}', String(addableList.length)));
       };
       const delSelected = async () => {
         const list = selList.slice();
@@ -21577,6 +24605,57 @@ const DIRECTOR_KEY_HELP = [
         for (const a of list) { try { await del(a); } catch { /* 单个失败继续其余 */ } }
         setSelIds(new Set());
         toast(T('assetsDeletedN').replace('{n}', String(list.length)));
+      };
+      const downloadSelectedZip = async () => {
+        const items = selList.slice(0, 100);
+        if (!items.length) { toast(T('damZipEmpty')); return; }
+        const files = [];
+        let total = 0;
+        let skipped = 0;
+        for (const a of items) {
+          try {
+            let data;
+            if (a.kind === 'text') data = new TextEncoder().encode(String(a.text || ''));
+            else {
+              const blob = await assetBlob(a.id);
+              if (!blob) { skipped++; continue; }
+              data = new Uint8Array(await blob.arrayBuffer());
+            }
+            if (total + data.length > 500 * 1024 * 1024) { skipped++; continue; }
+            total += data.length;
+            const base = String(a.name || a.id).replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').slice(0, 80) || a.id;
+            files.push({ name: base + extForDownload(a.mime, a.name, a.kind), data });
+          } catch { skipped++; }
+        }
+        if (!files.length) { toast(T('damZipEmpty')); return; }
+        const blob = buildZipStore(files);
+        const url = URL.createObjectURL(blob);
+        downloadBlobFromUrl(url, 'assets-' + files.length + '.zip');
+        setTimeout(() => { try { URL.revokeObjectURL(url); } catch { /* 忽略 */ } }, 8000);
+        toast(T('damZipDone').replace('{n}', String(files.length)).replace('{s}', String(skipped)));
+      };
+      const mergeSelected = async () => {
+        if (!mergeGroups.length) { toast(T('damMergeNone')); return; }
+        let ok2 = false;
+        try { ok2 = window.confirm(T('damMergeConfirm').replace('{n}', String(mergeGroups.length)).replace('{k}', String(mergeGroups.reduce((a, g) => a + g.length - 1, 0)))); } catch { ok2 = false; }
+        if (!ok2) return;
+        const r = await mergeDuplicateAssets(selList);
+        if (!r.ok) { toast(T('damMergeNone')); return; }
+        setAssets((prev) => prev.map((a) => {
+          const p = r.pairs.find((x) => x.from === a.id);
+          return p ? { ...a, mergedInto: p.to } : a;
+        }));
+        setSelIds(new Set());
+        toast(T('damMergeDone').replace('{n}', String(r.pairs.length)));
+      };
+      const undoMerge = async () => {
+        let ok2 = false;
+        try { ok2 = window.confirm(T('damMergeUndoConfirm')); } catch { ok2 = false; }
+        if (!ok2) return;
+        const r = await undoAssetMerge();
+        if (!r.ok) return;
+        setAssets((prev) => prev.map((a) => (a.mergedInto ? { ...a, mergedInto: null } : a)));
+        toast(T('damMergeUndone').replace('{n}', String(r.restored)));
       };
       // 资产重命名：服务端写回（SQL/JSON 各自落库）+ 刷新名称缓存（@引用与连线名称都吃这份缓存）
       const rename = async (a, name) => {
@@ -21613,10 +24692,16 @@ const DIRECTOR_KEY_HELP = [
         // 「通用项目」或「全部」；跨项目取素材的功能面（@引用/设定集绑定）不受影响）。
         if (scope !== 'all' && a.projectId !== scope) return false;
         if (filter !== 'all' && normCat(a.category) !== filter) return false;
+        if (tagFilter && !(Array.isArray(a.tags) && a.tags.includes(tagFilter))) return false;
+        if (folderFilter && String(a.folder || '') !== folderFilter) return false;
+        if (a.mergedInto && !showMerged) return false;
+        if (sourceFilter && String(a.source || '') !== sourceFilter) return false;
+        if (daysFilter && (!a.createdAt || Date.now() - a.createdAt > Number(daysFilter) * 86400000)) return false;
         if (!q) return true;
         const hay = [
           a.name, a.prompt || '', a.text || '', catLabel(normCat(a.category)),
-          projectName(a.projectId), a.kind === 'image' ? T('kindImage') : a.kind === 'video' ? T('kindVideo') : 'text',
+          projectName(a.projectId), a.folder || '', (a.tags || []).join(' '), a.source || '',
+          a.kind === 'image' ? T('kindImage') : a.kind === 'video' ? T('kindVideo') : a.kind === 'audio' ? T('kindAudio') : 'text',
         ].join(' ').toLowerCase();
         return hay.includes(q);
       });
@@ -21663,10 +24748,50 @@ const DIRECTOR_KEY_HELP = [
               onChange: (v) => setScope(v),
             })),
         ),
+        // DAM 筛选（标签 / 文件夹）：有值才显示，避免空资产时多一排空控件
+        allTags.length || allFolders.length || allSources.length || mergedCount
+          ? h('div', { key: 'damrow', className: 'dshic-asset-searchrow', 'data-role': 'assets-dam-filters' },
+              allTags.length
+                ? h('div', { className: 'dshic-asset-scope' }, h(MiniSelect, {
+                    value: tagFilter, title: T('damTagFilter'),
+                    options: [{ value: '', label: T('damTagFilter') + '：' + T('damAll') }].concat(allTags.map((t) => ({ value: t, label: '#' + t }))),
+                    onChange: (v) => setTagFilter(v),
+                  }))
+                : null,
+              allFolders.length
+                ? h('div', { className: 'dshic-asset-scope' }, h(MiniSelect, {
+                    value: folderFilter, title: T('damFolderFilter'),
+                    options: [{ value: '', label: T('damFolderFilter') + '：' + T('damAll') }].concat(allFolders.map((v) => ({ value: v, label: v }))),
+                    onChange: (v) => setFolderFilter(v),
+                  }))
+                : null,
+              allSources.length
+                ? h('div', { className: 'dshic-asset-scope' }, h(MiniSelect, {
+                    value: sourceFilter, title: T('damSource'),
+                    options: [{ value: '', label: T('damSource') + '：' + T('damAll') }].concat(allSources.map((v) => ({ value: v, label: v }))),
+                    onChange: (v) => setSourceFilter(v),
+                  }))
+                : null,
+              h('div', { className: 'dshic-asset-scope' }, h(MiniSelect, {
+                value: daysFilter, title: T('damDate'),
+                options: [{ value: '', label: T('damDate') + '：' + T('damAll') }, { value: '7', label: T('damDate7') }, { value: '30', label: T('damDate30') }, { value: '90', label: T('damDate90') }],
+                onChange: (v) => setDaysFilter(v),
+              })),
+              mergedCount
+                ? h('button', {
+                    type: 'button', className: cls('dshic-toolbtn', showMerged && 'is-active'),
+                    'data-action': 'dam-show-merged', onClick: () => setShowMerged((v) => !v), onPointerDown: (e) => e.stopPropagation(),
+                  }, (showMerged ? T('damHideMerged') : T('damShowMerged')).replace('{n}', String(mergedCount)))
+                : null,
+              h('div', { className: 'dshic-flex' }))
+          : null,
         // 工具栏（项目下一行）：所有操作按钮 + 分页集中在一行，窄窗口自动换行、分页始终靠右。
         // 按钮统一「透明底 + 1px 线框 + 文字」（UI-RULES：禁止灰底色块）。
         h('div', { key: 'toolbar', className: 'dshic-asset-toolbar', 'data-role': 'assets-toolbar' },
           h('div', { className: 'dshic-asset-toolbar-main' },
+            S.damUndo
+              ? h('button', { type: 'button', className: 'dshic-toolbtn', 'data-action': 'dam-undo-merge', onClick: undoMerge, onPointerDown: (e) => e.stopPropagation() }, Ic('undoIc', 11), T('damUndoMerge'))
+              : null,
             h('button', {
               type: 'button', className: 'dshic-toolbtn', 'data-action': 'assets-sync-all',
               disabled: !craftOkCached(), title: craftOkCached() ? T('craftSyncAll') : T('craftUnreachable'),
@@ -21683,9 +24808,12 @@ const DIRECTOR_KEY_HELP = [
             selIds.size
               ? h('div', { key: 'batchbar', className: 'dshic-asset-batch', 'data-role': 'assets-batch-bar' },
                   h('button', { type: 'button', className: 'dshic-toolbtn', 'data-action': 'assets-add-selected', disabled: !addableList.length, onClick: addSelectedToCanvas, onPointerDown: (e) => e.stopPropagation() }, Ic('expandAll', 11), T('assetsAddToCanvas') + '（' + addableList.length + '）'),
+                  h('button', { type: 'button', className: 'dshic-toolbtn', 'data-action': 'assets-download-zip', disabled: !selList.length, onClick: downloadSelectedZip, onPointerDown: (e) => e.stopPropagation() }, Ic('download', 11), T('damZip').replace('{n}', String(selList.length))),
+                  mergeGroups.length
+                    ? h('button', { type: 'button', className: 'dshic-toolbtn', 'data-action': 'dam-merge', onClick: mergeSelected, onPointerDown: (e) => e.stopPropagation() }, Ic('link', 11), T('damMerge').replace('{n}', String(mergeGroups.reduce((a, g) => a + g.length - 1, 0))))
+                    : null,
                   h('button', { type: 'button', className: 'dshic-toolbtn is-danger', 'data-action': 'assets-batch-delete', onClick: () => setBatchDel(true), onPointerDown: (e) => e.stopPropagation() }, T('doDelete') + '（' + selIds.size + '）'),
                   h('button', { type: 'button', className: 'dshic-toolbtn', 'data-action': 'assets-clear-sel', onClick: clearSel, onPointerDown: (e) => e.stopPropagation() }, T('assetsClearSel')),
-                  audioN ? h('span', { className: 'dshic-asset-audiohint' }, T('assetsAudioSkip').replace('{n}', String(audioN))) : null,
                 )
               : null,
           ),
@@ -21726,7 +24854,7 @@ const DIRECTOR_KEY_HELP = [
             : h('div', { key: 'grid', className: 'dshic-asset-grid' },
                 shown.map((a) => h(AssetCard, {
                   key: a.id, a, onAdd: addNodeFor, onDel: (x) => setDelTarget(x), onCat: changeCategory,
-                  onRename: rename, onMove: moveAsset,
+                  onRename: rename, onMove: moveAsset, onMeta: updateAssetMeta,
                   projectName: projectName(a.projectId),
                   checked: selIds.has(a.id), onToggleSel: toggleSel,
                 })),
@@ -21782,7 +24910,71 @@ const DIRECTOR_KEY_HELP = [
         ));
     }
 
-    function AssetCard({ a, checked = false, onToggleSel = () => {}, onAdd, onDel, onCat, onRename, onMove, projectName }) {
+    /** GLB 模型资产缩略图：加载资产 → 离屏 GL 渲染一帧 → dataURL（按 assetId 缓存）。 */
+    const GLTF_THUMB_CACHE = new Map();
+    async function renderGltfThumb(assetId) {
+      try {
+        const E2 = await loadDirectorEngine();
+        if (!E2 || typeof E2.createDirectorGlRenderer !== 'function' || typeof E2.parseGlb !== 'function') return '';
+        const asset = await loadAssetModel(assetId).catch(() => null);
+        if (!asset) return '';
+        const W = 128, H = 96;
+        const cv = document.createElement('canvas');
+        cv.width = W; cv.height = H;
+        const glr = E2.createDirectorGlRenderer(cv);
+        if (!glr) return '';
+        try {
+          glr.resize(W, H);
+          const h = Number(asset.rawHeight) > 0 ? Number(asset.rawHeight) : 1.7;
+          const d = Math.max(1.1, h * 1.55);
+          const scene = {
+            version: 2,
+            objects: [{
+              id: 'thumb', name: 'thumb', kind: 'gltf', assetId: String(assetId),
+              pos: { x: 0, y: 0, z: 0 }, rotY: 0.7, h, scale: { x: 1, y: 1, z: 1 },
+              clip: (asset.animations && asset.animations[0] && asset.animations[0].name) || '', animTime: 0, visible: true, color: '',
+            }],
+            cameras: [{ id: 'c', name: 'c', pos: { x: d * 0.72, y: h * 0.78, z: d * 0.9 }, target: { x: 0, y: h * 0.48, z: 0 }, fov: 38, roll: 0 }],
+            lights: [{ id: 'k', dir: E2.vNorm({ x: 0.5, y: -0.85, z: 0.3 }), color: '#ffffff', intensity: 1.15 }],
+            env: { bg: '#26282e', ground: '#2e3138', grid: false, exposure: 1, groundInRender: true },
+            activeCameraId: 'c', shot: { duration: 1 },
+          };
+          const live = typeof E2.applyPlayhead === 'function' ? E2.applyPlayhead(scene, 0) : scene;
+          glr.draw(live, { selectedId: null, renderGround: true, renderOnly: true });
+          const gl = glr.gl || glr.glctx;
+          if (!gl || typeof gl.readPixels !== 'function') return '';
+          const px = new Uint8Array(W * H * 4);
+          gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, px);
+          const c2 = document.createElement('canvas');
+          c2.width = W; c2.height = H;
+          const ctx = c2.getContext('2d');
+          const img = ctx.createImageData(W, H);
+          for (let y = 0; y < H; y++) img.data.set(px.subarray((H - 1 - y) * W * 4, (H - y) * W * 4), y * W * 4);
+          ctx.putImageData(img, 0, 0);
+          return c2.toDataURL('image/png');
+        } finally {
+          try { glr.dispose(); } catch { /* 忽略 */ }
+        }
+      } catch { return ''; }
+    }
+    /** 资产库模型卡片缩略图：懒渲染 + 模块级缓存（同一资产只渲一次）。 */
+    function ModelAssetThumb({ assetId }) {
+      const [url, setUrl] = useState(() => GLTF_THUMB_CACHE.get(assetId) || '');
+      useEffect(() => {
+        if (GLTF_THUMB_CACHE.has(assetId)) return undefined;
+        let ok = true;
+        renderGltfThumb(assetId).then((u) => {
+          if (!u || !ok) return;
+          GLTF_THUMB_CACHE.set(assetId, u);
+          setUrl(u);
+        }).catch(() => { /* 缩略图失败保持占位图标 */ });
+        return () => { ok = false; };
+      }, [assetId]);
+      if (url) return h('img', { className: 'dshic-asset-thumb', src: url, draggable: false });
+      return h('div', { className: 'dshic-asset-thumb', style: { display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--dsw-alias-brand-primary)' } },
+        Ic('camera', 26));
+    }
+    function AssetCard({ a, checked = false, onToggleSel = () => {}, onAdd, onDel, onCat, onRename, onMove, onMeta = () => {}, projectName }) {
       const url = useAssetUrl(a.kind === 'text' ? null : a.id);
       const [craftFor, setCraftFor] = useState(false);
       const [renaming, setRenaming] = useState(false);
@@ -21806,6 +24998,20 @@ const DIRECTOR_KEY_HELP = [
         onPointerDown: (e) => e.stopPropagation(),
         onClick: startRename,
       }, Ic('pencil', 11));
+      const editTags = (e) => {
+        e.stopPropagation();
+        let v = null;
+        try { v = window.prompt(T('damTagsPrompt'), (Array.isArray(a.tags) ? a.tags : []).join(', ')); } catch { v = null; }
+        if (v === null) return;
+        onMeta(a, { tags: String(v || '').split(',').map((x) => x.trim()).filter(Boolean).slice(0, 20) });
+      };
+      const editFolder = (e) => {
+        e.stopPropagation();
+        let v = null;
+        try { v = window.prompt(T('damFolderPrompt'), a.folder || ''); } catch { v = null; }
+        if (v === null) return;
+        onMeta(a, { folder: String(v || '').trim().slice(0, 80) });
+      };
       const downloadName = (a.name || 'asset') + extForDownload(a.mime, a.name, a.kind);
       // 项目归属下拉（全部资产同款，含文本资产）：看归属 + 就地改归属（onMove 服务端写回）
       const projSel = h('select', {
@@ -21821,7 +25027,7 @@ const DIRECTOR_KEY_HELP = [
       return h('div', {
         className: cls('dshic-asset', checked && 'is-checked'),
         onClick: () => onToggleSel(a),
-        onDoubleClick: a.kind === 'audio' ? undefined : () => onAdd(a), // 双击 = 单个直接添加（熟练用户捷径）
+        onDoubleClick: () => onAdd(a), // 双击 = 单个直接添加（熟练用户捷径；音频也可）
         title: T('assetClickHint'),
       },
         // 复选框：批量选择入口（单击卡片也切换选中；图标按钮仍 stopPropagation 不受影响）
@@ -21843,8 +25049,10 @@ const DIRECTOR_KEY_HELP = [
             ? h('img', { className: 'dshic-asset-thumb', src: url || '', draggable: false })
             : a.kind === 'video'
               ? h('video', { className: 'dshic-asset-thumb', src: url ? url + '#t=0.1' : '', muted: true, preload: 'metadata' })
-              : h('div', { className: 'dshic-asset-thumb', style: { display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--dsw-alias-brand-primary)' } },
-                  Ic('audio', 26)),
+              : a.kind === 'model'
+                ? h(ModelAssetThumb, { assetId: a.id })
+                : h('div', { className: 'dshic-asset-thumb', style: { display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--dsw-alias-brand-primary)' } },
+                    Ic('audio', 26)),
         a.kind !== 'text'
           ? h('div', { className: 'dshic-asset-name' },
               renaming ? nameInput : h('span', { className: 'dshic-asset-name-text', title: a.name || '' }, a.name || '—'),
@@ -21853,7 +25061,16 @@ const DIRECTOR_KEY_HELP = [
         a.kind !== 'text'
           ? projSel
           : null,
+        (a.folder || a.mergedInto || (Array.isArray(a.tags) && a.tags.length))
+          ? h('div', { className: 'dshic-asset-dam' },
+              a.mergedInto ? h('span', { className: 'dshic-tag', title: T('damMergedHint') }, '⇠ ' + T('damMerged')) : null,
+              a.folder ? h('span', { className: 'dshic-tag', title: a.folder }, '▸ ' + a.folder) : null,
+              (a.tags || []).slice(0, 3).map((t) => h('span', { key: t, className: 'dshic-tag' }, '#' + t)),
+              (a.tags || []).length > 3 ? h('span', { className: 'dshic-hint' }, '+' + ((a.tags || []).length - 3)) : null)
+          : null,
         h('div', { className: 'dshic-asset-actions' },
+          h('button', { type: 'button', className: 'dshic-iconbtn', title: T('damTags'), onClick: editTags, onPointerDown: (e) => e.stopPropagation() }, Ic('tag', 11)),
+          h('button', { type: 'button', className: 'dshic-iconbtn', title: T('damFolder'), onClick: editFolder, onPointerDown: (e) => e.stopPropagation() }, Ic('folder', 11)),
           (a.kind === 'image' || a.kind === 'video')
             ? h('button', {
                 type: 'button', className: 'dshic-iconbtn', title: T('zoomView'),
@@ -21912,6 +25129,142 @@ const DIRECTOR_KEY_HELP = [
       a.click();
       a.remove();
     }
+    // ---- 资产库 ZIP（store 模式，无第三方依赖）----
+    const CRC32_TABLE = (() => {
+      const t = new Uint32Array(256);
+      for (let n = 0; n < 256; n++) {
+        let c = n;
+        for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+        t[n] = c >>> 0;
+      }
+      return t;
+    })();
+    function crc32Bytes(u8) {
+      let c = 0xffffffff;
+      for (let i = 0; i < u8.length; i++) c = CRC32_TABLE[(c ^ u8[i]) & 0xff] ^ (c >>> 8);
+      return (c ^ 0xffffffff) >>> 0;
+    }
+    /** 同 sha（字节完全相同）的资产分组；已合并过的条目不再参与。 */
+    function findDuplicateAssetGroups(list) {
+      const bySha = new Map();
+      for (const a of (list || [])) {
+        if (!a || !a.sha || a.mergedInto) continue;
+        const key = String(a.sha);
+        if (!bySha.has(key)) bySha.set(key, []);
+        bySha.get(key).push(a);
+      }
+      return [...bySha.values()].filter((g) => g.length > 1);
+    }
+    /** 深度克隆并把所有等于旧资产 id 的字符串替换为 keeper id（节点 data / 角色库 / 工作流通用）。 */
+    function remapAssetIdsDeep(value, map) {
+      if (typeof value === 'string') return map.get(value) || value;
+      if (Array.isArray(value)) return value.map((v) => remapAssetIdsDeep(v, map));
+      if (value && typeof value === 'object') {
+        const out = {};
+        for (const [k, v] of Object.entries(value)) out[k] = remapAssetIdsDeep(v, map);
+        return out;
+      }
+      return value;
+    }
+    async function setAssetMergedInto(id, keeperId) {
+      const patch = { mergedInto: keeperId || null };
+      if (S.store) {
+        try { await hostRpc('assetUpdate', { id, patch }); } catch { /* 索引失败不阻塞合并 */ }
+      } else {
+        const rec = await idbGet(id).catch(() => null);
+        if (rec) { rec.mergedInto = keeperId || undefined; try { await idbPut(rec); } catch { /* 忽略 */ } }
+      }
+    }
+    /** 合并重复资产：引用迁移（节点/角色库/工作流）+ 隐藏重复项 + 本次会话可撤销。
+     *  只合并 sha 完全相同（字节级一致）的资产，绝不按名称误合并。 */
+    async function mergeDuplicateAssets(list) {
+      const groups = findDuplicateAssetGroups(list);
+      if (!groups.length) return { ok: false, pairs: [] };
+      const pairs = [];
+      for (const g of groups) {
+        const sorted = g.slice().sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+        const keeper = sorted[0];
+        for (const dup of sorted.slice(1)) pairs.push({ from: dup.id, to: keeper.id });
+      }
+      if (!pairs.length) return { ok: false, pairs: [] };
+      const map = new Map(pairs.map((p) => [p.from, p.to]));
+      const nodeSnapshots = [];
+      for (const nd of Object.values(S.graph.nodes)) {
+        if (!nd || !nd.data) continue;
+        const raw = JSON.stringify(nd.data);
+        if (pairs.some((p) => raw.includes(p.from))) {
+          nodeSnapshots.push({ id: nd.id, data: JSON.parse(raw) });
+        }
+      }
+      const subjectsSnap = loadSubjects();
+      const workflowsSnap = loadWorkflows();
+      pushHistory();
+      update((s) => {
+        for (const snap of nodeSnapshots) {
+          const nd = s.graph.nodes[snap.id];
+          if (nd) nd.data = remapAssetIdsDeep(snap.data, map);
+        }
+      });
+      saveSubjects(remapAssetIdsDeep(subjectsSnap, map));
+      saveWorkflows(remapAssetIdsDeep(workflowsSnap, map));
+      for (const p of pairs) await setAssetMergedInto(p.from, p.to);
+      update((s) => {
+        s.damUndo = { pairs, nodeSnapshots, subjects: subjectsSnap, workflows: workflowsSnap, at: Date.now() };
+        s.assetsTick++;
+      });
+      flushSave();
+      return { ok: true, pairs };
+    }
+    async function undoAssetMerge() {
+      const u = S.damUndo;
+      if (!u) return { ok: false, restored: 0 };
+      update((s) => {
+        for (const snap of (u.nodeSnapshots || [])) {
+          const nd = s.graph.nodes[snap.id];
+          if (nd) nd.data = JSON.parse(JSON.stringify(snap.data));
+        }
+        s.damUndo = null;
+        s.assetsTick++;
+      });
+      saveSubjects(u.subjects || []);
+      saveWorkflows(u.workflows || []);
+      for (const p of (u.pairs || [])) await setAssetMergedInto(p.from, null);
+      flushSave();
+      return { ok: true, restored: (u.pairs || []).length };
+    }
+
+    /** 极简 ZIP（method=0，UTF-8 文件名）。单包上限由调用方控制，避免一次吃爆内存。 */
+    function buildZipStore(files) {
+      const chunks = [];
+      const central = [];
+      let offset = 0;
+      const enc = new TextEncoder();
+      const w2 = (arr, v) => { arr.push(v & 0xff, (v >>> 8) & 0xff); };
+      const w4 = (arr, v) => { arr.push(v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff); };
+      for (const f of (files || [])) {
+        const name = enc.encode(String(f.name || 'file'));
+        const data = f.data instanceof Uint8Array ? f.data : new Uint8Array(f.data || []);
+        const crc = crc32Bytes(data);
+        const local = [];
+        w4(local, 0x04034b50); w2(local, 20); w2(local, 0x0800); w2(local, 0); w2(local, 0); w2(local, 0);
+        w4(local, crc); w4(local, data.length); w4(local, data.length); w2(local, name.length); w2(local, 0);
+        for (const b of name) local.push(b);
+        const localHdr = new Uint8Array(local);
+        chunks.push(localHdr, data);
+        const cen = [];
+        w4(cen, 0x02014b50); w2(cen, 20); w2(cen, 20); w2(cen, 0x0800); w2(cen, 0); w2(cen, 0); w2(cen, 0);
+        w4(cen, crc); w4(cen, data.length); w4(cen, data.length); w2(cen, name.length); w2(cen, 0); w2(cen, 0);
+        w2(cen, 0); w2(cen, 0); w4(cen, 0); w4(cen, offset);
+        for (const b of name) cen.push(b);
+        central.push(new Uint8Array(cen));
+        offset += localHdr.length + data.length;
+      }
+      const centralSize = central.reduce((a, c) => a + c.length, 0);
+      const end = [];
+      w4(end, 0x06054b50); w2(end, 0); w2(end, 0); w2(end, central.length); w2(end, central.length);
+      w4(end, centralSize); w4(end, offset); w2(end, 0);
+      return new Blob([...chunks, ...central, new Uint8Array(end)], { type: 'application/zip' });
+    }
 
     function useSkills() {
       const [data, setData] = useState(null);
@@ -21930,14 +25283,15 @@ const DIRECTOR_KEY_HELP = [
         hostRpc('llmOptions').then((r) => { if (ok) setOpts(r); }).catch((e) => { if (ok) setOpts({ providers: [], resolved: null, error: String((e && e.message) || e) }); });
         return () => { ok = false; };
       }, []);
-      const current = s.textLlm.provider ? (s.textLlm.provider + '|' + s.textLlm.model) : '';
+      const cur = s.textLlm || { provider: '', model: '' };
+      const current = cur.provider ? (cur.provider + '|' + cur.model) : '';
       const options = [];
       let firstError = (opts && opts.error) || '';
       for (const p of ((opts && opts.providers) || [])) {
         if (p.error && !(p.models || []).length) firstError = firstError || `${p.name}: ${p.error}`;
         for (const m of (p.models || [])) options.push({ value: p.id + '|' + m.id, label: `${p.name} · ${m.name}` });
       }
-      const applyTextLlm = (provider, model) => {
+      const applyLlm = (provider, model) => {
         // issue #6：基底现取磁盘最新（不再用挂载时快照整对象写回），写回后 setS 同步刷新本地快照
         const next = updateSettings((b) => ({ ...b, textLlm: { provider: provider || '', model: model || '' } }));
         setS(next);
@@ -21949,7 +25303,7 @@ const DIRECTOR_KEY_HELP = [
           disabled: !options.length,
           onChange: (e) => {
             const [provider, model] = e.target.value.split('|');
-            applyTextLlm(provider, model);
+            applyLlm(provider, model);
           },
           onPointerDown: (e) => e.stopPropagation(),
         },
@@ -21963,7 +25317,7 @@ const DIRECTOR_KEY_HELP = [
           placeholder: 'provider|model（手动覆盖）',
           onChange: (e) => {
             const [provider, model] = e.target.value.split('|');
-            applyTextLlm(provider, model);
+            applyLlm(provider, model);
           },
           onPointerDown: (e) => e.stopPropagation(),
         }),
@@ -22031,7 +25385,7 @@ const DIRECTOR_KEY_HELP = [
       const mutate = (fn) => { persist(updateSettings((b) => { const d = JSON.parse(JSON.stringify(b)); fn(d); return d; })); };
       const addProvider = () => {
         const id = uid('prov');
-        mutate((d) => { d[listKey] = (d[listKey] || []).concat([{ id, name: T(nameKey) + ' ' + ((d[listKey] || []).length + 1), [urlKey]: '', apiKey: '', ...(kind === 'tts' ? { timeoutMs: '' } : { extra: '' }), models: [], ...(kind === 'image' ? { mode: 'generations' } : {}) }]); });
+        mutate((d) => { d[listKey] = (d[listKey] || []).concat([{ id, name: T(nameKey) + ' ' + ((d[listKey] || []).length + 1), [urlKey]: '', apiKey: '', ...(kind === 'tts' ? { timeoutMs: '', protocol: 'openai' } : { extra: '' }), models: [], ...(kind === 'image' ? { mode: 'generations' } : {}) }]); });
         setOpenId(id);
       };
       const removeProvider = (id) => {
@@ -22084,6 +25438,31 @@ const DIRECTOR_KEY_HELP = [
               ) : null,
               h(Field, { key: 'u', label: T('baseUrl'), value: p[urlKey] || '', onChange: (v) => patchProvider(p.id, urlKey, v), placeholder: kind === 'video' ? ((VIDEO_VENDORS[detectVideoVendor(p)] || {}).base || urlPh) : urlPh }),
               h(Field, { key: 'k', label: T('apiKey'), value: p.apiKey || '', onChange: (v) => patchProvider(p.id, 'apiKey', v), placeholder: kind === 'video' ? ((VIDEO_VENDORS[detectVideoVendor(p)] || {}).keyPh || 'sk-…') : 'sk-…', password: true }),
+              kind === 'tts' ? h('div', { key: 'proto', className: 'dshic-field' },
+                h('div', { className: 'dshic-row' },
+                  h('span', { className: 'dshic-field-label', style: { flex: 1 } }, T('ttsProtocol')),
+                  InfoTip(T('ttsProtocolHint'))),
+                h('select', {
+                  className: 'dshic-select', value: p.protocol || 'openai',
+                  onPointerDown: (e) => e.stopPropagation(),
+                  onChange: (e) => {
+                    const v = e.target.value;
+                    patchProvider(p.id, 'protocol', v);
+                    if (v === 'lk888' && !p[urlKey]) patchProvider(p.id, urlKey, 'https://api.lk888.ai');
+                  },
+                },
+                  h('option', { value: 'openai' }, T('ttsProtocolOpenai')),
+                  h('option', { value: 'lk888' }, T('ttsProtocolLk888'))),
+                (p.protocol === 'lk888') ? h('button', {
+                  type: 'button', className: 'dshic-mini', style: { alignSelf: 'flex-start', marginTop: 4 },
+                  onPointerDown: (e) => e.stopPropagation(),
+                  onClick: () => mutate((d) => {
+                    const pr = (d[listKey] || []).find((x) => x.id === p.id); if (!pr) return;
+                    pr.baseUrl = pr.baseUrl || 'https://api.lk888.ai';
+                    pr.models = pr.models || [];
+                    if (!pr.models.some((m) => String(m.model || '').trim() === 'doubao-tts-2.0')) pr.models.push({ id: uid('m'), model: 'doubao-tts-2.0', voice: 'zh_female_vv_uranus_bigtts' });
+                  }),
+                }, T('ttsPresetLk888')) : null) : null,
               kind === 'tts' ? h(Field, {
                 key: 'to', label: T('apiTimeout'), value: p.timeoutMs || '',
                 placeholder: '留空 = 120000',
@@ -22120,7 +25499,7 @@ const DIRECTOR_KEY_HELP = [
                 }, s[starKey] === p.id + '|' + m.id ? '★' : '☆'),
                 h('input', { className: 'dshic-input', style: { flex: 1, minWidth: 0 }, value: m.model || '', placeholder: T('modelNamePh'), onChange: (e) => patchModel(p.id, m.id, 'model', e.target.value), onPointerDown: (e) => e.stopPropagation() }),
                 // TTS：voice 每模型一个（修复旧 ApiListEditor「voice 无编辑入口」的原始缺口）
-                kind === 'tts' ? h('input', { className: 'dshic-input', style: { flex: 1, minWidth: 0 }, value: m.voice || '', placeholder: 'alloy', 'aria-label': T('voice'), onChange: (e) => patchModel(p.id, m.id, 'voice', e.target.value), onPointerDown: (e) => e.stopPropagation() }) : null,
+                kind === 'tts' ? h('input', { className: 'dshic-input', style: { flex: 1, minWidth: 0 }, value: m.voice || '', placeholder: (p.protocol === 'lk888' ? 'zh_female_vv_uranus_bigtts' : 'alloy'), 'aria-label': T('voice'), onChange: (e) => patchModel(p.id, m.id, 'voice', e.target.value), onPointerDown: (e) => e.stopPropagation() }) : null,
                 h('button', { type: 'button', className: 'dshic-iconbtn', title: T('doDelete'), onPointerDown: (e) => e.stopPropagation(), onClick: () => removeModel(p.id, m.id) }, '×'),
               )),
               !(p.models || []).length ? h('div', { className: 'dshic-hint' }, T('noModelsCfg')) : null,
@@ -22472,16 +25851,12 @@ const DIRECTOR_KEY_HELP = [
       );
     }
     /** 图片模型桥接卡（0.20.0）：检测 dsh-image-gen 并直接选用它的服务商/模型（密钥留在它宿主侧）。 */
-    /** 自动创作卡（实验）：开关 + 状态 + 快捷动作区。对话仍是主入口（canvas_auto_* 工具带完整上下文），
-     *  此卡提供与对话同 RPC 的快捷操作，不切对话也能：启动创作（brief）→ 刷新预算（autoQuote）→
-     *  批准付费（行内确认，quoteId+confirm）→ 开始生成（全量；部分选场是 T9 对话侧能力，卡片不放）→ 中止。
-     *  批准令牌语义：quoteId 用卡片最近一次 autoQuote 返回值（不自动重刷——预算指纹绑定，卡片刷新的即当前指纹）。
-     *  纪律：不新增轮询、不新增 RPC；单一 busy 防重入（动作互斥，避免并发计费操作）；错误 catch 接住显示卡内。 */
+    /** 自动创作卡（设置页）：只有开关与状态。动作/预算/进度统一在「创作台」——
+     *  左侧图标栏进入（ProductionConsole），对话工具 canvas_auto_* 仍是主入口；
+     *  设置页按产品要求不放任何动作（不新增 RPC、不轮询）。 */
+    const AUTO_LIVE = { running: false };   // 供图标栏运行点（尽力而为：随最近一次 autoStatus 刷新/动作更新）
     function AutoModeCard() {
       const [st, setSt] = useState(null);
-      // 动作区状态（一个对象收口）：brief 输入 / 最近预算单 quote（quoteId+摘要）/ 行内确认开合与文本 /
-      // busy（在跑的动作名，防重入）/ msg 成功小字 / err 错误小字
-      const [act, setAct] = useState(() => ({ brief: '', confirm: '', quote: null, confirmOpen: false, busy: null, msg: '', err: '' }));
       const refresh = async () => {
         try {
           const r = await hostRpc('autoModeGet');
@@ -22501,54 +25876,6 @@ const DIRECTOR_KEY_HELP = [
           setSt({ ...st, busy: false });
         }
       };
-      const pid = S.activeId || '';
-      const multiAgent = !!(st && st.caps && st.caps.multiAgent);
-      const actionsOn = !!(st && !st.oldHost && st.enabled && multiAgent);
-      // 动作通用壳：结果 {ok:false,error} 视为业务失败，与网络异常同样接住显示在卡内
-      const runAction = async (key, fn, okMsgOf) => {
-        if (!pid || act.busy) return;
-        setAct((a) => ({ ...a, busy: key, err: '', msg: '' }));
-        try {
-          const r = await fn();
-          if (r && r.ok === false) throw new Error(r.error || T('autoFail'));
-          setAct((a) => ({ ...a, busy: null, msg: okMsgOf ? okMsgOf(r) : T('autoDone'), err: '' }));
-          refresh();
-        } catch (e) {
-          setAct((a) => ({ ...a, busy: null, err: String((e && e.message) || e) || T('autoFail') }));
-        }
-      };
-      // 预算小字：场/镜/秒/待调用次数 + 估算金额或单价引导（T9 锚点「视频每秒单价」）
-      const quoteLine = (r) => T('autoQuoteSummary').replace('{s}', String(r.sceneCount || 0)).replace('{sh}', String(r.shotCount || 0))
-        .replace('{sec}', String(r.totalSeconds || 0)).replace('{calls}', String(r.videoCalls || 0))
-        + ' · ' + (r.estimatedCost != null
-          ? T('autoQuoteCost').replace('{cost}', String(r.estimatedCost))
-          : T('autoQuoteNoPrice'));
-      const doQuote = () => runAction('quote', async () => {
-        const r = await hostRpc('autoQuote', { projectId: pid });
-        if (r && r.ok !== false && r.quoteId) {
-          // 批准令牌只信这次刷新返回的 quoteId（指纹绑定）；旧的行内确认随之作废收起
-          setAct((a) => ({ ...a, quote: { quoteId: r.quoteId, summary: quoteLine(r) }, confirmOpen: false, confirm: '' }));
-        }
-        return r;
-      });
-      const doStart = () => {
-        const brief = act.brief.trim();
-        if (!brief) return;
-        runAction('start', () => hostRpc('autoStart', { projectId: pid, brief }), (r) => (r && r.note) || T('autoDone'));
-      };
-      const doApprove = () => {
-        if (!act.quote) return;
-        const words = act.confirm.trim();
-        if (!words) { setAct((a) => ({ ...a, err: T('autoApproveNeedConfirm') })); return; }
-        runAction('approve', () => hostRpc('autoApprove', { projectId: pid, quoteId: act.quote.quoteId, confirm: words }),
-          (r) => T('autoApproved').replace('{calls}', String((r && r.videoCalls) || '')));
-      };
-      const doGenerate = () => runAction('generate', () => hostRpc('autoGenerate', { projectId: pid }), (r) => (r && r.note) || T('autoDone'));
-      const doAbort = () => runAction('abort', () => hostRpc('autoAbort', { projectId: pid }), () => T('autoAborted'));
-      const miniBtn = (role, label, onClick, disabled, extra) => h('button', Object.assign({
-        type: 'button', className: 'dshic-mini', 'data-role': role, disabled: !!disabled || !!act.busy,
-        onPointerDown: (e) => e.stopPropagation(), onClick,
-      }, extra || {}), label);
       const lines = [];
       if (!st) lines.push(T('storageLoading'));
       else if (st.oldHost) lines.push(T('autoOldHost'));
@@ -22568,37 +25895,232 @@ const DIRECTOR_KEY_HELP = [
             : null,
         ),
         h('div', { className: 'dshic-hint', style: { marginTop: 4 }, 'data-role': 'auto-mode-status' }, lines.join(' · ')),
-        actionsOn ? h('div', { 'data-role': 'auto-actions', style: { marginTop: 6 } },
-          // 启动创作：brief 输入（为空禁用）+ 按钮
-          h('textarea', {
-            className: 'dshic-input', 'data-role': 'auto-brief-input', rows: 1, value: act.brief,
-            placeholder: T('autoBriefPh'), style: { width: '100%', fontSize: 11, resize: 'vertical', marginBottom: 4 },
-            onPointerDown: (e) => e.stopPropagation(), onChange: (e) => setAct((a) => ({ ...a, brief: e.target.value })),
+        h('div', { className: 'dshic-hint', style: { marginTop: 4 } }, T('autoEntryHint')),
+      );
+    }
+
+    // ============================================================
+    // 创作台：自动创作 + 批量执行 统一面板（左侧图标栏进入；批量菜单直达批量页）
+    //   纪律沿用 T12：批准令牌只信显式「刷新预算」返回的 quoteId（不自动重刷）；
+    //   单一 busy 防重入；确认原话必填。轮询只在面板打开且自动任务在跑时进行。
+    //   预算单价在对话里设置（canvas_production_set_price）；面板只读展示。
+    // ============================================================
+    /** 运行阶段文案：boards 2/3、video 1/4、参考图 1/3 等保留后缀，只翻译前缀。 */
+    function autoPhaseLabel(p) {
+      if (!p) return '';
+      const head = String(p).split(/\s+/)[0];
+      const rest = String(p).slice(head.length);
+      const zh = { research: '调研', pitch: '提案', critique: '互评', decide: '决策', writeback: '落盘', script: '剧本', boards: '分镜', budget: '预算单', video: '生成视频', '参考图': '参考图', done: '完成', aborted: '已中止', failed: '失败' };
+      const en = { research: 'Research', pitch: 'Pitch', critique: 'Critique', decide: 'Decide', writeback: 'Write-back', script: 'Script', boards: 'Boards', budget: 'Budget', video: 'Video', '参考图': 'Refs', done: 'Done', aborted: 'Aborted', failed: 'Failed' };
+      const dict = effLang() === 'en' ? en : zh;
+      const label = dict[head] || dict[head.toLowerCase()] || head;
+      return rest ? label + rest : label;
+    }
+    /** 自动创作页：brief/状态/预算单（分场勾选）/批准/生成/中止。 */
+    function AutoStudioPanel(props) {
+      const onPrice = props && typeof props.onPrice === 'function' ? props.onPrice : null;
+      const pid = S.activeId || '';
+      const [st, setSt] = useState(null);
+      const stRef = useRef(null);
+      stRef.current = st;   // 与 actRef 同步：动作闭包始终读到最新状态（测试注入态也生效）
+      const [act, setAct] = useState(() => ({ brief: '', confirm: '', pin: null, sel: null, confirmOpen: false, busy: null, msg: '', err: '' }));
+      const actRef = useRef(act);
+      actRef.current = act;
+      const aliveRef = useRef(true);
+      useEffect(() => () => { aliveRef.current = false; }, []);
+      const applyStatus = (r) => {
+        if (!aliveRef.current) return;
+        stRef.current = r;
+        setSt(r);
+        AUTO_LIVE.running = !!(r && r.run && (r.run.status === 'running' || r.run.paid === 'running' || r.run.paid === 'aborting'));
+      };
+      const refresh = async () => {
+        if (!pid) { applyStatus({ ok: true, enabled: false, caps: null, noProject: true }); return; }
+        try {
+          const r = await hostRpc('autoStatus', { projectId: pid });
+          applyStatus(r);
+        } catch {
+          applyStatus({ ok: true, enabled: false, caps: null, oldHost: true });
+        }
+      };
+      useEffect(() => { refresh(); }, [pid]);
+      // 轮询：仅自动任务在跑 / 动作在飞时每 2s 一次；面板卸载即停
+      useEffect(() => {
+        const timer = setInterval(() => {
+          const r = stRef.current;
+          const running = !!(r && r.run && (r.run.status === 'running' || r.run.paid === 'running' || r.run.paid === 'aborting'));
+          if (running || actRef.current.busy) refresh();
+        }, 2000);
+        return () => clearInterval(timer);
+      }, []);
+      const runAction = async (key, fn, okMsgOf) => {
+        if (!pid || actRef.current.busy) return;
+        setAct((a) => ({ ...a, busy: key, err: '', msg: '' }));
+        try {
+          const r = await fn();
+          if (r && r.ok === false) throw new Error(r.error || T('autoFail'));
+          setAct((a) => ({ ...a, busy: null, msg: okMsgOf ? okMsgOf(r) : T('autoDone'), err: '' }));
+          refresh();
+        } catch (e) {
+          setAct((a) => ({ ...a, busy: null, err: String((e && e.message) || e) || T('autoFail') }));
+        }
+      };
+      const quoteLine = (r) => T('autoQuoteSummary').replace('{s}', String(r.sceneCount || 0)).replace('{sh}', String(r.shotCount || 0))
+        .replace('{sec}', String(r.totalSeconds || 0)).replace('{calls}', String(r.videoCalls || 0))
+        + ' · ' + (r.estimatedCost != null
+          ? T('autoQuoteCost').replace('{cost}', String(r.estimatedCost))
+          : T('autoQuoteNoPrice'));
+      const doStart = () => {
+        const brief = act.brief.trim();
+        if (!brief) return;
+        runAction('start', () => hostRpc('autoStart', { projectId: pid, brief }), (r) => (r && r.note) || T('autoDone'));
+      };
+      const doQuote = () => runAction('quote', async () => {
+        const r = await hostRpc('autoQuote', { projectId: pid });
+        if (r && r.ok !== false && r.quoteId) {
+          // 批准令牌只信这次刷新返回的 quoteId（指纹绑定）；选场与行内确认随之重置
+          setAct((a) => ({ ...a, pin: { quoteId: r.quoteId }, sel: null, confirmOpen: false, confirm: '' }));
+          if (typeof onPrice === 'function' && r.unitPricePerSecond != null) onPrice(Number(r.unitPricePerSecond) || 0);
+        }
+        return r;
+      });
+      const doApprove = () => {
+        if (!act.pin) return;
+        const words = act.confirm.trim();
+        if (!words) { setAct((a) => ({ ...a, err: T('autoApproveNeedConfirm') })); return; }
+        runAction('approve', () => hostRpc('autoApprove', { projectId: pid, quoteId: act.pin.quoteId, confirm: words }),
+          (r) => T('autoApproved').replace('{calls}', String((r && r.videoCalls) || '')));
+      };
+      const doGenerate = () => runAction('generate', () => {
+        const args = { projectId: pid };
+        const q = stRef.current && stRef.current.quote;
+        // 选场执行：部分选中才传 scenes（Host 校验 1-based 场号）；全量不传（行为与旧卡片一致）
+        if (act.sel && q && act.sel.length && act.sel.length < q.sceneCount) args.scenes = act.sel.slice().sort((x, y) => x - y);
+        return hostRpc('autoGenerate', args);
+      }, (r) => (r && r.note) || T('autoDone'));
+      const doAbort = () => runAction('abort', () => hostRpc('autoAbort', { projectId: pid }), () => T('autoAborted'));
+      const miniBtn = (role, label, onClick, disabled, extra) => h('button', Object.assign({
+        type: 'button', className: 'dshic-mini', 'data-role': role, disabled: !!disabled || !!act.busy,
+        onPointerDown: (e) => e.stopPropagation(), onClick,
+      }, extra || {}), label);
+      // —— 渲染态 ——
+      if (!st) return h('div', { className: 'dshic-console-loading', 'data-role': 'auto-loading' }, T('storageLoading'));
+      if (st.oldHost) return h('div', { className: 'dshic-console-hint' }, T('autoOldHost'));
+      if (st.noProject) return h('div', { className: 'dshic-console-hint' }, T('autoNoProject'));
+      if (!st.enabled) return h('div', { className: 'dshic-console-hint' }, T('autoClosedHint'));
+      if (!(st.caps && st.caps.multiAgent)) return h('div', { className: 'dshic-console-hint' }, T('autoCapsNo'));
+      const run = st.run || null;
+      const quote = st.quote || null;
+      const price = quote ? quote.unitPricePerSecond : null;
+      const approval = st.approval || null;
+      const running = !!(run && (run.status === 'running' || run.paid === 'running' || run.paid === 'aborting'));
+      const stale = !!(act.pin && quote && quote.quoteId !== act.pin.quoteId);
+      const selHas = (no) => !act.sel || act.sel.includes(no);
+      const selSeconds = quote
+        ? Math.round((quote.scenes || []).filter((s) => selHas(s.scene)).reduce((a, s) => a + (Number(s.seconds) || 0), 0) * 10) / 10
+        : 0;
+      const selCost = price != null && price > 0 ? Math.round(price * selSeconds * 100) / 100 : null;
+      const sceneRow = (s) => h('label', { key: s.scene, className: 'dshic-quote-row' },
+        h('input', { type: 'checkbox', checked: selHas(s.scene), disabled: !!act.busy,
+          onChange: () => setAct((a) => {
+            const all = ((stRef.current && stRef.current.quote && stRef.current.quote.scenes) || []).map((x) => x.scene);
+            const cur = a.sel ? a.sel.slice() : all.slice();
+            const i = cur.indexOf(s.scene);
+            if (i >= 0) cur.splice(i, 1); else cur.push(s.scene);
+            cur.sort((x, y) => x - y);
+            return { ...a, sel: cur.length === all.length ? null : cur };
           }),
-          h('div', { className: 'dshic-row', style: { gap: 6, flexWrap: 'wrap' } },
-            miniBtn('auto-start-btn', T('autoStartBtn'), doStart, !act.brief.trim() || !pid),
-            miniBtn('auto-quote-btn', T('autoQuoteBtn'), doQuote, !pid),
-            miniBtn('auto-approve-btn', T('autoApproveBtn'),
-              () => setAct((a) => ({ ...a, confirmOpen: !a.confirmOpen, err: '', msg: '' })),
-              !act.quote || !pid, { title: act.quote ? '' : T('autoNeedQuote') }),
-            miniBtn('auto-generate-btn', T('autoGenerateBtn'), doGenerate, !pid),
-            miniBtn('auto-abort-btn', T('autoAbortBtn'), doAbort, !pid),
-          ),
-          // 最近一次刷新的预算单（批准令牌来源）+ 行内确认输入（confirm 用户原话）
-          act.quote ? h('div', { className: 'dshic-hint', 'data-role': 'auto-quote-line', style: { marginTop: 4 } }, act.quote.summary) : null,
-          act.quote && act.confirmOpen ? h('div', { className: 'dshic-row', style: { gap: 6, marginTop: 4 } },
-            h('input', {
-              className: 'dshic-input', 'data-role': 'auto-confirm-input', value: act.confirm,
-              placeholder: T('autoApprovePh'), style: { flex: 1, minWidth: 0, fontSize: 11 },
-              onPointerDown: (e) => e.stopPropagation(),
-              onChange: (e) => setAct((a) => ({ ...a, confirm: e.target.value })),
-              onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); doApprove(); } },
-            }),
-            miniBtn('auto-confirm-submit', T('autoApproveSubmit'), doApprove, !act.confirm.trim()),
-          ) : null,
-          act.msg ? h('div', { className: 'dshic-hint', 'data-role': 'auto-act-msg', style: { marginTop: 4 } }, act.msg) : null,
-          act.err ? h('div', { className: 'dshic-err', 'data-role': 'auto-act-err', style: { marginTop: 4 } }, act.err) : null,
+          onPointerDown: (e) => e.stopPropagation() }),
+        h('span', { className: 'dshic-quote-name', title: String(s.name || '') }, '场' + s.scene + ' ' + String(s.name || '')),
+        h('span', { className: 'dshic-quote-meta' }, s.hasVideo ? T('autoHasVideo') : (s.shots + '镜 ' + s.seconds + 's · ' + s.videoCalls + '次')),
+        h('span', { className: 'dshic-quote-cost' }, price != null && price > 0 && !s.hasVideo ? '¥' + (Math.round(price * s.seconds * 100) / 100) : '—'));
+      const runStateText = run
+        ? (run.status === 'running' ? T('autoStRunning') : autoPhaseLabel(run.status))
+          + (run.phase ? ' · ' + autoPhaseLabel(run.phase) : '')
+        : T('autoIdle');
+      return h('div', { className: 'dshic-autostudio', 'data-role': 'auto-studio' },
+        // 一句话创意 + 启动
+        h('textarea', {
+          className: 'dshic-input', 'data-role': 'auto-brief-input', rows: 1, value: act.brief,
+          placeholder: T('autoBriefPh'), style: { width: '100%', fontSize: 11, resize: 'vertical' },
+          onPointerDown: (e) => e.stopPropagation(), onChange: (e) => setAct((a) => ({ ...a, brief: e.target.value })),
+        }),
+        // 状态条：运行状态 + 阶段 + 最近日志
+        h('div', { className: 'dshic-auto-status', 'data-role': 'auto-status' },
+          h('span', { className: cls('dshic-auto-dot', running && 'is-run') }),
+          h('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, runStateText),
+          approval && approval.valid ? h('span', { className: 'dshic-tag st', 'data-role': 'auto-approval-ok' }, T('autoApprovalValid')) : null,
+        ),
+        run && (run.log || []).length
+          ? h('div', { className: 'dshic-hint', 'data-role': 'auto-log', style: { marginTop: 3 } }, run.log.slice(-2).map((l) => l.summary).join(' / '))
+          : null,
+        run && run.error ? h('div', { className: 'dshic-err', style: { marginTop: 3 } }, run.error) : null,
+        // 预算单：摘要 + 分场勾选 + 选中合计 + 过期警告
+        quote ? h('div', { className: 'dshic-quote', 'data-role': 'auto-quote' },
+          h('div', { className: 'dshic-hint', 'data-role': 'auto-quote-line' }, quoteLine(quote)),
+          (quote.scenes || []).map(sceneRow),
+          h('div', { className: 'dshic-hint', 'data-role': 'auto-quote-sel' },
+            (act.sel ? T('autoSelScenes').replace('{n}', String(act.sel.length)) : T('autoAllScenes'))
+            + ' · ' + (selCost != null ? T('autoQuoteCost').replace('{cost}', String(selCost)) : T('autoQuoteNoPrice'))),
+          stale ? h('div', { className: 'dshic-err', 'data-role': 'auto-quote-stale' }, T('autoStale')) : null,
+          h('div', { className: 'dshic-hint' }, T('autoScopeHint')),
+        ) : h('div', { className: 'dshic-console-hint', 'data-role': 'auto-no-quote' }, T('autoNoQuoteHint')),
+        // 动作区：预算/批准/生成/中止（批准令牌绑定 pin；过期禁用）
+        h('div', { className: 'dshic-row', style: { gap: 6, flexWrap: 'wrap', marginTop: 6 }, 'data-role': 'auto-actions' },
+          miniBtn('auto-start-btn', T('autoStartBtn'), doStart, !act.brief.trim() || !pid),
+          miniBtn('auto-quote-btn', T('autoQuoteBtn'), doQuote, !pid),
+          miniBtn('auto-approve-btn', T('autoApproveBtn'),
+            () => setAct((a) => ({ ...a, confirmOpen: !a.confirmOpen, err: '', msg: '' })),
+            !act.pin || stale || !pid, { title: stale ? T('autoStale') : (act.pin ? '' : T('autoNeedQuote')) }),
+          miniBtn('auto-generate-btn', T('autoGenerateBtn'), doGenerate, !pid || (!!act.sel && !act.sel.length)),
+          miniBtn('auto-abort-btn', T('autoAbortBtn'), doAbort, !pid || !running),
+        ),
+        act.pin && act.confirmOpen ? h('div', { className: 'dshic-row', style: { gap: 6, marginTop: 4 } },
+          h('input', {
+            className: 'dshic-input', 'data-role': 'auto-confirm-input', value: act.confirm,
+            placeholder: T('autoApprovePh'), style: { flex: 1, minWidth: 0, fontSize: 11 },
+            onPointerDown: (e) => e.stopPropagation(),
+            onChange: (e) => setAct((a) => ({ ...a, confirm: e.target.value })),
+            onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); doApprove(); } },
+          }),
+          miniBtn('auto-confirm-submit', T('autoApproveSubmit'), doApprove, !act.confirm.trim()),
         ) : null,
+        act.msg ? h('div', { className: 'dshic-hint', 'data-role': 'auto-act-msg', style: { marginTop: 4 } }, act.msg) : null,
+        act.err ? h('div', { className: 'dshic-err', 'data-role': 'auto-act-err', style: { marginTop: 4 } }, act.err) : null,
+      );
+    }
+    /** 创作台外壳：页签（自动创作/批量执行）+ 关闭；单价只读（对话里设置）。 */
+    function ProductionConsole() {
+      const open = S.consoleOpen;
+      const [price, setPrice] = useState(null);
+      useEffect(() => {
+        if (!open) return undefined;
+        let ok = true;
+        hostRpc('productionPrice', {}).then((r) => { if (ok) setPrice(Number(r && r.price) || 0); }).catch(() => { /* 读不到就不显示 */ });
+        return () => { ok = false; };
+      }, [open]);
+      if (!open) return null;
+      const tab = S.consoleTab === 'batch' ? 'batch' : 'auto';
+      const tabBtn = (key, label, icon) => h('button', {
+        type: 'button', className: cls('dshic-console-tab', tab === key && 'is-active'), 'data-action': 'console-tab-' + key,
+        onClick: () => update((s) => { s.consoleTab = key; }), onPointerDown: (e) => e.stopPropagation(),
+      }, Ic(icon, 12), ' ' + label);
+      return h('div', { className: 'dshic-console', 'data-role': 'prod-console' },
+        h('div', { className: 'dshic-batch-head' },
+          Ic('spark', 14),
+          h('span', null, T('consoleTitle')),
+          h('div', { className: 'dshic-flex' }),
+          h('button', { type: 'button', className: 'dshic-node-x', title: T('batchClose'), 'data-action': 'console-close', onClick: closeProdConsole }, '✕')),
+        h('div', { className: 'dshic-console-tabs', 'data-role': 'console-tabs' },
+          tabBtn('auto', T('consoleTabAuto'), 'spark'),
+          tabBtn('batch', T('consoleTabBatch'), 'play')),
+        h('div', { className: 'dshic-console-body' },
+          tab === 'auto' ? h(AutoStudioPanel, { onPrice: setPrice }) : h(BatchRunPanel)),
+        h('div', { className: 'dshic-console-price', 'data-role': 'console-price' },
+          Ic('spark', 12),
+          h('span', null, price > 0
+            ? T('consolePriceSet').replace('{price}', String(price))
+            : T('consolePriceNone'))),
       );
     }
 
@@ -22919,7 +26441,29 @@ const DIRECTOR_KEY_HELP = [
     function BibleTab() {
       const [bible, setBible] = useState(() => loadBible(S.activeId));
       const [busy, setBusy] = useState(false);
+      const [libTick, setLibTick] = useState(0);
       useEffect(() => { setBible(loadBible(S.activeId)); }, [S.activeId, S.assetsTick]);
+      const inLib = (name) => {
+        const q = String(name || '').trim();
+        return !!q && loadSubjects().some((s) => s.name === q);
+      };
+      /** 设定集角色 → 跨项目角色库：参考图复制到通用项目，库与设定集各自保留。 */
+      const saveToLib = async (item) => {
+        const name = String((item && item.name) || '').trim();
+        if (!name) return;
+        try {
+          const existing = loadSubjects().find((s) => s.name === name);
+          const copied = existing ? existing.assetIds : await copySubjectAssetsToGeneral(item.assetIds || []);
+          upsertSubject({
+            ...(existing || {}), id: existing ? existing.id : '', name,
+            desc: (existing && existing.desc) || item.desc || '',
+            assetIds: [...new Set([...(existing ? existing.assetIds : []), ...copied])].slice(0, 16),
+          });
+          setLibTick((x) => x + 1);
+          toast(T('bibleLibSaved').replace('{name}', name));
+        } catch (e) { toast(String((e && e.message) || e)); }
+      };
+      void libTick;
       // persist：本地保存 + 推送防抖 + bibleTick 自增（分镜详情监听它自动重算一致性告警——
       // 宿主侧重算只写 Host 文档，客户端本地节点的旧告警必须靠这条信号自己刷新）
       const persist = (next) => { setBible(next); saveBible(S.activeId, next); update((s) => { s.bibleTick++; }); };
@@ -22961,6 +26505,14 @@ const DIRECTOR_KEY_HELP = [
               onPointerDown: (e) => e.stopPropagation(),
               onClick: () => setLinkFor({ key, index: i, entry: item }),
             }, Ic('image', 11), (item.assetIds || []).length ? ' ' + item.assetIds.length : ''),
+            key === 'characters'
+              ? h('button', {
+                  type: 'button', className: cls('dshic-mini', inLib(item.name) && 'is-active'),
+                  title: inLib(item.name) ? T('bibleInLib') : T('bibleSaveToLib'),
+                  onPointerDown: (e) => e.stopPropagation(),
+                  onClick: () => saveToLib(item),
+                }, Ic('users', 11), inLib(item.name) ? T('bibleInLib') : T('bibleSaveToLib'))
+              : null,
             h('input', {
               className: 'dshic-input', style: { flex: 1, minWidth: 0 }, value: item.desc || '',
               placeholder: T('bibleDescPh'),
@@ -23556,6 +27108,61 @@ const DIRECTOR_KEY_HELP = [
       }
     }
 
+    /** 批量执行台：数量/秒数/金额预检 → 队列进度 → 停止/重试。 */
+    /** 批量执行页（创作台页签）：队列/并发/估算。外壳（标题/页签/关闭）由 ProductionConsole 提供。 */
+    function BatchRunPanel() {
+      const b = S.batch;
+      if (!b) return h('div', { className: 'dshic-console-hint', 'data-role': 'batch-empty' }, T('batchEmptyHint'));
+      const price = Number(b.price) || 0;
+      const videoN = b.items.filter((it) => it.secs > 0).length;
+      const cost = price > 0 && b.videoSecs > 0 ? Math.round(price * b.videoSecs * 100) / 100 : null;
+      const missing = b.items.filter((it) => {
+        const n = S.graph.nodes[it.id];
+        return n && (n.type === 'image' || n.type === 'video') && !String((n.data && n.data.prompt) || '').trim();
+      }).length;
+      const remaining = b.items.filter((it) => it.status === 'queued' || it.status === 'error' || it.status === 'stopped').length;
+      const stLabel = {
+        queued: T('batchQueued'), running: T('batchRunning'), done: T('batchDone'),
+        error: T('batchFailed'), stopped: T('batchStopped'), skipped: T('batchSkipped'),
+      };
+      const summary = T('batchSummary')
+        .replace('{n}', String(b.items.length)).replace('{v}', String(videoN)).replace('{s}', String(Math.round(b.videoSecs)));
+      return h('div', { className: 'dshic-batch', 'data-role': 'batch-console' },
+        h('div', { className: 'dshic-batch-summary' },
+          h('div', {}, summary),
+          b.videoSecs > 0
+            ? h('div', {}, cost != null
+                ? T('batchCost').replace('{cost}', String(cost)).replace('{price}', String(price))
+                : T('batchNoPrice'))
+            : null,
+          missing > 0 ? h('div', { style: { color: 'var(--dsw-alias-state-warning-primary)' } }, T('batchMissingPrompt').replace('{n}', String(missing))) : null),
+        h('div', { className: 'dshic-batch-list', 'data-role': 'batch-list' },
+          b.items.map((it) => h('button', {
+            key: it.id, type: 'button', className: 'dshic-batch-item', 'data-st': it.status,
+            title: T('batchJumpHint'), onClick: () => focusBatchItem(it.id),
+          },
+            h('span', { className: 'dshic-batch-dot' }),
+            h('span', { className: 'dshic-batch-name' },
+              h('span', { style: { display: 'block', overflow: 'hidden', textOverflow: 'ellipsis' } }, it.name),
+              it.error ? h('span', { className: 'dshic-batch-err', title: it.error }, it.error) : null),
+            h('span', { className: 'dshic-batch-st' }, stLabel[it.status] || it.status)))),
+        h('div', { className: 'dshic-batch-hint' }, T('batchQuoteHint')),
+        h('div', { className: 'dshic-batch-foot' },
+          h('span', { style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)' } }, T('batchConcurrency')),
+          h('select', {
+            className: 'dshic-msel', value: String(b.concurrency), disabled: b.running, style: { width: 56 },
+            onChange: (e) => update((s) => { if (s.batch) s.batch.concurrency = clamp(Number(e.target.value) || 1, 1, 3); }),
+            onPointerDown: (e) => e.stopPropagation(),
+          }, [1, 2, 3].map((v) => h('option', { key: v, value: String(v) }, String(v)))),
+          h('div', { className: 'dshic-flex' }),
+          b.running
+            ? h('button', { type: 'button', className: 'dshic-btn is-danger', 'data-action': 'batch-stop', onClick: stopBatchQueue }, T('batchStop'))
+            : h('button', {
+                type: 'button', className: 'dshic-btn dshic-primary', 'data-action': 'batch-start',
+                disabled: !remaining, onClick: startBatchQueue,
+              }, T('batchStart') + (remaining ? '（' + remaining + '）' : ''))));
+    }
+
     function CanvasPage() {
       useApp();
       const rootRef = useRef(null);
@@ -23669,8 +27276,7 @@ const DIRECTOR_KEY_HELP = [
           : null,
         h(Toolbar),
         h('div', { className: 'dshic-main' },
-          h(IconRail),
-          h('div', {
+          h(IconRail),          h('div', {
             ref: rootRef,
             className: 'dshic-canvas',
             onPointerDown: onCanvasPointerDown,
@@ -23715,9 +27321,11 @@ const DIRECTOR_KEY_HELP = [
         ),
         h(StudioModal),          // 资产 + 设定集统一弹窗（单例；S.panelModal 控制）
         h(StoryboardEditor),     // 分镜表编辑器（全屏浮层；S.storyboardEditId 控制）
+        h(BoxHome),              // 3D-BOX 库（一句话新建 + 我的 3D-BOX）
         h(DirectorStage),        // 3D 导演台（全屏浮层；左侧图标列入口，S.directorOpen 控制）
         h(ProjectNameDialog),    // 新建 / 重命名项目（空名校验）
         S.menu ? h(ContextMenu, { menu: S.menu }) : null,
+        h(ProductionConsole),
         S.lightbox ? h(Lightbox) : null,
         S.supportOpen ? h(SupportDialog) : null,
         S.skillPalette ? h(SkillPalette) : null,
@@ -24548,10 +28156,12 @@ const DIRECTOR_KEY_HELP = [
         if (typeof window !== 'undefined' && window.__DSH_IC_SMOKE__) {
           window.__DSH_IC_TABS__ = {
             ProjectsTab, AssetsTab, BibleTab, SettingsTab, DataRootCard, CanvasPage, ShortcutsPanel, CanvasHostedApp, SkillPalette,
-            // 自动创作卡（0.20.2 T12）：快捷动作区（启动/预算/批准/生成/中止）——供 test-panel-layout 直渲染与断言
+            // 自动创作卡（0.20.2 T12）：设置页只剩开关；动作区已迁入创作台（ProductionConsole/AutoStudioPanel）
             AutoModeCard,
+            // 创作台（自动创作 + 批量执行统一面板）：供 test-panel-layout 直渲染与断言
+            ProductionConsole, AutoStudioPanel, BatchRunPanel,
             // 面板结构重构（左侧图标列 / 顶部工具栏 / 右侧面板 / 统一弹窗）
-            Toolbar, Rightbar, IconRail, StudioModal, ProjectNameDialog,
+            Toolbar, Rightbar, IconRail, StudioModal, ProjectNameDialog, BoxHome,
             // 技能页（四层图标瓦片）：组件 + 图标表 + 配置读写 + 切片入口
             SkillsTab, SkillTileGrid, SkillSeg, SkillCard, SkillGlyph,
             // 测试注入口：vm 沙箱里没有动态 import()，测试直接把真实的 pack 模块与清单塞进来
@@ -24645,6 +28255,8 @@ const DIRECTOR_KEY_HELP = [
             seamVerdict,
             tailFrameScore,
           };
+          // 拉片纯函数出口：抽帧/提示词/结果归一化可在假浏览器环境里真实执行。
+          window.__DSH_IC_PULL__ = { pullPromptFor, normalizePullResult, extractVideoFramesAt };
           window.__DSH_IC_SYNC__ = {
             hostSyncTick, mergeHostDoc, loadBible, loadGraphDoc, flushSave, pushAllProjectsToHost,
             removeNodes, ungroupNode, undo, redo, pushHistory,
@@ -24664,6 +28276,16 @@ const DIRECTOR_KEY_HELP = [
           };
           // IC-01：下载侧扩展名判定的纯函数出口（供 scripts/test-download-ext.mjs 直接断言）
           window.__DSH_IC_MEDIA__ = { extForDownload };
+          // 跨项目角色库：组件 + 数据层出口（供 test-panel-layout / test-subjects 直渲染与断言）
+          window.__DSH_IC_SUBJECTS__ = { SubjectsTab, normalizeSubject, loadSubjects, upsertSubject, removeSubject, OFFICIAL_SUBJECTS };
+          // 确定性图像工具：能力注册表 + 本地超分（供 scripts/test-image-tools.mjs 直接断言）
+          window.__DSH_IC_IMGTOOLS__ = { IMAGE_TOOL_CAPS, imageToolCaps, upscaleImageBlob };
+          // 工作流工具箱：保存/插入/资产重映射（供 scripts/test-workflows.mjs 真实执行）
+          window.__DSH_IC_WORKFLOWS__ = { WorkflowsTab, saveWorkflowFromIds, insertWorkflow, loadWorkflows, upsertWorkflow, removeWorkflow };
+          // 资产库 DAM：ZIP 打包纯函数（供 scripts/test-dam.mjs 直接断言字节结构）
+          window.__DSH_IC_DAM__ = { buildZipStore, crc32Bytes, findDuplicateAssetGroups, remapAssetIdsDeep, mergeDuplicateAssets, undoAssetMerge };
+          // TTS 协议适配：lk888 异步任务 / 音色列表（供 scripts/test-tts-lk888.mjs 真实执行）
+          window.__DSH_IC_TTS__ = { ttsSynthesize, ttsVoiceList, ttsProtocolOf };
           // IC-04：参考图上传三件套的纯函数出口（供 scripts/test-image-upload.mjs 直接断言）
           window.__DSH_IC_IMGREF__ = { rawImageDims, sniffImageEncoding, registerReferenceAsset };
           // IC-03：视频厂商识别/前缀归一化的纯函数出口（供 scripts/test-vendor-detect.mjs 直接断言）
@@ -24683,7 +28305,7 @@ const DIRECTOR_KEY_HELP = [
           // 引擎加载器；引擎内部的纯函数由测试直接 ESM import engine.js 断言——
           // 两端同一份代码，不存在"测试测的是拷贝"的问题。
           window.__DSH_IC_DIRECTOR__ = {
-            DirectorStage, loadDirectorEngine, directorEngine,
+            DirectorStage, BoxHome, loadDirectorEngine, directorEngine,
             DIRECTOR_ENGINE_REL,
           };
           // 面板结构（左侧图标列 / 统一弹窗 / 工具栏项目切换 / 就地改名 / 右栏当前项目面板）：
@@ -24698,6 +28320,9 @@ const DIRECTOR_KEY_HELP = [
             setProjectMenuPageInput, commitProjectMenuPageInput, cancelProjectMenuPageInput,
             setDbStats, toggleStorageInfo,
             setStorageInfoOpen: (v) => { S.storageInfoOpen = !!v; notify(); },
+            // 创作台（自动创作 + 批量执行）：开合/页签状态供 test-panel-layout 断言
+            openProdConsole, closeProdConsole,
+            setConsoleTab: (t) => { S.consoleTab = t === 'batch' ? 'batch' : 'auto'; notify(); },
             createCanvasNamed, renameCanvasNamed, deleteCanvasNamed, listCanvases, canvasNameFor,
             setProjectDialogValue: (v) => { if (S.projectDialog) S.projectDialog.value = String(v == null ? '' : v); },
             setInlineValue: (v) => setInlineEditValue(v),
@@ -24721,6 +28346,10 @@ const DIRECTOR_KEY_HELP = [
               projects: S.projects.map((p) => ({ id: p.id, name: p.name, canvases: Array.isArray(p.canvases) ? p.canvases.map((c) => ({ ...c })) : [] })),
               keysOpen: S.keysOpen,
               supportOpen: !!S.supportOpen,
+              consoleOpen: !!S.consoleOpen,
+              consoleTab: S.consoleTab === 'batch' ? 'batch' : 'auto',
+              batchRunning: !!(S.batch && S.batch.running),
+              batchItems: S.batch ? S.batch.items.length : 0,
             }),
           };
           // 多画布：文档 key 抽象 + 画布清单/切换/增删改（canvasId=null → key 就是 projectId，旧数据零迁移）

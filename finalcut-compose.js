@@ -96,12 +96,24 @@ export function buildFfmpegArgs(opts = {}) {
   const warnings = [];
 
   const args = ['-hide_banner', '-loglevel', 'error', '-y'];
+  const timelineDur = segments.reduce((a, s) => a + Math.max(0.04, Number(s.dur) || 0), 0);
   let inputCount = 0;            // 已声明的输入个数（= 下一个输入的序号）
   for (const s of segments) { args.push('-i', s.file); inputCount++; }
   const ttsIndexes = [];          // 每个片段的 TTS 输入序号（没有则 null）
   for (const s of segments) {
     if (s.ttsFile) { args.push('-i', s.ttsFile); ttsIndexes.push(inputCount); inputCount++; }
     else ttsIndexes.push(null);
+  }
+  // 成片音频轨（BGM/SFX）：起点晚于成片总长的轨没有意义，直接跳过并留告警（不静默）
+  const atInputs = [];
+  for (const tr of (Array.isArray(opts.audioTracks) ? opts.audioTracks : [])) {
+    if (!tr || !tr.file) continue;
+    const start = Math.max(0, Number(tr.start) || 0);
+    if (start >= timelineDur) { warnings.push('音频轨「' + (tr.name || 'audio') + '」起点 ' + start.toFixed(1) + 's 超过成片时长，已跳过'); continue; }
+    if (tr.loop) args.push('-stream_loop', '-1');
+    args.push('-i', tr.file);
+    atInputs.push({ idx: inputCount, tr, start });
+    inputCount++;
   }
 
   const chains = [];
@@ -210,8 +222,35 @@ export function buildFfmpegArgs(opts = {}) {
     chains.push(`${pairs.join('')}concat=n=${segments.length}:v=1:a=1[vout][aout]`);
   }
 
+  // BGM/SFX 与成片总音轨混音：amix normalize=0 保持各自增益（默认归一化会把 BGM 压没）
+  let aoutLabel = 'aout';
+  if (atInputs.length) {
+    const atLabels = [];
+    atInputs.forEach((it, k) => {
+      const tr = it.tr;
+      const offset = Math.max(0, Number(tr.offset) || 0);
+      const gain = Number.isFinite(Number(tr.gain)) && Number(tr.gain) >= 0 ? Math.min(2, Number(tr.gain)) : 1;
+      const room = Math.max(0.04, timelineDur - it.start);
+      const dur = Number(tr.duration) > 0 ? Math.min(Number(tr.duration), room) : room;
+      const label = `at${k}`;
+      let chain = `[${it.idx}:a]`;
+      chain += `atrim=start=${offset.toFixed(3)}:duration=${dur.toFixed(3)}`;
+      chain += ',asetpts=PTS-STARTPTS';
+      if (Math.abs(gain - 1) > 0.001) chain += `,volume=${gain.toFixed(3)}`;
+      const delayMs = Math.round(it.start * 1000);
+      if (delayMs > 0) chain += `,adelay=${delayMs}|${delayMs}`;
+      chain += `,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[${label}]`;
+      chains.push(chain);
+      atLabels.push(label);
+    });
+    if (atLabels.length) {
+      chains.push(`[aout]${atLabels.map((l) => '[' + l + ']').join('')}`
+        + `amix=inputs=${atLabels.length + 1}:duration=first:normalize=0[amixout]`);
+      aoutLabel = 'amixout';
+    }
+  }
   args.push('-filter_complex', chains.join(';'));
-  args.push('-map', '[vout]', '-map', '[aout]');
+  args.push('-map', '[vout]', '-map', `[${aoutLabel}]`);
   args.push('-c:v', 'libx264', '-preset', opts.preset || 'veryfast', '-pix_fmt', 'yuv420p');
   if (opts.bitrate) args.push('-b:v', String(Math.max(200000, Number(opts.bitrate))));
   args.push('-c:a', 'aac', '-b:a', '128k');

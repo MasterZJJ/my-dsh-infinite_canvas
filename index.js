@@ -334,6 +334,7 @@ function ensureSchema(db, root) {
       rel TEXT, sha TEXT, bytes INTEGER,
       width INTEGER, height INTEGER, duration REAL,
       prompt TEXT, category TEXT, entity TEXT, entities TEXT, node_label TEXT,
+      tags TEXT, folder TEXT, merged_into TEXT,
       text TEXT, source TEXT, created_at INTEGER, updated_at INTEGER);
     CREATE INDEX IF NOT EXISTS idx_assets_proj ON assets(project_id, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_assets_sha ON assets(sha);
@@ -341,6 +342,13 @@ function ensureSchema(db, root) {
     CREATE TABLE IF NOT EXISTS entities (id TEXT PRIMARY KEY, project_id TEXT, kind TEXT, name TEXT);
     CREATE TABLE IF NOT EXISTS episodes (id TEXT PRIMARY KEY, project_id TEXT, season INTEGER, number INTEGER, title TEXT);
   `);
+  // DAM 增量列（旧库迁移）：tags = JSON 数组；folder = 用户文件夹名。
+  try {
+    const cols = db.prepare('PRAGMA table_info(assets)').all().map((c) => c.name);
+    if (!cols.includes('tags')) db.exec('ALTER TABLE assets ADD COLUMN tags TEXT');
+    if (!cols.includes('folder')) db.exec('ALTER TABLE assets ADD COLUMN folder TEXT');
+    if (!cols.includes('merged_into')) db.exec('ALTER TABLE assets ADD COLUMN merged_into TEXT');
+  } catch { /* 迁移失败不阻塞启动：旧库仍可用 */ }
   if (!metaGet(db, 'fts_tokenizer')) {
     try {
       db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS assets_fts USING fts5(id UNINDEXED, name, prompt, tokenize = 'trigram')`);
@@ -442,6 +450,9 @@ function assetRowFromRecord(a) {
     entity: a.entity ? String(a.entity) : null,
     entities: Array.isArray(a.entities) ? JSON.stringify(a.entities) : null,
     node_label: a.nodeLabel ? String(a.nodeLabel) : null,
+    tags: Array.isArray(a.tags) && a.tags.length ? JSON.stringify(a.tags.map(String).map((t) => t.trim()).filter(Boolean).slice(0, 20)) : null,
+    folder: a.folder ? String(a.folder).slice(0, 80) : null,
+    merged_into: a.mergedInto ? String(a.mergedInto) : null,
     text: (a.kind === 'text' && typeof a.text === 'string') ? a.text : null,
     source: String(a.source || ''),
     created_at: Number(a.createdAt) || Date.now(),
@@ -464,6 +475,9 @@ function rowToAsset(r) {
   if (r.entity) out.entity = r.entity;
   if (r.entities) { try { out.entities = JSON.parse(r.entities); } catch { /* 忽略 */ } }
   if (r.node_label) out.nodeLabel = r.node_label;
+  if (r.tags) { try { const tags = JSON.parse(r.tags); if (Array.isArray(tags) && tags.length) out.tags = tags; } catch { /* 忽略 */ } }
+  if (r.folder) out.folder = r.folder;
+  if (r.merged_into) out.mergedInto = r.merged_into;
   if (r.text != null && r.text !== '') out.text = r.text;
   return out;
 }
@@ -474,11 +488,11 @@ function syncFts(db, id, name, prompt) {
 }
 
 function upsertAssetRow(db, row) {
-  db.prepare(`INSERT INTO assets (id, project_id, episode_id, kind, mime, name, rel, sha, bytes, width, height, duration, prompt, category, entity, entities, node_label, text, source, created_at, updated_at)
-    VALUES (@id, @project_id, @episode_id, @kind, @mime, @name, @rel, @sha, @bytes, @width, @height, @duration, @prompt, @category, @entity, @entities, @node_label, @text, @source, @created_at, @updated_at)
+  db.prepare(`INSERT INTO assets (id, project_id, episode_id, kind, mime, name, rel, sha, bytes, width, height, duration, prompt, category, entity, entities, node_label, tags, folder, merged_into, text, source, created_at, updated_at)
+    VALUES (@id, @project_id, @episode_id, @kind, @mime, @name, @rel, @sha, @bytes, @width, @height, @duration, @prompt, @category, @entity, @entities, @node_label, @tags, @folder, @merged_into, @text, @source, @created_at, @updated_at)
     ON CONFLICT(id) DO UPDATE SET project_id=@project_id, episode_id=@episode_id, kind=@kind, mime=@mime, name=@name, rel=@rel, sha=@sha, bytes=@bytes,
       width=@width, height=@height, duration=@duration, prompt=@prompt, category=@category, entity=@entity, entities=@entities,
-      node_label=@node_label, text=@text, source=@source, updated_at=@updated_at`).run(row);
+      node_label=@node_label, tags=@tags, folder=@folder, merged_into=@merged_into, text=@text, source=@source, updated_at=@updated_at`).run(row);
   syncFts(db, row.id, row.name, row.prompt);
 }
 
@@ -600,6 +614,9 @@ function dbAssetUpdate(id, patch) {
   if (patch && patch.entity !== undefined) merged.entity = patch.entity ? String(patch.entity) : undefined;
   if (patch && patch.entities !== undefined) merged.entities = Array.isArray(patch.entities) ? patch.entities : undefined;
   if (patch && patch.nodeLabel !== undefined) merged.nodeLabel = patch.nodeLabel ? String(patch.nodeLabel) : undefined;
+  if (patch && patch.tags !== undefined) merged.tags = Array.isArray(patch.tags) ? patch.tags.map(String).map((t) => t.trim()).filter(Boolean).slice(0, 20) : [];
+  if (patch && patch.folder !== undefined) merged.folder = patch.folder ? String(patch.folder).slice(0, 80) : undefined;
+  if (patch && patch.mergedInto !== undefined) merged.mergedInto = patch.mergedInto ? String(patch.mergedInto) : undefined;
   if (patch && patch.text !== undefined && cur.kind === 'text') merged.text = String(patch.text || '');
   upsertAssetRow(db, assetRowFromRecord({ ...merged, createdAt: cur.createdAt }));
   return { ok: true, asset: rowToAsset(db.prepare('SELECT * FROM assets WHERE id = ?').get(row.id)) };
@@ -2598,10 +2615,11 @@ function canvasCreateNode(args) {
   const doc = readToolDoc(args);
   const rawType = String((args && args.type) || 'text');
   const type = normalizeNodeType(rawType);
-  if (!['script', 'text', 'image', 'video', 'storyboard', 'finalcut'].includes(type)) throw new Error('不支持的节点类型: ' + rawType);
+  if (!['script', 'text', 'image', 'video', 'audio', 'storyboard', 'finalcut'].includes(type)) throw new Error('不支持的节点类型: ' + rawType);
   const legacyType = rawType !== type ? rawType : '';
   const label = args && args.name ? String(args.name).slice(0, 40) : '';
   const prompt = String((args && args.prompt) || '');
+  const assetId = String((args && args.assetId) || '').trim() || null;
   const connectFrom = String((args && args.connectFrom) || '');
   // G4 禁止逐镜节点：一致性靠参考图资产，不靠逐镜建点（高频走错路，这里直接封死）
   const g4 = PROD.gateShotNodeName(label, type);
@@ -2622,7 +2640,7 @@ function canvasCreateNode(args) {
     node = agentNode('text', '', pos.x, pos.y, label || '图片节点');
     node.type = 'image';
     node.w = mediaSize.w; node.h = mediaSize.h;
-    node.data = { ...node.data, status: 'idle', error: null, prompt, assetId: null, demo: false, size: (args && args.size) || '2K', ratio: (args && args.ratio) || '16:9', imageCount: 1 };
+    node.data = { ...node.data, status: assetId ? 'done' : 'idle', error: null, prompt, assetId: assetId || null, demo: false, size: (args && args.size) || '2K', ratio: (args && args.ratio) || '16:9', imageCount: 1 };
   } else if (type === 'video') {
     node = agentNode('text', '', pos.x, pos.y, label || '视频节点');
     node.type = 'video';
@@ -2633,12 +2651,13 @@ function canvasCreateNode(args) {
     const sbWithShots = sbs.filter((n) => Array.isArray(n.data && n.data.shots) && n.data.shots.length).pop() || null;
     const sbEmpty = sbs[sbs.length - 1] || null; // 存在但尚未拆解镜头
     const hasPrompt = Boolean(String(prompt || '').trim());
+    const hasAsset = Boolean(assetId);
     let autoConnectId = '';
     let forced = false;
-    if (sbWithShots) {
+    if (!hasAsset && sbWithShots) {
       autoConnectId = sbWithShots.id; // 无论是否传 prompt：镜头清单只认分镜表
       forced = hasPrompt;
-    } else if (!hasPrompt && sbEmpty) {
+    } else if (!hasAsset && !hasPrompt && sbEmpty) {
       autoConnectId = sbEmpty.id; // 分镜表存在但 shots 为空：先连线占位（生成前需先拆解镜头）
     }
     // G2/G3：建视频节点前，目标分镜表的 shots 必须过质量闸门；且一个分镜表只允许一个视频节点。
@@ -2665,8 +2684,17 @@ function canvasCreateNode(args) {
       }
       if (!g3.ok && ovOk) PROD.recordOverride(id, canvasId, 'G3', ov.quote, { node: label, storyboardId: sbTargetId });
     }
-    node.data = { ...node.data, status: 'idle', error: null, prompt: autoConnectId ? '' : prompt, assetId: null, demo: false, duration: Number(args && args.duration) || 5, resolution: (args && args.resolution) || '720P', ratio: (args && args.ratio) || '16:9' };
+    node.data = { ...node.data, status: assetId ? 'done' : 'idle', error: null, prompt: hasAsset ? '' : (autoConnectId ? '' : prompt), assetId: assetId || null, demo: false, duration: Number(args && args.duration) || 5, resolution: (args && args.resolution) || '720P', ratio: (args && args.ratio) || '16:9' };
     autoConnected = autoConnectId ? { from: autoConnectId, ignoredPrompt: forced && hasPrompt, emptyShots: !sbWithShots && !!sbEmpty } : null;
+  } else if (type === 'audio') {
+    node = agentNode('text', '', pos.x, pos.y, label || '音频节点');
+    node.type = 'audio';
+    node.w = 360; node.h = 300;
+    node.data = {
+      ...node.data, status: assetId ? 'done' : 'idle', error: null, prompt: '', assetId: assetId || null,
+      audioModel: '', voiceId: '', audioEmotion: 'auto', audioEmotionScale: '4', audioSpeechRate: '0', audioFormat: 'mp3',
+      audioGain: 1, audioStart: 0, audioOffset: 0, audioDuration: 0, audioLoop: false, audioMute: false,
+    };
   } else if (type === 'storyboard') {
     node = agentNode('text', '', pos.x, pos.y, label || '分镜表');
     node.type = 'storyboard';
@@ -2683,7 +2711,7 @@ function canvasCreateNode(args) {
     node = agentNode('text', '', pos.x, pos.y, label || '成片');
     node.type = 'finalcut';
     node.w = 360; node.h = 360;
-    node.data = { ...node.data, status: 'idle', error: null, resolution: (args && args.resolution) || '720P', ratio: (args && args.ratio) || '16:9', transition: 'none', progress: null, assetId: null, subs: {}, keepAudio: true };
+    node.data = { ...node.data, status: assetId ? 'done' : 'idle', error: null, resolution: (args && args.resolution) || '720P', ratio: (args && args.ratio) || '16:9', transition: 'none', progress: null, assetId: assetId || null, subs: {}, keepAudio: true };
   } else if (type === 'script') {
     node = agentNode('script', prompt, pos.x, pos.y, label || defaultLabel(prompt));
   } else {
@@ -3220,7 +3248,7 @@ async function canvasNodeStatus(args) {
   };
 }
 /** 可被 canvas_update_node 修改的节点字段白名单（结构字段 id/type/x/y/w/h/data 一律不可写）。 */
-const NODE_PATCH_FIELDS = ['prompt', 'idea', 'output', 'text', 'script', 'requirement', 'label', 'ratio', 'size', 'duration', 'resolution', 'frameMode', 'count', 'imageModel', 'videoModel', 'model', 'cont', 'targetDuration', 'combatMode'];
+const NODE_PATCH_FIELDS = ['prompt', 'idea', 'output', 'text', 'script', 'requirement', 'label', 'ratio', 'size', 'duration', 'resolution', 'frameMode', 'count', 'imageModel', 'videoModel', 'model', 'cont', 'targetDuration', 'combatMode', 'assetId'];
 /** 4–10s 拆表子表的「本表范围」说明书：镜头被对话侧整表改掉后重算，避免生成端仍读旧镜头清单。 */
 function boardBriefText(node, shots) {
   const arr = (Array.isArray(shots) ? shots : []).filter(Boolean);
@@ -3374,6 +3402,8 @@ function canvasUpdateNode(args) {
     } else if (k === 'combatMode') {
       // 打斗判定三态覆盖：auto=按场检测（缺省）/ on=本场强制按打斗注入 / off=强制不注入
       v = ['auto', 'on', 'off'].includes(String(v).toLowerCase()) ? String(v).toLowerCase() : 'auto';
+    } else if (k === 'assetId') {
+      v = String(v == null ? '' : v).trim() || null;
     } else {
       v = String(v == null ? '' : v);
     }
@@ -3381,6 +3411,7 @@ function canvasUpdateNode(args) {
     // 4–10s 拆表子表：对话侧显式改 script 时，同步成 boardScript——
     // 否则生成端仍读旧的锁定范围说明书，用户会以为"改了没生效"。
     if (k === 'script' && Number(n.data.boardCount) > 1) n.data.boardScript = v;
+    if (k === 'assetId' && v) { n.data.status = 'done'; n.data.error = null; n.data.demo = false; }
     applied.push(k);
   }
   if (patch.shots !== undefined) {
@@ -3665,10 +3696,11 @@ const PORT_TABLE = {
   'storyboard': { inputs: [{ id: 'prev', kind: 'text' }, { id: 'script', kind: 'text' }], outputs: [{ id: 'out', kind: 'text' }, { id: 'tail', kind: 'text' }] },
   'image': { inputs: [{ id: 'prompt', kind: 'text' }, { id: 'ref', kind: 'image' }], outputs: [{ id: 'out', kind: 'image' }] },
   'video': { inputs: [{ id: 'prompt', kind: 'text' }, { id: 'frame', kind: 'image' }, { id: 'ref', kind: 'image' }], outputs: [{ id: 'out', kind: 'video' }, { id: 'tailpick', kind: 'image' }, { id: 'last', kind: 'image' }] },
-  'finalcut': { inputs: [{ id: 'in', kind: 'video' }], outputs: [] },
+  'finalcut': { inputs: [{ id: 'in', kind: 'video' }, { id: 'audio', kind: 'audio' }], outputs: [] },
+  'audio': { inputs: [{ id: 'prompt', kind: 'text' }], outputs: [{ id: 'out', kind: 'audio' }] },
   'group': { inputs: [], outputs: [] },
 };
-const MULTI_INPUT_PORTS = new Set(['ref', 'char', 'scene', 'prop']);
+const MULTI_INPUT_PORTS = new Set(['ref', 'char', 'scene', 'prop', 'audio']);
 /** Agent 改动了项目文档：记一次性信号，让画布在几秒内拉回合并（否则画布上看不到 Agent 的改动）。
  *  canvasId 记录是哪个画布被改（缺省/默认画布 = null），客户端只刷新当前画布。 */
 function markDocChanged(projectId, canvasId) {
@@ -3706,7 +3738,7 @@ function connectEdge(doc, fromId, toId, fromPort, toPort) {
       else if (from.type === 'image' || from.type === 'image-asset' || from.type === 'image-gen') tp = 'ref';
       else tp = 'prompt';
     } else if (to.type === 'finalcut') {
-      tp = 'in';
+      tp = from.type === 'audio' ? 'audio' : 'in';
     } else {
       tp = String((ins[0] && ins[0].id) || '');
     }
@@ -3982,6 +4014,11 @@ function resolveModel(providers, want) {
   return { provider: provider.id, model: model.id };
 }
 
+/** 3D-BOX stage id → 文件系统安全名（空值表示旧版单文件入口）。 */
+function safeStageId(id) {
+  return String(id || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+}
+
 export function apply(ctx) {
   ctx.effect(() => {
     const llm = () => ctx.get('llm');
@@ -4043,7 +4080,35 @@ export function apply(ctx) {
         ...(temperature === undefined ? {} : { temperature }),
         ...(maxTokens === undefined ? {} : { maxTokens }),
       };
-      const userMessage = { role: 'user', content: [{ type: 'text', text: user }] };
+      // 视觉输入（拉片）：把 dataURL 存成宿主附件，作为 image content block 发给模型。
+      // 模型不支持图片输入时适配器会报错——调用方据此提示用户换视觉模型，绝不静默丢图。
+      const imageBlocks = [];
+      const wantImages = Array.isArray(want.images) ? want.images.slice(0, 16) : [];
+      if (wantImages.length) {
+        let attachments = null;
+        try { attachments = (ctx.get && ctx.get('attachments')) || ctx.attachments || null; } catch { attachments = null; }
+        if (!attachments || typeof attachments.saveImage !== 'function') {
+          throw new Error('当前宿主不支持图片附件（attachments），无法做视觉拉片');
+        }
+        for (let i = 0; i < wantImages.length; i++) {
+          const im = wantImages[i] || {};
+          const raw = String(im.dataUrl || '');
+          const m = /^data:([^;]+);base64,([\s\S]+)$/.exec(raw);
+          let data = null;
+          let mediaType = String(im.mediaType || 'image/jpeg');
+          if (m) {
+            mediaType = m[1];
+            data = Buffer.from(m[2], 'base64');
+          } else if (im.data && (im.data instanceof Uint8Array || Buffer.isBuffer(im.data))) {
+            data = im.data;
+          }
+          if (!data || !data.length) continue;
+          const ref = await attachments.saveImage({ data, mediaType, name: String(im.name || ('frame-' + (i + 1) + '.jpg')) });
+          if (ref) imageBlocks.push({ type: 'image', attachment: ref });
+        }
+        if (!imageBlocks.length) throw new Error('拉片图片解码失败（没有可用的帧）');
+      }
+      const userMessage = { role: 'user', content: [{ type: 'text', text: user }, ...imageBlocks] };
       /** 跑一次流：统计 chunk 类型，返回文本与失败原因（单次尝试抛错不致命，便于逐级回退）。 */
       const run = async (options, label) => {
         const kinds = [];
@@ -4182,6 +4247,347 @@ export function apply(ctx) {
     }
     /** needJson 失败局部重试指令：追加在 user 尾部，测试以「只输出 JSON」识别重试轮。 */
     const AUTO_JSON_RETRY = '\n\n【格式重试】上一轮输出无法解析为 JSON。只输出 JSON 对象本身：不要任何解释文字、不要 markdown 代码围栏、不要前后缀。';
+    /** 3D-BOX 道具图元白名单：prompt、AI 输出清洗、引擎构建三处共用一份，避免拼错 preset。 */
+    const DIRECTOR_PROP_PRESETS = ['box', 'sphere', 'cylinder', 'cone', 'plane', 'capsule', 'torus', 'pyramid', 'disc', 'arc', 'half_cylinder', 'ancient_house', 'ancient_stall', 'stone_step'];
+    /** 3D-BOX 自然语言改景：把当前 spec + 指令交给用户已配置的模型，返回完整可构建 spec。 */
+    const DIRECTOR_EDIT_SYSTEM = [
+      'You are a 3D previs scene editor. Modify the CURRENT SPEC according to the INSTRUCTION.',
+      'Return ONLY one JSON object, no prose, no markdown fences.',
+      'Keep the same schema: { title, duration, env, style, models[], characters[], props[], cameras[], shots[], shot }',
+      'Camera: { name, pos:[x,y,z], target:[x,y,z], fov, keys?[] }',
+      'Shot: { camera, start, end }',
+      'Character: { name, pos:[x,y,z], rotY, pose, color, path?, keys?, poseAnim? }',
+      'Model asset: { assetId, pos:[x,y,z], rotY, h } — only ids already present in the CURRENT SPEC.',
+      'Prop: { name, preset, pos, scale, color } or { name, pos, parts:[{preset,pos,scale,color,rotY?,rx?,rz?,array?,mirror?}] }.',
+      'Attachment: { attach:{ to:"character id or name", bone:"RightHand", offset:[x,y,z], rotY? } } on a prop/model.',
+      'Valid pose ids: none, stand, arms_up, punch, kick, flip, fly, crouch, fight, walk, run, jump, hit, fall, walk_a, walk_b, run_a, run_b.',
+      'Preserve all fields the instruction does not mention. Keep cameras/shots non-empty. Use meters and seconds.',
+      'Examples: "机位低一点" -> lower camera pos.y and target.y; "让 A 从左入画" -> move A pos.x negative; "加一张桌子" -> add a furn_* model or a parts prop; "手持" -> set shot.cameraMove="handheld".',
+    ].join('\n');
+    /** 3D-BOX 一句话搭景：LLM 生成完整 spec（动作/道具/机位/分镜），本地模板只做 schema 骨架与失败兜底。 */
+    const DIRECTOR_BRIEF_SYSTEM = [
+      'You are a 3D previs director. Turn a one-line brief into a complete, playable previz spec.',
+      'Return ONLY one JSON object, no prose, no markdown fences.',
+      'Schema: { title, duration, env:{preset,grid,tonemap,bg?}, style?, models[], characters[], props[], cameras[], shots[], shot:{duration,cameraMove}, lights[], fog?, dof? }',
+      'Character: { name, pos:[x,y,z], rotY, color, clip, pose, path?, pathFace?, locomotion?, poseAnim? }',
+      'poseAnim: [{"t":0,"pose":"idle"},{"t":1.2,"pose":"punch"},{"t":2.4,"pose":"hit"}] — use it for fights/actions.',
+      'path: [[x,z],...] + locomotion:{source:"clip",clip:"run",stride:1.1,cycle:0.8,refSpeed:4} for chase/walk movement.',
+      'Camera: { name, pos:[x,y,z], target:[x,y,z], fov, keys?[] } — keys are [{t,pos,target,fov,ease}] for camera movement.',
+      'Shot: { camera, start, end } — shots must cover 0..duration without gaps.',
+      'Prop: { name, preset, pos:[x,y,z], scale:[x,y,z], color }',
+      'Model asset: { assetId, name?, pos:[x,y,z], rotY, h, scale?, color? } — place real local GLB assets.',
+      'Parametric prop: { name, pos:[x,y,z], rotY?, parts:[{preset,pos:[x,y,z],scale:[x,y,z],color?,rotY?,rx?,rz?}] } — build cars/weapons/signs/lanterns from 2-12 primitives when no local asset fits. part.pos is the bottom-center offset; scale is [width,height,depth].',
+      'Repeat/mirror/scatter: part or model { array:{count,offset:[dx,dy,dz],rotY?} } | { mirror:"x"|"z"|"xz" } | model/part { scatter:{count,radius,seed?} }. Use them for fences, windows, wheels, street rows and forests instead of listing every copy. Caps: 24 per part array/scatter, 40 per model array/scatter.',
+      'Bone attachment: prop/model { attach:{ to:"character id or name", bone:"...", offset:[x,y,z], rotY?, rx?, rz?, scale? } } — weapons, hats and backpacks follow the skeleton with full bone rotation (incl. pitch); do not animate their position separately. Common bones: Hips, Spine, Spine1, Spine2, Neck, Head, LeftShoulder, LeftArm, LeftForeArm, LeftHand, RightShoulder, RightArm, RightForeArm, RightHand, LeftUpLeg, LeftLeg, LeftFoot, RightUpLeg, RightLeg, RightFoot.',
+      'Valid prop presets: ' + DIRECTOR_PROP_PRESETS.join(', ') + '.',
+      'Valid pose ids: none, stand, arms_up, punch, kick, flip, fly, crouch, fight, walk, run, jump, hit, fall, walk_a, walk_b, run_a, run_b.',
+      'env.preset: studio | daylight | night. Use meters and seconds.',
+      'Rules: read the brief literally and cast 2–6 characters, 2–6 props, 2–5 cameras, 3–6 shots. Build a recognizable set using models[] from AVAILABLE LOCAL ASSETS first (buildings/furniture/trees/people); use parts props only for gaps (cars, weapons, small props).',
+      'Never invent assetId values. Street: use bld_*/tree_* plus a road plane; room: use furn_*; fight: use a ground/arena plus human models.',
+      'Action words must become poseAnim/path/locomotion, not just labels. A chase needs running paths and a moving camera; a fight needs punch/kick/hit beats; dialogue needs idle poses and over-shoulder cameras.',
+      'The BASE SKELETON is only a valid fallback shape; replace or extend its arrays with your own detailed staging. Never return empty cameras or shots.',
+    ].join('\n');
+    /** 本地 GLB 资产目录：brief 与 edit 共用一份。 */
+    function loadDirectorCatalog() {
+      try {
+        const j = JSON.parse(readFileSync(new URL('./assets/director/models/index.json', import.meta.url), 'utf8'));
+        return Array.isArray(j.models) ? j.models : [];
+      } catch { return []; }
+    }
+    /** models[].assetId 只接受本地目录内的 id：编造 id 直接过滤，高度按目录补齐。 */
+    function sanitizeDirectorModels(spec, catalogMap) {
+      if (!spec || !Array.isArray(spec.models)) return spec;
+      spec.models = spec.models.map((m) => {
+        if (!m || typeof m !== 'object') return null;
+        const id = String(m.assetId || '');
+        const meta = catalogMap.get(id);
+        if (!meta) return null;
+        return { ...m, assetId: id, h: Number(m.h) > 0 ? Number(m.h) : Number(meta.height) || 1.7 };
+      }).filter(Boolean);
+      return spec;
+    }
+    /** AI 输出的 props[].parts 清洗：白名单 preset + 限制数量，坏数据不写盘、不撑爆渲染。 */
+    function normalizeDirectorParts(spec) {
+      if (!spec || !Array.isArray(spec.props)) return spec;
+      spec.props = spec.props.filter((p) => p && typeof p === 'object').map((p) => {
+        if (!Array.isArray(p.parts) || !p.parts.length) return p;
+        const parts = p.parts.filter((pt) => pt && typeof pt === 'object').slice(0, 40).map((pt) => ({
+          ...pt,
+          preset: DIRECTOR_PROP_PRESETS.includes(String(pt.preset)) ? String(pt.preset) : 'box',
+        }));
+        return parts.length ? { ...p, parts } : p;
+      });
+      return spec;
+    }
+    function mergeDirectorSpec(base, patch) {
+      if (Array.isArray(patch)) return patch;
+      if (patch && typeof patch === 'object') {
+        const out = (base && typeof base === 'object' && !Array.isArray(base)) ? { ...base } : {};
+        for (const [k, v] of Object.entries(patch)) out[k] = mergeDirectorSpec(out[k], v);
+        return out;
+      }
+      return patch === undefined ? base : patch;
+    }
+    /** 动作语义兜底：模型偶尔只给“站着”的角色；按 brief 的关键词补路径/姿态关键帧，
+     *  保证“追车/打斗”至少能被预演出来（不替代 AI 的完整编排，只补最低可演要求）。 */
+    function enrichDirectorSpec(spec, brief) {
+      if (!spec || typeof spec !== 'object') return spec;
+      const text = String(brief || '').toLowerCase();
+      const chase = /追|跑|逃|追逐|警匪|chase|run|escape|pursuit/i.test(text);
+      const fight = /打|斗|拳|踢|击|fight|punch|kick|combat|battle/i.test(text);
+      const chars = Array.isArray(spec.characters) ? spec.characters : [];
+      if (!Array.isArray(spec.props) || !spec.props.length) spec.props = [{ name: '地面', preset: 'plane', pos: [0, 0, 0], scale: [16, 1, 12], color: '#9aa3ad' }];
+      // AI 失败兜底也要有"能演"的道具：追车类 brief 至少给一台参数化警车（AI 成功时它已给 parts/车，则跳过）
+      const wantsCar = /警车|警匪|追车|追逐|car|police|chase/i.test(text);
+      const hasCarProp = spec.props.some((p) => p && (Array.isArray(p.parts) || /车|car/i.test(String(p.name || ''))));
+      if (wantsCar && !hasCarProp) {
+        spec.props.push({
+          name: '警车', pos: [2.5, 0, 1],
+          parts: [
+            { preset: 'box', pos: [0, 0.4, 0], scale: [4, 0.7, 1.8], color: '#15181d' },
+            { preset: 'box', pos: [-0.3, 1.1, 0], scale: [2, 0.6, 1.6], color: '#2f6fed' },
+            { preset: 'box', pos: [-0.3, 1.45, 0], scale: [0.7, 0.16, 0.4], color: '#ff2d2d' },
+            { preset: 'cylinder', pos: [1.3, 0.3, 0.95], scale: [0.6, 0.6, 0.6], color: '#0b0b0d', mirror: 'x' },
+            { preset: 'cylinder', pos: [-1.3, 0.3, -0.95], scale: [0.6, 0.6, 0.6], color: '#0b0b0d', mirror: 'x' },
+          ],
+        });
+      }
+      const duration = Math.max(0.5, Number(spec.duration) || 6);
+      if (Array.isArray(spec.shots) && spec.shots.length) {
+        const shots = spec.shots.slice().sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0));
+        shots[0].start = 0;
+        shots[shots.length - 1].end = duration;
+        spec.shots = shots;
+      }
+      if (chase) {
+        chars.slice(0, 2).forEach((c, i) => {
+          if (!c || typeof c !== 'object') return;
+          if (!Array.isArray(c.path) || c.path.length < 2) c.path = [[Number(c.pos?.[0]) || (i ? 1.2 : -1.2), Number(c.pos?.[2]) || 0], [8 + i * 1.5, 0]];
+          if (!c.clip || c.clip === 'idle') c.clip = 'run';
+          c.pathFace = c.pathFace !== false;
+          if (!c.locomotion || typeof c.locomotion !== 'object') c.locomotion = { source: 'clip', clip: 'run', stride: 1.1, cycle: 0.8, refSpeed: 4 };
+        });
+      }
+      if (fight) {
+        const hasBeat = chars.some((c) => Array.isArray(c && c.poseAnim) && c.poseAnim.length);
+        if (!hasBeat) {
+          chars.slice(0, 2).forEach((c, i) => {
+            if (!c || typeof c !== 'object') return;
+            c.clip = c.clip || 'fight';
+            c.poseAnim = i === 0
+              ? [{ t: 0, pose: 'idle' }, { t: 0.5, pose: 'punch' }, { t: 1.1, pose: 'hit' }, { t: 1.6, pose: 'fight' }]
+              : [{ t: 0, pose: 'fight' }, { t: 0.6, pose: 'kick' }, { t: 1.2, pose: 'hit' }, { t: 1.8, pose: 'idle' }];
+          });
+        }
+      }
+      return spec;
+    }
+    async function briefDirectorSpec(brief, opts) {
+      const text = String(brief || '').trim();
+      if (!text) throw new Error('需要 brief');
+      const eng = await loadDirectorEngine();
+      if (!eng || typeof eng.buildStageFromSpec !== 'function' || typeof eng.specFromBrief !== 'function') throw new Error('引擎未就绪');
+      const o = opts || {};
+      const seed = eng.specFromBrief(text, o);
+      const catalog = loadDirectorCatalog();
+      const catalogMap = new Map(catalog.map((m) => [String(m.id), m]));
+      const catalogText = catalog.map((m) => m.id + ' | ' + (m.label || '') + ' | ' + (m.category || '') + ' | h=' + (m.height || '')).join('\n');
+      const call = (o && typeof o.llm === 'function') ? o.llm : roomLlm;
+      const hints = [
+        o.scene && o.scene !== 'auto' ? 'SCENE PRESET: ' + o.scene : '',
+        o.style && o.style !== 'auto' ? 'STYLE PRESET: ' + o.style : '',
+        o.cameraMove && o.cameraMove !== 'auto' ? 'CAMERA PRESET: ' + o.cameraMove : '',
+      ].filter(Boolean).join('\n');
+      const baseUser = 'BRIEF:\n' + text + (hints ? '\n\n' + hints : '')
+        + '\n\nAVAILABLE LOCAL ASSETS (use models[]; ids are exact):\n' + catalogText
+        + '\n\nBASE SKELETON JSON:\n' + JSON.stringify(seed);
+      let lastErr = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const user = attempt === 0
+          ? baseUser
+          : baseUser + '\n\n【修正】上一轮返回不可用：' + String((lastErr && lastErr.message) || lastErr) + '\n只输出修正后的完整 JSON 对象。';
+        const raw = await call({ system: DIRECTOR_BRIEF_SYSTEM, user });
+        const parsed = roomJson(raw);
+        if (!parsed || typeof parsed !== 'object') { lastErr = new Error('模型没有返回可解析的 JSON'); continue; }
+        const ai = (parsed.spec && typeof parsed.spec === 'object') ? parsed.spec : parsed;
+        const next = enrichDirectorSpec(mergeDirectorSpec(seed, ai), text);
+        // 本地资产兜底：AI/模板都漏掉 models 时，按题材补建筑/家具/树，避免只给一块地面。
+        if (!Array.isArray(next.models) || !next.models.length) {
+          const t = String(text || '').toLowerCase();
+          if (/街|城|追|警|巷|road|street|city|chase|alley/i.test(t) && catalogMap.has('bld_a')) {
+            next.models = [
+              { assetId: 'bld_a', pos: [-10, 0, -8], h: catalogMap.get('bld_a').height || 12 },
+              { assetId: 'bld_b', pos: [10, 0, -8], h: catalogMap.get('bld_b').height || 15 },
+              { assetId: 'tree_oak', pos: [6, 0, -4], h: catalogMap.get('tree_oak').height || 7 },
+            ];
+          } else if (/会|室|桌|家|office|room|meeting|indoor/i.test(t) && catalogMap.has('furn_tableCross')) {
+            next.models = [
+              { assetId: 'furn_tableCross', pos: [0, 0, 0], h: catalogMap.get('furn_tableCross').height || 0.75 },
+              { assetId: 'furn_chair', pos: [-1.2, 0, 0.8], h: catalogMap.get('furn_chair').height || 0.95 },
+              { assetId: 'furn_chair', pos: [1.2, 0, 0.8], h: catalogMap.get('furn_chair').height || 0.95 },
+            ];
+          }
+        }
+        // 资产 id 校验 + 缺省高度（模型必须来自本地目录，绝不接受编造 id）
+        sanitizeDirectorModels(next, catalogMap);
+        normalizeDirectorParts(next);
+        const built = eng.buildStageFromSpec(next);
+        if (!built || !Array.isArray(built.cameras) || !built.cameras.length || !Array.isArray(built.shots) || !built.shots.length) {
+          lastErr = new Error('返回的规格缺机位/分镜，无法构建');
+          continue;
+        }
+        return { spec: next, built, source: 'llm' };
+      }
+      throw lastErr || new Error('AI 搭景失败');
+    }
+    async function editDirectorSpec(currentSpec, instruction, opts) {
+      const text = String(instruction || '').trim();
+      if (!text) throw new Error('需要 instruction');
+      if (!currentSpec || typeof currentSpec !== 'object') throw new Error('缺少当前场景规格');
+      const eng = await loadDirectorEngine();
+      if (!eng || typeof eng.buildStageFromSpec !== 'function') throw new Error('引擎未就绪');
+      const catalogMap = new Map(loadDirectorCatalog().map((m) => [String(m.id), m]));
+      const call = (opts && typeof opts.llm === 'function') ? opts.llm : roomLlm;
+      const baseUser = 'CURRENT SPEC JSON:\n' + JSON.stringify(currentSpec) + '\n\nINSTRUCTION:\n' + text;
+      let lastErr = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const user = attempt === 0
+          ? baseUser
+          : baseUser + '\n\n【修正】上一轮返回不可用：' + String((lastErr && lastErr.message) || lastErr) + '\n只输出修正后的完整 JSON 对象。';
+        const raw = await call({ system: DIRECTOR_EDIT_SYSTEM, user });
+        const parsed = roomJson(raw);
+        if (!parsed || typeof parsed !== 'object') { lastErr = new Error('模型没有返回可解析的 JSON'); continue; }
+        const next = (parsed.spec && typeof parsed.spec === 'object') ? parsed.spec : parsed;
+        sanitizeDirectorModels(next, catalogMap);
+        normalizeDirectorParts(next);
+        const built = eng.buildStageFromSpec(next);
+        if (!built || !Array.isArray(built.cameras) || !built.cameras.length || !Array.isArray(built.shots) || !built.shots.length) {
+          lastErr = new Error('返回的规格缺机位/分镜，无法构建');
+          continue;
+        }
+        return { ok: true, spec: next, built };
+      }
+      throw lastErr || new Error('改景失败');
+    }
+    /** AI 运镜：自然语言 → 机位关键帧 JSON，校验后写回 spec。纯函数只做校验/归一，模型调用可注入。 */
+    const DIRECTOR_CAMERA_SYSTEM = [
+      'You are a 3D previs camera planner. Given the CURRENT SPEC and a CAMERA INSTRUCTION, return camera keyframes.',
+      'Return ONLY one JSON object: {"keys":[{"t":0,"pos":[x,y,z],"target":[x,y,z],"fov":42,"ease":"auto"}]}',
+      'Rules: at least 2 keys; t in seconds within the scene duration; pos/target in meters; keep the subject in frame; y between 0.3 and 6; fov between 20 and 90; use ease "auto" or "linear".',
+      'Use the current camera as the starting point. Do not change characters, props or shots; only return camera keys.',
+      'Examples: "环绕香水瓶，低机位，最后推近 logo" -> keys around the subject with y low, ending closer and narrower; "手持跟拍" -> small jitter keys; "升镜" -> pos.y increases.',
+    ].join('\n');
+    async function planCameraMotion(currentSpec, prompt, opts) {
+      const text = String(prompt || '').trim();
+      if (!text) throw new Error('需要 prompt');
+      if (!currentSpec || typeof currentSpec !== 'object') throw new Error('缺少当前场景规格');
+      const eng = await loadDirectorEngine();
+      if (!eng || typeof eng.buildStageFromSpec !== 'function') throw new Error('引擎未就绪');
+      const call = (opts && typeof opts.llm === 'function') ? opts.llm : roomLlm;
+      const duration = Math.max(0.5, Number(currentSpec.duration) || 5);
+      const baseUser = 'CURRENT SPEC JSON:\n' + JSON.stringify(currentSpec) + '\n\nCAMERA INSTRUCTION:\n' + text;
+      const asArr = (v) => {
+        if (Array.isArray(v) && v.length >= 3) return [Number(v[0]) || 0, Number(v[1]) || 0, Number(v[2]) || 0];
+        if (v && typeof v === 'object') return [Number(v.x) || 0, Number(v.y) || 0, Number(v.z) || 0];
+        return null;
+      };
+      let lastErr = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const user = attempt === 0
+          ? baseUser
+          : baseUser + '\n\n【修正】上一轮返回不可用：' + String((lastErr && lastErr.message) || lastErr) + '\n只输出修正后的 {"keys":[...]} JSON。';
+        const raw = await call({ system: DIRECTOR_CAMERA_SYSTEM, user });
+        const parsed = roomJson(raw);
+        const keysRaw = parsed && Array.isArray(parsed.keys) ? parsed.keys
+          : (parsed && parsed.camera && Array.isArray(parsed.camera.keys) ? parsed.camera.keys : null);
+        if (!Array.isArray(keysRaw) || keysRaw.length < 2) { lastErr = new Error('机位关键帧不足 2 个'); continue; }
+        const norm = [];
+        let bad = false;
+        for (const k of keysRaw) {
+          const t = Number(k && k.t);
+          const pos = asArr(k && k.pos);
+          const target = asArr(k && k.target);
+          if (!Number.isFinite(t) || !pos || !target) { bad = true; break; }
+          norm.push({
+            t: Math.max(0, Math.min(duration * 1.5, t)),
+            pos: [pos[0], Math.max(0.3, Math.min(6, pos[1])), pos[2]],
+            target,
+            fov: Math.max(8, Math.min(140, Number(k.fov) || 42)),
+            ease: String(k.ease || 'auto'),
+          });
+        }
+        if (bad) { lastErr = new Error('关键帧字段不完整'); continue; }
+        norm.sort((a, b) => a.t - b.t);
+        if (norm.some((k) => Math.hypot(k.pos[0] - k.target[0], k.pos[2] - k.target[2]) > 60)) {
+          lastErr = new Error('机位离主体过远');
+          continue;
+        }
+        const out = JSON.parse(JSON.stringify(currentSpec));
+        const cams = Array.isArray(out.cameras) ? out.cameras : [];
+        if (!cams.length) throw new Error('当前规格没有机位');
+        let cam = cams[0];
+        if (opts && opts.camera) cam = cams.find((c) => c.id === opts.camera || c.name === opts.camera) || cam;
+        cam.keys = norm;
+        out.cameraPrompt = text;
+        out.cameraMove = 'ai';
+        out.shot = out.shot || {};
+        out.shot.cameraMove = 'ai';
+        const built = eng.buildStageFromSpec(out);
+        if (!built || !Array.isArray(built.cameras) || !built.cameras.length) { lastErr = new Error('机位关键帧无法构建'); continue; }
+        return { ok: true, spec: out, keys: norm };
+      }
+      throw lastErr || new Error('AI 运镜失败');
+    }
+    /** Agent 素材导入：本地绝对路径或 http(s) URL → 项目资产目录 + 资产库。 */
+    const importAsset = async (args) => {
+      const pid = String((args && args.projectId) || '');
+      if (!pid) throw new Error('需要 projectId');
+      const localPath = String((args && args.path) || '').trim();
+      const url = String((args && args.url) || '').trim();
+      if (!localPath && !url) throw new Error('需要 path 或 url');
+      const root = dataRoot();
+      if (!root) throw new Error('未设置数据根目录：请先在画布设置里配置数据根目录');
+      const doc = readDocOrNull(pid);
+      const projectName = (doc && doc.name) || pid;
+      const folder = ensureProjectFolder(pid, projectName);
+      if (!folder) throw new Error('项目目录不可用');
+      let buf = null, srcName = '', respMime = '';
+      if (localPath) {
+        const abs = path.resolve(localPath);
+        if (!existsSync(abs)) throw new Error('文件不存在: ' + abs);
+        const st = statSync(abs);
+        if (!st.isFile()) throw new Error('不是文件: ' + abs);
+        if (st.size > 200 * 1024 * 1024) throw new Error('文件超过 200MB 上限');
+        buf = readFileSync(abs);
+        srcName = path.basename(abs);
+      } else {
+        const r = await fetchProxyForward({ url, method: 'GET', timeoutMs: 120000 });
+        if (!r || r.status >= 400) throw new Error('下载失败 HTTP ' + (r && r.status));
+        buf = r.buf;
+        respMime = String(r.contentType || '').split(';')[0].trim();
+        try { srcName = decodeURIComponent(path.basename(new URL(url).pathname)) || 'asset'; } catch { srcName = 'asset'; }
+      }
+      if (!buf || !buf.length) throw new Error('文件为空');
+      const mime = (respMime && respMime.includes('/')) ? respMime : mimeOf(srcName);
+      const kindArg = String((args && args.kind) || '').toLowerCase();
+      const kind = ['image', 'video', 'audio'].includes(kindArg) ? kindArg
+        : mime.startsWith('image/') ? 'image' : mime.startsWith('video/') ? 'video' : mime.startsWith('audio/') ? 'audio' : 'general';
+      const extMatch = /\.([a-z0-9]{1,8})$/i.exec(srcName);
+      const ext = (extMatch && extMatch[1]) || (mime.split('/')[1] || 'bin').replace(/[^a-z0-9]/gi, '').slice(0, 8) || 'bin';
+      const id = 'a_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+      const file = id + '.' + ext.toLowerCase();
+      const rel = 'projects/' + pid + '/' + kind + '/' + file;
+      const phys = physicalRel(rel);
+      if (!phys) throw new Error('资产路径解析失败');
+      const absOut = path.join(root, phys);
+      mkdirSync(path.dirname(absOut), { recursive: true });
+      writeFileSync(absOut, buf);
+      const name = String((args && args.name) || srcName || ('import-' + id)).slice(0, 80);
+      const asset = { id, projectId: pid, kind, mime, name, rel, size: buf.length, createdAt: Date.now(), source: 'import', category: 'general' };
+      const saved = await methods.assetCreate({ asset, projectName });
+      if (!saved || !saved.ok) throw new Error((saved && saved.error) || '资产入库失败');
+      return { ok: true, assetId: id, kind, name, mime, size: buf.length, rel };
+    };
     async function autoRoomStep(run, role, system, user, needJson) {
       if (run.status !== 'running') throw new Error('aborted');
       const raw = await roomLlm({ system, user });
@@ -4723,6 +5129,8 @@ export function apply(ctx) {
     __autoApi.runs = AUTO_RUNS;
     __autoApi.setRoomLlm = (fn) => { roomLlm = fn; };
     __autoApi.setCanvasRunner = (fn) => { canvasExec = fn; };
+    __autoApi.editDirectorSpec = editDirectorSpec;
+    __autoApi.planCameraMotion = planCameraMotion;
 
     // ============================================================
     // 成片合成（宿主侧 ffmpeg）
@@ -4780,11 +5188,13 @@ export function apply(ctx) {
 
       job.stage = '读取';
       job.pct = 5;
+      const audioTracksIn = Array.isArray(args && args.audioTracks) ? args.audioTracks : [];
       const ids = [];
       for (const s of segmentsIn) {
         if (s && s.assetId) ids.push(String(s.assetId));
         if (s && s.ttsAssetId) ids.push(String(s.ttsAssetId));
       }
+      for (const tr of audioTracksIn) if (tr && tr.assetId) ids.push(String(tr.assetId));
       const got = await methods.assetsGet({ ids });
       const byId = new Map(((got && got.items) || []).map((r) => [String(r.id), r]));
 
@@ -4808,6 +5218,25 @@ export function apply(ctx) {
       }
       if (!segs.length) throw new Error('没有可合成的片段' + (missing.length ? '：' + missing.join('；') : ''));
       if (missing.length) job.warnings.push('已跳过 ' + missing.length + ' 个片段：' + missing.join('；'));
+
+      // 成片音频轨（BGM/SFX）：解析成磁盘文件 → 交给 ffmpeg 做 adelay/atrim/volume/stream_loop 混音
+      const audioTracks = [];
+      for (const tr of audioTracksIn) {
+        const label = String((tr && tr.name) || '音频轨');
+        const rec = byId.get(String((tr && tr.assetId) || ''));
+        const file = assetAbsOnDisk(rec);
+        if (!file) { job.warnings.push('音频轨「' + label + '」文件不在数据目录，已跳过'); continue; }
+        const probe = await probeMedia(ffprobe, file);
+        if (!probe || !probe.hasAudio) { job.warnings.push('音频轨「' + label + '」读不到音轨，已跳过'); continue; }
+        audioTracks.push({
+          file, name: label,
+          start: Math.max(0, Number(tr.start) || 0),
+          offset: Math.max(0, Number(tr.offset) || 0),
+          duration: Number(tr.duration) > 0 ? Number(tr.duration) : 0,
+          gain: Number.isFinite(Number(tr.gain)) ? Math.max(0, Math.min(2, Number(tr.gain))) : 1,
+          loop: tr.loop === true,
+        });
+      }
 
       const width = Math.max(2, Math.round(Number(args.width) || 1280));
       const height = Math.max(2, Math.round(Number(args.height) || 720));
@@ -4839,6 +5268,7 @@ export function apply(ctx) {
           fontFile: font,
           subDir: tmpDir,
           outFile: outAbs,
+          audioTracks,
         });
         for (const w of plan.warnings || []) job.warnings.push(w);
         await runFfmpeg(ffmpeg, plan.args, { timeoutMs: 30 * 60 * 1000 });
@@ -4928,29 +5358,173 @@ export function apply(ctx) {
        *  客户端知道自己要删哪个项目，Host 按项目物理文件夹定位（与 projectDirGet 同一基准），
        *  只删 projects/<folder>/craft 这一个子目录——绝不碰项目镜像、其他项目、数据根其他内容。
        *  幂等：目录不存在也是成功；失败可见（removed=false + reason），不静默吞。 */
-      /** 导演台场景规格：AI / 脚本写入，客户端打开导演台时自动套用（存 <projectDir>/craft/director-stage.json）。 */
+      /** 3D-BOX stage id：文件系统安全 + 稳定（一个 stage = 一条库记录）。 */
       async directorStageSave(args) {
         const dir = await methods.projectDirGet({ projectId: args && args.projectId });
         if (!dir || !dir.ok) return { ok: false, error: (dir && dir.error) || '项目目录不可用' };
         const craftDir = path.join(dir.abs, 'craft');
-        try { mkdirSync(craftDir, { recursive: true }); } catch { /* 交给写入报错 */ }
-        const file = path.join(craftDir, 'director-stage.json');
+        const stageId = safeStageId(args && args.stageId);
         const spec = (args && args.spec) || null;
         if (!spec || typeof spec !== 'object') return { ok: false, error: '缺少 spec 对象' };
-        const payload = { ok: true, savedAt: Date.now(), spec };
-        try { writeFileSync(file, JSON.stringify(payload, null, 2), 'utf8'); }
-        catch (e) { return { ok: false, error: '写入失败: ' + String((e && e.message) || e) }; }
-        return { ok: true, projectId: String(args.projectId), file, bytes: Buffer.byteLength(JSON.stringify(payload)) };
+        const payload = { ok: true, savedAt: Date.now(), stageId: stageId || null, spec };
+        try {
+          if (stageId) {
+            const stageDir = path.join(craftDir, '3dbox');
+            mkdirSync(stageDir, { recursive: true });
+            // 旧版单文件先迁到 3dbox/，避免第一次生成新 stage 时把旧预演覆盖掉。
+            const legacyFile = path.join(craftDir, 'director-stage.json');
+            if (existsSync(legacyFile)) {
+              try {
+                const old = JSON.parse(readFileSync(legacyFile, 'utf8'));
+                const oldSid = safeStageId(old.stageId);
+                if (!oldSid || oldSid !== stageId) {
+                  const keepSid = oldSid || ('legacy_' + (Number(old.savedAt) || Date.now()));
+                  const keepFile = path.join(stageDir, safeStageId(keepSid) + '.json');
+                  if (!existsSync(keepFile)) writeFileSync(keepFile, JSON.stringify({ ...old, stageId: safeStageId(keepSid) }, null, 2), 'utf8');
+                }
+              } catch { /* 旧文件损坏则放弃迁移，不阻塞新保存 */ }
+            }
+            writeFileSync(path.join(stageDir, stageId + '.json'), JSON.stringify(payload, null, 2), 'utf8');
+          }
+          // 兼容旧入口：始终维护「最近一次」文件（列表会按 stageId 去重，不重复展示）
+          mkdirSync(craftDir, { recursive: true });
+          writeFileSync(path.join(craftDir, 'director-stage.json'), JSON.stringify(payload, null, 2), 'utf8');
+        } catch (e) { return { ok: false, error: '写入失败: ' + String((e && e.message) || e) }; }
+        return { ok: true, projectId: String(args.projectId), stageId: stageId || null, file: path.join(craftDir, stageId ? '3dbox/' + stageId + '.json' : 'director-stage.json'), bytes: Buffer.byteLength(JSON.stringify(payload)) };
       },
       async directorStageLoad(args) {
         const dir = await methods.projectDirGet({ projectId: args && args.projectId });
         if (!dir || !dir.ok) return { ok: false, error: (dir && dir.error) || '项目目录不可用' };
-        const file = path.join(dir.abs, 'craft', 'director-stage.json');
-        if (!existsSync(file)) return { ok: true, found: false, file };
+        const stageId = safeStageId(args && args.stageId);
+        const file = stageId
+          ? path.join(dir.abs, 'craft', '3dbox', stageId + '.json')
+          : path.join(dir.abs, 'craft', 'director-stage.json');
+        if (!existsSync(file)) return { ok: true, found: false, file, stageId: stageId || null };
         try {
           const doc = JSON.parse(readFileSync(file, 'utf8'));
-          return { ok: true, found: true, file, savedAt: doc.savedAt || null, spec: doc.spec || null };
-        } catch (e) { return { ok: false, found: false, file, error: '读取失败: ' + String((e && e.message) || e) }; }
+          return { ok: true, found: true, file, stageId: stageId || doc.stageId || null, savedAt: doc.savedAt || null, spec: doc.spec || null };
+        } catch (e) { return { ok: false, found: false, file, stageId: stageId || null, error: '读取失败: ' + String((e && e.message) || e) }; }
+      },
+      async directorStageList() {
+        let list = [];
+        try { list = await projectsList(); } catch { list = []; }
+        const items = [];
+        const seen = new Set();
+        for (const p of (Array.isArray(list) ? list : [])) {
+          try {
+            const dir = await methods.projectDirGet({ projectId: p.id });
+            if (!dir || !dir.ok) continue;
+            const craftDir = path.join(dir.abs, 'craft');
+            const stageDir = path.join(craftDir, '3dbox');
+            const files = [];
+            try {
+              for (const f of readdirSync(stageDir)) if (f.endsWith('.json')) files.push({ file: path.join(stageDir, f), stageId: f.slice(0, -5) });
+            } catch { /* 没有目录 */ }
+            files.push({ file: path.join(craftDir, 'director-stage.json'), stageId: null });
+            for (const ent of files) {
+              if (!existsSync(ent.file)) continue;
+              let doc = null;
+              try { doc = JSON.parse(readFileSync(ent.file, 'utf8')); } catch { continue; }
+              const sid = safeStageId(ent.stageId || doc.stageId);
+              const key = p.id + '::' + (sid || 'legacy');
+              if (seen.has(key)) continue;
+              seen.add(key);
+              const spec = doc.spec || {};
+              items.push({
+                projectId: p.id, projectName: p.name || p.id, stageId: sid || null,
+                title: String(spec.title || '3D-BOX'),
+                savedAt: Number(doc.savedAt) || 0,
+                cameras: Array.isArray(spec.cameras) ? spec.cameras.length : 0,
+                shots: Array.isArray(spec.shots) ? spec.shots.length : 0,
+                duration: Number(spec.duration) || 0,
+              });
+            }
+          } catch { /* 单个项目读失败不影响列表 */ }
+        }
+        items.sort((a, b) => b.savedAt - a.savedAt);
+        return { ok: true, multiStage: true, items };
+      },
+      async directorStageBrief(args) {
+        const projectId = String((args && args.projectId) || '');
+        const brief = String((args && args.brief) || '').trim();
+        if (!brief) return { ok: false, error: '需要 brief' };
+        const eng = await loadDirectorEngine();
+        if (!eng || typeof eng.specFromBrief !== 'function') return { ok: false, error: '引擎未就绪' };
+        const stageId = safeStageId(args && args.stageId) || ('box_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6));
+        const scene = String((args && args.scene) || '');
+        let spec = null;
+        let source = 'llm';
+        let warning = '';
+        if (scene === 'blank') {
+          spec = eng.specFromBrief(brief, { scene: 'blank', style: args && args.style, cameraMove: args && args.cameraMove, duration: args && args.duration });
+          source = 'blank';
+        } else {
+          try {
+            const made = await briefDirectorSpec(brief, {
+              scene: args && args.scene, style: args && args.style,
+              cameraMove: args && args.cameraMove, duration: args && args.duration,
+            });
+            spec = made.spec;
+          } catch (e) {
+            // 明确降级：AI 失败时仍可出图，但前端必须展示 warning（不静默假装 AI 成功）
+            spec = enrichDirectorSpec(eng.specFromBrief(brief, {
+              scene: args && args.scene, style: args && args.style,
+              cameraMove: args && args.cameraMove, duration: args && args.duration,
+            }), brief);
+            source = 'fallback';
+            warning = 'AI 搭景失败，已使用本地模板：' + String((e && e.message) || e);
+          }
+        }
+        try {
+          const saved = await methods.directorStageSave({ projectId, stageId, spec });
+          if (!saved || !saved.ok) return { ok: false, error: (saved && saved.error) || '保存失败' };
+          return { ok: true, projectId, stageId, briefVersion: 2, spec, source, warning, savedAt: saved.savedAt || Date.now() };
+        } catch (e) {
+          return { ok: false, error: String((e && e.message) || e) };
+        }
+      },
+      async directorStageEdit(args) {
+        const projectId = String((args && args.projectId) || '');
+        const stageId = safeStageId(args && args.stageId);
+        const instruction = String((args && args.instruction) || '').trim();
+        if (!instruction) return { ok: false, error: '需要 instruction' };
+        const cur = await methods.directorStageLoad({ projectId, stageId });
+        if (!cur || !cur.ok) return { ok: false, error: (cur && cur.error) || '读取场景失败' };
+        if (!cur.found || !cur.spec) return { ok: false, error: '当前 3D-BOX 还没有规格：先生成或导入一版' };
+        try {
+          const edited = await editDirectorSpec(cur.spec, instruction);
+          const saved = await methods.directorStageSave({ projectId, stageId, spec: edited.spec });
+          if (!saved || !saved.ok) return { ok: false, error: (saved && saved.error) || '保存失败' };
+          return { ok: true, projectId, stageId: stageId || null, spec: edited.spec, savedAt: saved.savedAt || Date.now() };
+        } catch (e) {
+          return { ok: false, error: String((e && e.message) || e) };
+        }
+      },
+      async directorStageCamera(args) {
+        const projectId = String((args && args.projectId) || '');
+        const stageId = safeStageId(args && args.stageId);
+        const prompt = String((args && args.prompt) || '').trim();
+        const moveId = String((args && args.cameraMove) || '').trim();
+        if (!prompt && !moveId) return { ok: false, error: '需要 prompt 或 cameraMove' };
+        const cur = await methods.directorStageLoad({ projectId, stageId });
+        if (!cur || !cur.ok) return { ok: false, error: (cur && cur.error) || '读取场景失败' };
+        if (!cur.found || !cur.spec) return { ok: false, error: '当前 3D-BOX 还没有规格：先生成或导入一版' };
+        try {
+          if (prompt) {
+            const planned = await planCameraMotion(cur.spec, prompt, { duration: args && args.duration });
+            const saved = await methods.directorStageSave({ projectId, stageId, spec: planned.spec });
+            if (!saved || !saved.ok) return { ok: false, error: (saved && saved.error) || '保存失败' };
+            return { ok: true, projectId, stageId: stageId || null, spec: planned.spec, keys: planned.keys.length, savedAt: saved.savedAt || Date.now() };
+          }
+          const eng = await loadDirectorEngine();
+          if (!eng || typeof eng.applyCameraMove !== 'function') return { ok: false, error: '引擎未就绪' };
+          const next = eng.applyCameraMove(cur.spec, moveId, { duration: args && args.duration });
+          const saved = await methods.directorStageSave({ projectId, stageId, spec: next });
+          if (!saved || !saved.ok) return { ok: false, error: (saved && saved.error) || '保存失败' };
+          return { ok: true, projectId, stageId: stageId || null, spec: next, keys: (next.cameras && next.cameras[0] && next.cameras[0].keys || []).length, savedAt: saved.savedAt || Date.now() };
+        } catch (e) {
+          return { ok: false, error: String((e && e.message) || e) };
+        }
       },
       async projectCraftRemove(args) {
         const root = dataRoot();
@@ -5088,7 +5662,14 @@ export function apply(ctx) {
         const cur = r.items.find((a) => String(a.id) === id);
         if (!cur) throw new Error('资产不存在：' + id);
         const patch = (args && args.patch) || {};
-        const next = { ...cur, ...(patch.name !== undefined ? { name: String(patch.name).slice(0, 80) } : {}), ...(patch.category !== undefined ? { category: String(patch.category || 'general') } : {}) };
+        const next = {
+          ...cur,
+          ...(patch.name !== undefined ? { name: String(patch.name).slice(0, 80) } : {}),
+          ...(patch.category !== undefined ? { category: String(patch.category || 'general') } : {}),
+          ...(patch.tags !== undefined ? { tags: Array.isArray(patch.tags) ? patch.tags.map(String).filter(Boolean).slice(0, 20) : [] } : {}),
+          ...(patch.folder !== undefined ? { folder: String(patch.folder || '').slice(0, 80) } : {}),
+          ...(patch.mergedInto !== undefined ? { mergedInto: patch.mergedInto ? String(patch.mergedInto) : undefined } : {}),
+        };
         return writeAssetIndex(String(next.projectId), '', [next]);
       },
       // ===== 成片合成（宿主侧 ffmpeg）：能力探测 / 起任务 / 查任务 =====
@@ -5229,6 +5810,22 @@ export function apply(ctx) {
         return { ok: true, rev: 1, stageMachine: true, qualityGate: true, multiAgent, autoMode: multiAgent, version: VERSION, stages: PRODUCTION_STAGES };
       },
       /** 制作状态汇报：模型宣称"完成/可交付"前必须以 ready:true 为据；next 给当前阶段的下一步。 */
+      async productionPrice() {
+        const cfg = readIcConfig();
+        const price = Number(cfg.production && cfg.production.videoUnitPricePerSecond);
+        return { ok: true, price: Number.isFinite(price) && price > 0 ? price : 0, currency: 'CNY' };
+      },
+      /** 设置视频每秒单价（自动预算/批量估算共用）：0 = 未设置。入口是对话工具 canvas_production_set_price。 */
+      async productionSetPrice(args) {
+        const price = Number(args && args.price);
+        if (!Number.isFinite(price) || price < 0 || price > 10000) {
+          return { ok: false, error: '单价必须是 0–10000 的数字（0 = 清除，不显示估算金额）' };
+        }
+        const cfg = readIcConfig();
+        cfg.production = { ...(cfg.production || {}), videoUnitPricePerSecond: Math.round(price * 100) / 100 };
+        writeIcConfig(cfg);
+        return { ok: true, price: cfg.production.videoUnitPricePerSecond, currency: 'CNY' };
+      },
       async productionStatus(args) {
         const pid = String((args && args.projectId) || '');
         if (!pid) return { ok: false, error: '缺少 projectId' };
@@ -5269,7 +5866,8 @@ export function apply(ctx) {
         const configured = Number(cfg.production && cfg.production.videoUnitPricePerSecond);
         const q = PROD.quote(pid, toolCanvasId(args), Number.isFinite(price) && price > 0 ? price : configured);
         if (q && q.ok && q.estimatedCost == null) {
-          q.note = (q.note ? q.note + '；' : '') + '未配置视频单价——在画布设置 → 制作 → 视频每秒单价 填入后可显示估算金额';
+          // 锚点词「视频每秒单价」被 test-production 断言（T9）：改措辞必须保留这四个字
+          q.note = (q.note ? q.note + '；' : '') + '未设置视频每秒单价——在对话里说「设置视频单价 X 元/秒」后可显示估算金额';
         }
         return q;
       },
@@ -5829,7 +6427,7 @@ export function apply(ctx) {
         });
         reg({
           name: 'canvas_update_node',
-          description: '修改无限画布上**已有节点**的字段（改提示词、改比例/清晰度/时长/分辨率等参数）——"改节点"的唯一入口，改完不必删节点重建。可改字段：prompt（图片/视频节点的对话框提示词）、idea/output（剧本节点）、text（文本节点的正文）、script/requirement（分镜表的剧本来源与额外要求）、shots（分镜镜头清单，JSON 数组）、label（节点名）、ratio、size、duration、resolution、frameMode、count、imageModel、videoModel、model、cont（分镜表「分镜衔接」开关，默认 true；关掉后拆镜不写衔接字段、视频不自动续帧）、targetDuration（分镜**总时长硬约束**秒数，0/不传 = 自动档按镜头节奏；设置后所有镜头 duration 之和严格等于该值）、combatMode（打斗判定三态：auto=按本场剧本自动检测（缺省）/ on=本场强制按打斗注入战斗契约 / off=强制不注入——只影响分镜生成的注入口径）。结构字段（id/type/坐标/宽高）不可改。改完用 canvas_generate_node 触发生成。**这是迭代生成的主路径**：用户对某张图/某段视频不满意（"重来/换一版/不像"）时，改 prompt 后重生成即可，**绝不删掉节点再新建一个**——同一角色/场景/镜的节点永远只有一个，删了重建会丢连线、位置与历史。**前提**：先用 canvas_node_status 读到当前内容，再只传要改的字段。**注意 shots 是整表替换**：只改一镜也要先把 canvas_node_status 返回的全部 shots 取回、改完再整体传回（含每镜的 tail/cam/start/seg/timeBeats/camera/vfx/negative 与打斗字段 attack/reaction/impact/initiative/nextCombat）；否则其它镜的衔接与战斗字段会被冲掉（服务端会按镜序兜底保留，但不要依赖它）。',
+          description: '修改无限画布上**已有节点**的字段（改提示词、改比例/清晰度/时长/分辨率等参数）——"改节点"的唯一入口，改完不必删节点重建。可改字段：prompt（图片/视频节点的对话框提示词）、assetId（挂载已有资产 id，图片/视频节点直接呈现该素材；来自 canvas_import_asset / canvas_list_assets）、idea/output（剧本节点）、text（文本节点的正文）、script/requirement（分镜表的剧本来源与额外要求）、shots（分镜镜头清单，JSON 数组）、label（节点名）、ratio、size、duration、resolution、frameMode、count、imageModel、videoModel、model、cont（分镜表「分镜衔接」开关，默认 true；关掉后拆镜不写衔接字段、视频不自动续帧）、targetDuration（分镜**总时长硬约束**秒数，0/不传 = 自动档按镜头节奏；设置后所有镜头 duration 之和严格等于该值）、combatMode（打斗判定三态：auto=按本场剧本自动检测（缺省）/ on=本场强制按打斗注入战斗契约 / off=强制不注入——只影响分镜生成的注入口径）。结构字段（id/type/坐标/宽高）不可改。改完用 canvas_generate_node 触发生成。**这是迭代生成的主路径**：用户对某张图/某段视频不满意（"重来/换一版/不像"）时，改 prompt 后重生成即可，**绝不删掉节点再新建一个**——同一角色/场景/镜的节点永远只有一个，删了重建会丢连线、位置与历史。**前提**：先用 canvas_node_status 读到当前内容，再只传要改的字段。**注意 shots 是整表替换**：只改一镜也要先把 canvas_node_status 返回的全部 shots 取回、改完再整体传回（含每镜的 tail/cam/start/seg/timeBeats/camera/vfx/negative 与打斗字段 attack/reaction/impact/initiative/nextCombat）；否则其它镜的衔接与战斗字段会被冲掉（服务端会按镜序兜底保留，但不要依赖它）。',
           parameters: {
             type: 'object',
             properties: {
@@ -6095,20 +6693,28 @@ export function apply(ctx) {
         });
         reg({
           name: 'canvas_director_stage',
-          description: '3D 导演台（预演场景）的总控工具：用一段 JSON 规格直接生成/更新整场预演，无需手动搭场景。\n' +
-            'action=apply：把 spec 写入项目并落盘（客户端打开导演台时自动套用；再点「导出视频」即得白模预演片）。\n' +
+          description: '3D-BOX / 3D 导演台（预演场景）的总控工具：用一段 JSON 规格或一句话直接生成/更新整场预演，无需手动搭场景。\n' +
+            'action=apply：把 spec 写入项目并落盘（客户端打开 3D-BOX 时自动套用；再点「导出视频」即得白模预演片）。\n' +
+            'action=brief：一句话搭景。可选 scene（场景预设，见 action=presets）、style（导演风格）、cameraMove（运镜预设）；不传则按关键词自动选。\n' +
+            'action=camera：给当前已保存的规格施加一个运镜预设（生成可编辑的机位关键帧）。\n' +
+            'action=presets：返回场景预设 / 导演风格 / 运镜清单（Agent 先查再选，避免编造 id）。\n' +
             'action=get：读回当前项目的规格。\n' +
             'action=help：返回规格 schema 与可用姿态/预设清单。\n' +
-            'spec 结构：{ title, duration, env{preset,bg,ground,grid,exposure,tonemap}, ' +
+            'spec 结构：{ title, duration, env{preset,bg,ground,grid,exposure,tonemap}, style, ' +
             'characters[{name,pos:[x,y,z],rotY,h,pose,color,material{roughness,metallic,specular},path:[[x,z]...],pathFace,poseAnim[{t,pose}],loop,loopPeriod,keys[{t,pos,rotY}]}], ' +
-            'props[{preset,pos,scale,color}], cameras[{name,pos,target,fov,keys[{t,pos,target}]}], shots[{camera,start,end}] }。\n' +
+            'props[{preset,pos,scale,color}], cameras[{name,pos,target,fov,keys[{t,pos,target,fov}]}], shots[{camera,start,end}], shot{cameraMove,shotSize,note} }。\n' +
             'pose 取值见 action=help 的 poses；道具 preset 见 presets。坐标两维数组 [x,z] 自动补 y=0。',
           parameters: {
             type: 'object',
             properties: {
-              action: { type: 'string', enum: ['apply', 'get', 'help', 'brief'], description: '操作类型' },
-              brief: { type: 'string', description: '一句话描述（action=brief 时用，如「两人在巷子里打斗，8秒」）；会套用打斗/追逐/对话模板生成规格并落盘' },
-              template: { type: 'string', enum: ['fight', 'chase', 'dialogue'], description: '强制指定模板（不传则按 brief 关键词自动判断）' },
+              action: { type: 'string', enum: ['apply', 'get', 'help', 'brief', 'presets', 'camera', 'edit'], description: '操作类型' },
+              brief: { type: 'string', description: '一句话描述（action=brief 时用，如「两人在巷子里打斗，8秒」）；会套用场景/风格/运镜预设生成规格并落盘' },
+              template: { type: 'string', enum: ['fight', 'chase', 'dialogue'], description: '旧版模板（保留兼容；新代码用 scene）' },
+              scene: { type: 'string', description: '场景预设 id（action=brief 时用；见 action=presets 的 scenePresets，如 dialogue3 / interview / meeting / chase）' },
+              style: { type: 'string', description: '导演风格 id（action=brief 时用；见 action=presets 的 directorStyles，如 animation / tvc / mv / documentary / commerce / suspense）' },
+              cameraMove: { type: 'string', description: '运镜预设 id（action=brief 或 action=camera 时用；见 action=presets 的 cameraMoves，如 push_in / arc_left / crane_up / dolly_zoom）' },
+              prompt: { type: 'string', description: '自然语言运镜（action=camera 时用）：如「环绕香水瓶，低机位，最后推近 logo」；由用户已配置模型生成可编辑机位关键帧' },
+              instruction: { type: 'string', description: '自然语言改景指令（action=edit 时用）：如「机位再低一点」「让角色 A 从左入画」「加一张桌子」；由用户已配置的模型改当前 spec，失败自动重试一次' },
               duration: { type: 'number', description: '时长秒数（不传则从 brief 里抓「N秒」，否则用模板默认值）' },
               projectId: { type: 'string', description: '项目 id' },
               spec: { type: 'object', description: '场景规格（action=apply 时必填）' },
@@ -6120,6 +6726,19 @@ export function apply(ctx) {
           timeoutMs: 30000,
           async execute(args) {
             const action = String((args && args.action) || 'get');
+            if (action === 'presets') {
+              const eng = await loadDirectorEngine();
+              return {
+                ok: true,
+                scenePresets: (eng && eng.SCENE_PRESETS) || [],
+                directorStyles: (eng && eng.DIRECTOR_STYLES) || [],
+                cameraMoves: (eng && eng.CAMERA_MOVES) || [],
+                text: '✅ 3D-BOX 预设清单\n' +
+                  '· 场景：' + (((eng && eng.SCENE_PRESETS) || []).map((x) => x.id + '=' + x.zh).join(' / ') || '(引擎未就绪)') + '\n' +
+                  '· 风格：' + (((eng && eng.DIRECTOR_STYLES) || []).map((x) => x.id + '=' + x.zh).join(' / ') || '(引擎未就绪)') + '\n' +
+                  '· 运镜：' + (((eng && eng.CAMERA_MOVES) || []).map((x) => x.id + '=' + x.zh).join(' / ') || '(引擎未就绪)'),
+              };
+            }
             if (action === 'help') {
               const eng = await loadDirectorEngine();
               return {
@@ -6129,7 +6748,10 @@ export function apply(ctx) {
                   '· 道具 preset：box, sphere, cylinder, cone, plane, capsule, torus, pyramid, disc, arc\n' +
                   '· 循环动作：poseAnim 首尾 pose 相同即可循环（如 walk_a→walk_b→walk_a）\n' +
                   '· 路径：path 为二维地面点数组，物体沿路径运动并按切线自动转向（pathFace:false 关闭）\n' +
-                  '· 角色一律使用资产库的真实关节人偶（assetId=xbot）：characters[].preset 可填 actors 列表里的体型，未填默认 m_standard',
+                  '· 角色一律使用资产库的真实关节人偶（assetId=xbot）：characters[].preset 可填 actors 列表里的体型，未填默认 m_standard\n' +
+                  '· 3D-BOX 场景预设：' + (((eng && eng.SCENE_PRESETS) || []).map((x) => x.id).join(', ') || '(引擎未就绪)') + '\n' +
+                  '· 导演风格：' + (((eng && eng.DIRECTOR_STYLES) || []).map((x) => x.id).join(', ') || '(引擎未就绪)') + '\n' +
+                  '· 运镜：' + (((eng && eng.CAMERA_MOVES) || []).map((x) => x.id).join(', ') || '(引擎未就绪)'),
                 poses: (eng && eng.BONE_POSES ? eng.BONE_POSES.map((p) => ({ id: p.id, zh: p.zh, en: p.en })) : []),
                 presets: ['box', 'sphere', 'cylinder', 'cone', 'plane', 'capsule', 'torus', 'pyramid', 'disc', 'arc'],
                 actors: (eng && eng.ACTOR_PRESETS ? eng.ACTOR_PRESETS.map((p) => ({ preset: p.id, zh: p.zh, en: p.en, h: p.h })) : []),
@@ -6141,12 +6763,39 @@ export function apply(ctx) {
               if (!brief) throw new Error('action=brief 需要 brief 一句话描述');
               const eng2 = await loadDirectorEngine();
               if (!eng2 || typeof eng2.specFromBrief !== 'function') throw new Error('引擎未就绪');
-              const spec2 = eng2.specFromBrief(brief, { template: args.template, duration: args.duration });
+              const spec2 = eng2.specFromBrief(brief, {
+                template: args.template,
+                scene: args.scene,
+                style: args.style,
+                cameraMove: args.cameraMove,
+                duration: args.duration,
+              });
               const r4 = await methods.directorStageSave({ projectId: args.projectId, spec: spec2 });
               if (!r4.ok) throw new Error(r4.error || '保存失败');
               return {
                 ok: true, projectId: String(args.projectId || ''), spec: spec2,
-                text: '✅ 已按「' + (spec2.title || brief) + '」生成预演规格并写入项目（' + (spec2.characters || []).length + ' 角色 / ' + (spec2.cameras || []).length + ' 机位 / ' + (spec2.shots || []).length + ' 分镜 / ' + spec2.duration + 's）。打开或刷新 3D 导演台即可看到；点「导出视频」出片。',
+                text: '✅ 已按「' + (spec2.title || brief) + '」生成 3D-BOX 预演并写入项目（' + (spec2.characters || []).length + ' 角色 / ' + (spec2.cameras || []).length + ' 机位 / ' + (spec2.shots || []).length + ' 分镜 / ' + spec2.duration + 's' + (spec2.style ? ' / 风格 ' + spec2.style : '') + (spec2.cameraMove ? ' / 运镜 ' + spec2.cameraMove : '') + '）。打开或刷新 3D-BOX 即可看到；点「导出视频」出片。',
+              };
+            }
+            if (action === 'camera') {
+              const moveId = String((args && args.cameraMove) || '').trim();
+              const prompt = String((args && args.prompt) || '').trim();
+              if (!moveId && !prompt) throw new Error('action=camera 需要 cameraMove 或 prompt');
+              const r5 = await methods.directorStageCamera({ projectId: args.projectId, cameraMove: moveId || undefined, prompt: prompt || undefined, duration: args.duration });
+              if (!r5 || !r5.ok) throw new Error((r5 && r5.error) || '运镜失败');
+              return {
+                ok: true, projectId: String(args.projectId || ''), spec: r5.spec,
+                text: '✅ 已施加' + (prompt ? ' AI 运镜「' + prompt.slice(0, 60) + '」' : '运镜「' + moveId + '」') + '并写入项目（' + (r5.keys || 0) + ' 个机位关键帧）。刷新 3D-BOX 即可预览。',
+              };
+            }
+            if (action === 'edit') {
+              const instruction = String((args && args.instruction) || '').trim();
+              if (!instruction) throw new Error('action=edit 需要 instruction');
+              const r6 = await methods.directorStageEdit({ projectId: args.projectId, instruction });
+              if (!r6 || !r6.ok) throw new Error((r6 && r6.error) || '改景失败');
+              return {
+                ok: true, projectId: String(args.projectId || ''), spec: r6.spec,
+                text: '✅ 已按「' + instruction.slice(0, 60) + '」改景并写入项目（' + ((r6.spec && r6.spec.cameras) || []).length + ' 机位 / ' + ((r6.spec && r6.spec.shots) || []).length + ' 分镜）。刷新 3D-BOX 即可预览。',
               };
             }
             if (action === 'get') {
@@ -6159,6 +6808,68 @@ export function apply(ctx) {
             return {
               ok: true, projectId: String(args.projectId || ''), file: r3.file,
               text: '✅ 导演台规格已写入（' + r3.bytes + ' 字节）。打开/刷新画布的 3D 导演台会自动套用该场景；点「导出视频」即可产出白模预演片。',
+            };
+          },
+        });
+
+        reg({
+          name: 'canvas_list_presets',
+          description: '列出运镜/转场预设（视频节点“尝试”区、3D-BOX 预设页、Agent 共用一份）。kind=all/camera/transition/template；先查清单再选 id，避免编造。',
+          parameters: {
+            type: 'object',
+            properties: {
+              kind: { type: 'string', enum: ['all', 'camera', 'transition', 'template'], description: '可选：按类型过滤（缺省 all）' },
+            },
+            additionalProperties: false,
+          },
+          output: textOutput,
+          timeoutMs: 15000,
+          async execute(args) {
+            const eng = await loadDirectorEngine();
+            const all = (eng && eng.MOTION_PRESETS) || [];
+            const kind = String((args && args.kind) || 'all');
+            const list = kind === 'all' ? all : all.filter((x) => x.kind === kind);
+            const lines = list.map((x) => '- ' + x.id + ' [' + x.kind + '] ' + x.zh + '：' + x.promptZh);
+            return {
+              ok: true,
+              presets: list.map((x) => {
+                const o = { id: x.id, zh: x.zh, en: x.en, kind: x.kind, category: x.category, promptZh: x.promptZh, promptEn: x.promptEn };
+                if (x.cameraMove) o.cameraMove = x.cameraMove;
+                return o;
+              }),
+              text: '✅ 运镜/转场预设（' + list.length + '）：\n' + lines.join('\n'),
+            };
+          },
+        });
+        reg({
+          name: 'canvas_apply_preset',
+          description: '给当前项目的 3D-BOX 规格施加一个运镜/转场预设（转场会映射到基础机位运动；模板只写备注）。先用 canvas_list_presets 查 presetId。',
+          parameters: {
+            type: 'object',
+            properties: {
+              projectId: { type: 'string', description: '项目 id' },
+              presetId: { type: 'string', description: '运镜/转场预设 id（见 canvas_list_presets）' },
+              duration: { type: 'number', description: '可选：时长秒数（缺省用规格时长）' },
+            },
+            required: ['projectId', 'presetId'],
+            additionalProperties: false,
+          },
+          output: textOutput,
+          timeoutMs: 30000,
+          async execute(args) {
+            const pid = String((args && args.projectId) || '');
+            const presetId = String((args && args.presetId) || '').trim();
+            if (!presetId) throw new Error('需要 presetId');
+            const eng = await loadDirectorEngine();
+            if (!eng || typeof eng.applyMotionPreset !== 'function') throw new Error('引擎未就绪');
+            const cur = await methods.directorStageLoad({ projectId: pid });
+            if (!cur || !cur.found || !cur.spec) throw new Error('当前项目还没有 3D-BOX 规格：先用 canvas_director_stage action=brief/apply');
+            const next = eng.applyMotionPreset(cur.spec, presetId, { duration: args.duration });
+            const saved = await methods.directorStageSave({ projectId: pid, spec: next });
+            if (!saved.ok) throw new Error(saved.error || '保存失败');
+            return {
+              ok: true, projectId: pid, spec: next,
+              text: '✅ 已应用预设「' + presetId + '」并写入项目（' + ((next.cameras && next.cameras[0] && next.cameras[0].keys) || []).length + ' 个机位关键帧）。刷新 3D-BOX 即可预览。',
             };
           },
         });
@@ -6385,6 +7096,27 @@ export function apply(ctx) {
           },
         });
         reg({
+          name: 'canvas_production_set_price',
+          description: '设置视频每秒单价（人民币）：自动创作预算单与批量执行的估算金额都按它计算。用户说"设置视频单价 X 元/秒 / 每秒 X 块"时调用；0 = 清除（不显示金额）。单价不进预算指纹——改价不影响已批准的预算单，只改变金额显示。',
+          parameters: {
+            type: 'object',
+            properties: {
+              price: { type: 'number', description: '每秒单价（人民币元），0–10000；0 = 清除' },
+            },
+            required: ['price'],
+            additionalProperties: false,
+          },
+          output: textOutput,
+          timeoutMs: 15000,
+          async execute(args) {
+            const r = await methods.productionSetPrice(args);
+            if (!r.ok) return { ok: false, text: '❌ ' + (r.error || '单价设置失败') };
+            return { ok: true, price: r.price, text: r.price > 0
+              ? '✅ 视频单价已设为 ' + r.price + ' 元/秒：自动创作预算单与批量执行估算将按此计算。'
+              : '✅ 已清除视频单价（估算金额不再显示；批准付费不受影响）。' };
+          },
+        });
+        reg({
           name: 'canvas_auto_status',
           description: '自动创作总状态：开关是否开启、宿主多智能体能力、编剧室运行进度（阶段/日志）、免费段预算单（场/镜/秒/待调用次数/估算金额）、付费段进度与成片节点。【自动模式开场先调它】它决定你走全自动分支还是引导式工作坊。',
           parameters: { type: 'object', properties: {
@@ -6487,8 +7219,9 @@ export function apply(ctx) {
             properties: {
               projectId: { type: 'string', description: '项目 id' },
               canvasId: { type: 'string', description: '可选：画布 id（项目下的子画布；缺省 = 项目默认画布）' },
-              type: { type: 'string', enum: ['script', 'text', 'image', 'video', 'storyboard', 'finalcut', 'image-gen', 'image-asset', 'video-gen', 'video-asset'], description: '节点类型（image/video 为合并类型；旧名 image-gen 等仍接受并自动映射）' },
+              type: { type: 'string', enum: ['script', 'text', 'image', 'video', 'audio', 'storyboard', 'finalcut', 'image-gen', 'image-asset', 'video-gen', 'video-asset'], description: '节点类型（image/video/audio 为合并/资产类型；旧名 image-gen 等仍接受并自动映射）' },
               name: { type: 'string', description: '节点名字（建议填写，如"角色-陈拾 参考图"）' },
+              assetId: { type: 'string', description: '可选：已有资产 id（canvas_import_asset / canvas_list_assets 返回）。有 assetId 时图片/视频节点直接呈现该素材，不再需要生成 prompt' },
               prompt: { type: 'string', description: '提示词（图片/视频用画面提示词；剧本用创作意图；文本用正文）' },
               size: { type: 'string', description: '可选：图片清晰度 1K/2K/4K' },
               ratio: { type: 'string', description: '可选：比例，如 16:9 / 9:16 / 1:1' },
@@ -6521,6 +7254,61 @@ export function apply(ctx) {
               text: '✅ 已新建[' + r.type + ']节点「' + (r.label || r.nodeId) + '」（id=' + r.nodeId + '）。' + kindHint
                 + (r.mergedType ? '\n注：旧类型 ' + r.mergedType : '') + (r.note ? '\n' + r.note : ''),
             };
+          },
+        });
+        reg({
+          name: 'canvas_import_asset',
+          description: '把本地文件或 http(s) URL 导入当前项目资产库，返回 assetId；随后可用 canvas_create_node / canvas_update_node 的 assetId 字段挂到图片/视频/成片节点。支持 image/video/audio，单文件上限 200MB。',
+          parameters: {
+            type: 'object',
+            properties: {
+              projectId: { type: 'string', description: '项目 id' },
+              path: { type: 'string', description: '可选：本地绝对路径（与 url 二选一）' },
+              url: { type: 'string', description: '可选：http(s) 直链（与 path 二选一）' },
+              kind: { type: 'string', enum: ['image', 'video', 'audio'], description: '可选：资产类型（缺省按 MIME 推断）' },
+              name: { type: 'string', description: '可选：资产显示名（缺省用文件名）' },
+            },
+            required: ['projectId'],
+            additionalProperties: false,
+          },
+          output: textOutput,
+          timeoutMs: 120000,
+          async execute(args) {
+            const r = await importAsset(args);
+            return {
+              ok: true, projectId: String((args && args.projectId) || ''), assetId: r.assetId, kind: r.kind, name: r.name, rel: r.rel,
+              text: '✅ 已导入素材「' + r.name + '」（' + r.kind + ' · ' + Math.round(r.size / 1024) + 'KB · assetId=' + r.assetId + '）。用 canvas_create_node/update_node 的 assetId 挂到节点。',
+            };
+          },
+        });
+        reg({
+          name: 'canvas_list_assets',
+          description: '列出当前项目资产库（可按 kind 过滤）。返回 assetId/name/kind/mime/大小/相对路径；用于 find-and-mount，避免编造 assetId。',
+          parameters: {
+            type: 'object',
+            properties: {
+              projectId: { type: 'string', description: '项目 id' },
+              kind: { type: 'string', enum: ['image', 'video', 'audio', 'text', 'general'], description: '可选：按类型过滤' },
+              limit: { type: 'number', description: '可选：返回条数（默认 50，上限 200）' },
+            },
+            required: ['projectId'],
+            additionalProperties: false,
+          },
+          output: textOutput,
+          timeoutMs: 15000,
+          async execute(args) {
+            const projectId = String((args && args.projectId) || '');
+            const limit = Math.min(200, Math.max(1, Number(args && args.limit) || 50));
+            const r = await methods.assetsList({ projectId, kind: args && args.kind, limit });
+            if (!r || !r.ok) return { ok: false, projectId, text: '❌ 资产列表读取失败：' + ((r && r.error) || '未知错误') };
+            const assets = (r.items || []).map((a) => {
+              const o = { id: a.id, name: a.name, kind: a.kind, mime: a.mime, createdAt: a.createdAt };
+              if (a.rel) o.rel = a.rel;
+              if (a.size != null) o.size = a.size;
+              return o;
+            });
+            const lines = assets.map((a) => '- ' + a.id + ' [' + a.kind + '] ' + a.name + (a.size ? ' · ' + Math.round(a.size / 1024) + 'KB' : ''));
+            return { ok: true, projectId, assets, text: '✅ 资产（' + assets.length + '）：\n' + (lines.join('\n') || '（空）') };
           },
         });
         reg({
@@ -6708,7 +7496,7 @@ export function apply(ctx) {
             let bytes = 0;
             for await (const chunk of req) {
               bytes += chunk.length;
-              if (bytes > 4e6) throw new Error('请求过大');
+              if (bytes > 16e6) throw new Error('请求过大'); // 视觉拉片可能带多帧 base64
               parts.push(chunk);
             }
             const args = JSON.parse(Buffer.concat(parts).toString('utf8') || '{}');
