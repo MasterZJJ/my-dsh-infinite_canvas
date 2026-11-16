@@ -6880,12 +6880,18 @@ body[data-ds-dark-theme] .dshic-board-editor{border-color:var(--dsw-alias-border
        *                  ② 其次按命名/实体字段匹配的资产（角色-张山 多视图 / 角色-张山 声音 等）。
        *  ⚠ 这里返回的 refs **只用于面板预览/绑定展示**；生成时参考图严格只取连线（collectRefs），
        *  绝不把这些资产自动塞进厂商请求——@引用只注入文字设定。 */
-      async function resolveMentionBundle(prompt, bible, projectId) {
+      async function resolveMentionBundle(prompt, bible, projectId, extraNames) {
         const entities = [];
-        for (const m of parseMentions(prompt)) {
-          const hit = matchBibleEntity(m.name, bible);
+        const pushName = (nm) => {
+          const hit = matchBibleEntity(nm, bible);
           if (hit && !entities.some((e) => e.name === hit.name)) entities.push(hit);
-        }
+        };
+        for (const m of parseMentions(prompt)) pushName(m.name);
+        // 【分镜表驱动路径的音色入口】storyboard → video 的提示词由 buildStoryboardVideoPrompt 现场组装，
+        // 角色名是**纯文本**（没有 @名称@ 包裹）——只靠 parseMentions 会命中 0 个实体，
+        // 于是 audioRefs 恒为空、声音参考永远传不出去（实测：手写 @名@ 才有音色，分镜路径没有）。
+        // 这里把「本段有台词的角色名」当作等价 @引用 一起纳入，两条路径音频口径统一。
+        for (const nm of (Array.isArray(extraNames) ? extraNames : [])) pushName(nm);
         if (!entities.length) return { entities: [], refs: [], audioRefs: [] };
         let all = [];
         try { all = (await idbByProject(projectId)).concat(await idbByProject(GENERAL_PID)); } catch { all = []; }
@@ -6935,6 +6941,26 @@ body[data-ds-dark-theme] .dshic-board-editor{border-color:var(--dsw-alias-border
       arr.splice(dest, 0, moved);
       return arr;
     }
+    /** 本段「要说话的角色」名单 —— 分镜表驱动视频的音色参考入口。
+     *  只取本段镜头的 dialogue.role：没人说话的段不需要声音参考（送了反而会让模型在空镜里开口）。
+     *  顺序 = 首次出现顺序；去重后交给 resolveMentionBundle 当作等价 @引用 解析。 */
+    function storyboardVoiceRoles(n) {
+      // 只对视频节点生效：图片/配音节点的 collectRefs 也走 resolveMentionBundle，
+      // 若在这里多塞实体，会顺带改变它们的设定集文字注入（参考图路径受 light 模式约束）。
+      // 音色参考本来就只属于视频请求，别的节点一律返回空 = 与改动前行为完全一致。
+      if (!n || normalizeNodeType(n.type) !== 'video') return [];
+      try {
+        const shotList = (videoRequestContext(n) || {}).shotList || [];
+        const out = [];
+        for (const s of shotList) {
+          for (const d of ((s && s.dialogue) || [])) {
+            const nm = String((d && d.role) || '').trim();
+            if (nm && !out.includes(nm)) out.push(nm);
+          }
+        }
+        return out;
+      } catch { return []; }
+    }
     /** 合成参考图列表：**只取连进本节点 ref 口的连线**（顺序 = refOrder），
      *  绝不把 @引用命中的设定集资产 / 历史生成 / 多视图自动追加进参考列表——
      *  参考图是用户显式决策，自动追加会造成"只连 6 张却按 9 张报厂商超限"（两处统计口径打架）。
@@ -6956,8 +6982,9 @@ body[data-ds-dark-theme] .dshic-board-editor{border-color:var(--dsw-alias-border
           if (blob) out.push({ assetId: aid, blob, name: (rec && rec.name) || '', category: (rec && rec.category) || 'general', source: 'wired' });
         } catch { /* 单个失败不影响其余 */ }
       }
-      // @引用解析：只取实体（文字设定注入）与声音参考资产；**命中的图片列表刻意不用**
-      const bundle = await resolveMentionBundle(prompt, bible, S.activeId);
+      // @引用解析：只取实体（文字设定注入）与声音参考资产；**命中的图片列表刻意不用**。
+      // extraNames = 本段台词角色（分镜表路径无 @语法，见 storyboardVoiceRoles）。
+      const bundle = await resolveMentionBundle(prompt, bible, S.activeId, storyboardVoiceRoles(n));
       // 声音参考：@引用命中实体名下的音频资产（角色音色一致性用），视频生成时作为 audios[] 传出
       const audioBlobs = [];
       for (const r of (bundle.audioRefs || [])) {
@@ -9684,8 +9711,11 @@ function queueThumb(assetId) {
       minimaxv2: { img: 9, audio: 3 },
       // 6789：seedance2.5 系 30 图、其余 9 图（api6789ImageCap 按模型取精确值，此处按保守 9 告警）
       api6789: { img: 9 },
-      openai: { img: 8 },
-      seedance: { img: 8 },
+      // OpenAI 兼容通用链（apiVideo 末尾 body.audios）与 seedance content[] 都带 audios[]。
+      // 不标 audio 会被当成上限 0，于是"发出去 1 条却告警只用了 0 条"（实测踩到：素材已送达桥接，
+      // 节点上却挂着"参考音频 1 条超过该厂商上限 0 条"的假告警，用户会以为音色没生效）。
+      openai: { img: 8, audio: 3 },
+      seedance: { img: 8, audio: 3 },
       // img:0 = 该厂商的协议**没有任何实体参考图入口**（已核对各自 runner：只收首帧/提示词）——
       // 曾误标 img:1：恰 1 张时静默弃用不告警，≥2 张时告警"用前 1 张"实际 0 张，全部误导
       kling: { img: 0 }, vidu: { img: 0 }, runway: { img: 0 }, veo: { img: 0 },
@@ -9709,9 +9739,9 @@ function queueThumb(assetId) {
       const vendor = detectVideoVendor(s);
       let vendorDowngraded = false; // IC-03：识别到厂商但无适配器 → 降级走 OpenAI 兼容通用链（节点上可见）
       // 参考素材上限检查：超出即告警（截断发生在各 runner 内，这里先把事实说清楚）。
-      // 未知厂商兜底 8 = IC-03 降级后的 OpenAI 兼容链实际发送上限。
+      // 未知厂商兜底：8 图 / 3 音频 = IC-03 降级后 OpenAI 兼容链的实际发送上限（body.audios 最多取 3）。
       if (o.warn) {
-        const caps = VIDEO_REF_CAPS[vendor] || { img: 8 };
+        const caps = VIDEO_REF_CAPS[vendor] || { img: 8, audio: 3 };
         const refCount = o.hardFrame ? 0 : (Array.isArray(o.refs) ? o.refs.length : 0);
         if (refCount > (caps.img || 0)) {
           o.warn(caps.img
@@ -15942,7 +15972,9 @@ function queueThumb(assetId) {
       const prompt = repairUnclosedMentions(resolvePrompt(n), bibleNames(bible));
       // @引用解析先行：idbByProject 会顺带预热 assetMem（资产元数据缓存），ref 名称从它取
       // （先建 ref 再解析会把首帧预览锁在冷缓存上，名称退回节点标签）
-      const bundle = await resolveMentionBundle(prompt, bible, S.activeId);
+      // 与 run 路径同口径：extraNames 带上本段台词角色（分镜表路径无 @语法）——预览里显示的
+      // 「声音参考」必须就是真正会发给厂商的那几条，否则预览面板会骗人。
+      const bundle = await resolveMentionBundle(prompt, bible, S.activeId, storyboardVoiceRoles(n));
       const audioNames = (bundle.audioRefs || []).map((r) => r.name);
       const refEdges = S.graph.edges.filter((e) => e.toNode === n.id && e.toPort === 'ref');
       const refs = orderedRefEdgeIds(n, refEdges).map((id) => {
@@ -24566,9 +24598,13 @@ const DIRECTOR_KEY_HELP = [
           // MIME 为空/不规范时按扩展名兜底（安卓、iOS 的相册/文件选择器经常给空 type）
           const kind = /^video\//.test(f.type || '') ? 'video'
             : /^image\//.test(f.type || '') ? 'image'
-              : /\.(png|jpe?g|webp|gif|bmp|heic|heif|avif|tiff?)$/i.test(f.name || '') ? 'image'
-                : /\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(f.name || '') ? 'video'
-                  : null;
+              // 音频 = 音色参考素材：入库后绑到设定集角色，@名称 或本段台词角色即可把它作为
+              // audios[] 发给桥接（MiniMax H3 的 ref_audios / reference_audio）。
+              : /^audio\//.test(f.type || '') ? 'audio'
+                : /\.(png|jpe?g|webp|gif|bmp|heic|heif|avif|tiff?)$/i.test(f.name || '') ? 'image'
+                  : /\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(f.name || '') ? 'video'
+                    : /\.(wav|mp3|m4a|aac|ogg|opus|flac)$/i.test(f.name || '') ? 'audio'
+                      : null;
           try {
             // 文本（.txt/.md）：入库为文本资产（名称=文件名去扩展名，分类=剧本，归属=当前项目）——
             // 多集小说/剧本一键导入，入库后在资产面板多选批量铺画布（text 节点可直接连分镜表当剧本源）
@@ -24580,8 +24616,11 @@ const DIRECTOR_KEY_HELP = [
               });
               okN++; cats.add('script');
             } else if (kind) {
-              await saveAssetRecord(S.activeId, kind, f, { name: f.name, source: 'upload', category: targetCat });
-              okN++; cats.add(targetCat);
+              // 音频独立归到「配音」分类：混进角色/场景/道具页签会和参考图抢筛选位，
+              // 而音色素材的用途只有「绑给角色当声音参考」。
+              const cat = kind === 'audio' ? 'audio' : targetCat;
+              await saveAssetRecord(S.activeId, kind, f, { name: f.name, source: 'upload', category: cat });
+              okN++; cats.add(cat);
             } else { failed++; } // 不支持的类型也要计数：静默跳过 = 用户以为"没反应"
           } catch { failed++; } // 单个失败不影响其余文件
         }
@@ -24595,8 +24634,9 @@ const DIRECTOR_KEY_HELP = [
           update((s) => { s.assetsTick++; });
           // 翻页停在别的页时，新资产（最新在前）会落在第 1 页 → 同样表现为"没反应"，这里回到第 1 页
           if (okN) { setPage(0); setPageDraft(null); }
-          // 上传后把筛选切到落点分类，保证刚导入的资产立刻可见（否则会被当前页签挡住）
-          if (okN && filter !== 'all' && filter !== targetCat) setFilter(targetCat);
+          // 上传后把筛选切到落点分类，保证刚导入的资产立刻可见（否则会被当前页签挡住）。
+          // 用**实际导入的分类**而不是 targetCat：音频固定落「配音」，跟着 targetCat 会切到错页签。
+          if (okN && filter !== 'all' && !cats.has(filter)) setFilter([...cats][0] || targetCat);
         }
       };
       const del = async (a) => {
@@ -24905,7 +24945,7 @@ const DIRECTOR_KEY_HELP = [
             h('span', { className: 'dshic-asset-pagecount', 'data-role': 'assets-page-info' }, T('assetsTotalCount').replace('{n}', String(filtered.length))),
           ),
         ),
-        h('input', { key: 'file', ref: fileRef, type: 'file', accept: 'image/*,video/*,.txt,.md,text/plain,text/markdown', multiple: true, style: { display: 'none' }, onChange: onImport }),
+        h('input', { key: 'file', ref: fileRef, type: 'file', accept: 'image/*,video/*,audio/*,.wav,.mp3,.m4a,.aac,.ogg,.opus,.flac,.txt,.md,text/plain,text/markdown', multiple: true, style: { display: 'none' }, onChange: onImport }),
         loading && !assets.length
           ? h('div', { key: 'loading', className: 'dshic-hint' }, T('aiRunning'))
           : shown.length === 0

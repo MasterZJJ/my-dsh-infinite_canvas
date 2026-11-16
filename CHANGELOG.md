@@ -7,6 +7,22 @@ GitHub Releases carry the same notes in English; maintainer-facing runbooks live
 ## [Unreleased]
 
 ### Added
+- **本地音色参考：分镜表生成的视频也能带上音色**（`0.21.0-local.4`）。三处改动：
+  1. 资产面板放开**音频导入**（文件选择器 `accept` 加 `audio/*` 与 wav/mp3/m4a/aac/ogg/opus/flac，
+     `onImport` 的类型判定加 `audio` 分支），音频固定归「配音」分类——此前音频根本进不来，
+     而资产卡片、设定集「链接资产」弹窗、播放器其实早已支持音频。
+  2. 分镜表驱动的视频节点按**本段镜头的 `dialogue.role`** 反查设定集角色，把该角色绑定的
+     音频资产作为 `audios[]` 发给视频厂商。此前只有**手写 `@角色@`** 才会带声音参考：
+     分镜路径的提示词由 `buildStoryboardVideoPrompt` 现场组装、角色名是纯文本，`parseMentions`
+     命中 0 个实体，`audioRefs` 恒为空，音色永远传不出去。新增 `storyboardVoiceRoles()` 把
+     「本段有台词的角色」当作等价 `@引用` 并入 `resolveMentionBundle`；run 路径与「请求预览」
+     同口径（预览里显示的「声音参考」就是真正会发出去的那几条）。
+  3. `storyboardVoiceRoles()` 只对 `video` 节点生效——图片/配音节点的 `collectRefs` 也走
+     `resolveMentionBundle`，不加守卫会顺带改变它们的设定集文字注入。
+  实测（MiniMax H3 · ComfyUI 桥接，同 prompt / 同 seed / 同图，唯一变量 = 有无参考音频）：
+  带参考音频时 5 秒里 3 秒有可闻人声、F0 258Hz（参考音频 250Hz）；不带参考时 0/5 秒可闻、
+  F0 271Hz。桥接侧日志从 `auds=0` 变为 `auds=1`；画布端到端复测同样 `auds=1`，
+  产物 8s 带 aac 音轨。
 - **设置 / 角色库 / 工作流现在在宿主留一份权威副本**（`0.21.0-local.2`）。新增宿主模块级存储
   `~/.dsh/infinite-canvas/ui-state.json`（权限 **0600**，含密钥）与两条 RPC：
   `uiStateGet` / `uiStateSet`（最后写入者胜，**落后于宿主版本的推送一律拒收**并把宿主现状回传，
@@ -14,6 +30,12 @@ GitHub Releases carry the same notes in English; maintainer-facing runbooks live
   防抖 600ms 回写；启动时先把宿主那份回填进本地，**再**拉项目（生成/命名/资产自愈都读设置）。
 
 ### Fixed
+- **视频节点误报「参考音频 N 条超过该厂商上限 0 条，本次只使用前 0 条」**（`0.21.0-local.4`）。
+  `VIDEO_REF_CAPS` 里 `openai` / `seedance` 两条没写 `audio` 上限，`caps.audio` 取到 undefined
+  被当成 0，于是素材**已经发出去**（桥接侧 `auds=1` 实测确认）却在节点上挂了「只使用前 0 条」
+  的告警——用户会以为音色没生效，比不告警更误导。两处补 `audio: 3`（OpenAI 兼容通用链
+  `body.audios` 与 Seedance `content[]` 的实际发送上限），未知厂商兜底同步改为
+  `{ img: 8, audio: 3 }`。
 - **换 IP（或换设备、换浏览器）后「无限画布的数据就没办法正常访问」**（`0.21.0-local.2`）。
   根因不在数据：项目 / 资产 / 设定集都在宿主数据目录（`dataRoot` 是宿主配置，跟 IP 无关）；
   真正丢的是**浏览器按来源隔离的 localStorage**（协议+主机+端口），换 IP = 新来源 = 空仓，于是
